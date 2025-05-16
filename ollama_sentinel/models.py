@@ -1,0 +1,93 @@
+"""
+Data models for Ollama Sentinel configuration.
+"""
+from enum import Enum
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel, validator
+
+
+class ModelRole(str, Enum):
+    """Roles for different Ollama models."""
+    DEFAULT = "default"
+    SECURITY = "security"
+    PERFORMANCE = "performance"
+    DOCUMENTATION = "documentation"
+
+
+class OutputFormat(str, Enum):
+    """Output formats for reviews."""
+    MARKDOWN = "markdown"
+    JSON = "json"
+    HTML = "html"
+
+
+class OllamaModelConfig(BaseModel):
+    """Configuration for a specific Ollama model."""
+    name: str
+    system_prompt: str
+    temperature: float = 0.1
+    top_p: float = 0.9
+    max_tokens: Optional[int] = None
+
+
+class OllamaConfig(BaseModel):
+    """Configuration for Ollama API."""
+    host: str = "http://localhost:11434"
+    models: Dict[str, OllamaModelConfig]
+    request_timeout: int = 120
+    
+    @validator("models")
+    def validate_models(cls, v):
+        """Ensure there's at least a default model."""
+        if "default" not in v:
+            raise ValueError("A 'default' model must be specified")
+        return v
+
+
+class WatchConfig(BaseModel):
+    """Configuration for directory watching."""
+    directory: str
+    recursive: bool = True
+    ignore_patterns: List[str] = []
+    debounce_ms: int = 1500
+
+
+class ProcessingConfig(BaseModel):
+    """Configuration for file processing."""
+    max_chars_per_chunk: int = 12000
+    overlap_chars: int = 500
+    max_concurrent_reviews: int = 3
+    max_concurrent_chunks_per_file: int = 2
+    git_diff_mode: bool = False
+
+
+class HistoryConfig(BaseModel):
+    """Configuration for review history."""
+    enabled: bool = True
+    max_versions: int = 5
+
+
+class OutputConfig(BaseModel):
+    """Configuration for review output."""
+    directory: str = ".ollama_reviews"
+    format: OutputFormat = OutputFormat.MARKDOWN
+    console_output: bool = True
+    compress: bool = False
+    diff_based_history: bool = False
+    history: HistoryConfig = HistoryConfig()
+
+
+class NotificationsConfig(BaseModel):
+    """Configuration for notifications."""
+    enabled: bool = False
+    url: Optional[str] = None
+
+
+class SentinelConfig(BaseModel):
+    """Main application configuration."""
+    watch: WatchConfig
+    ollama: OllamaConfig
+    processing: ProcessingConfig = ProcessingConfig()
+    output: OutputConfig = OutputConfig()
+    notifications: NotificationsConfig = NotificationsConfig()

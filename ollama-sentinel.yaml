@@ -1,0 +1,36 @@
+watch:
+  directory: /Users/thomasamosson/jan25/research_agent
+  recursive: true
+  ignore_patterns:
+  - '*.md'
+  - '*.log'
+  - '**/.git/**'
+  - '**/node_modules/**'
+  - '**/__pycache__/**'
+  - '**/.ollama_reviews/**'
+  debounce_ms: 1500
+ollama:
+  host: http://localhost:11434
+  models:
+    default:
+      name: gemma3:4b
+      system_prompt: 'You are a senior code reviewer. Return constructive, actionable
+        feedback for each file: identify bugs (with line numbers), design smells,
+        and small refactors that improve readability and performance. Respond in GitHub-flavored
+        markdown. If the file is auto-generated or purely data, say ''No actionable
+        feedback.'''
+processing:
+  max_chars_per_chunk: 12000
+  overlap_chars: 500
+  max_concurrent_reviews: 3
+  max_concurrent_chunks_per_file: 2
+  git_diff_mode: false
+output:
+  directory: .ollama_reviews
+  format: markdown
+  console_output: true
+  compress: false
+  diff_based_history: false
+  history:
+    enabled: true
+    max_versions: 5
