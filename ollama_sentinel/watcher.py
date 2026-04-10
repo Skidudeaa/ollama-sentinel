@@ -81,27 +81,28 @@ class FileSentinel:
             # Path is not relative to watch_dir
             return True
     
-    async def process_change(self, file_change: FileChange) -> None:
+    async def process_change(self, file_change: FileChange, model_role: str = "default") -> None:
         """
         Process a single file change.
-        
+
         Args:
             file_change: File change to process
+            model_role: Model role to use for review
         """
         path = file_change.path
         rel_path = path.relative_to(self.processor.watch_dir)
-        
+
         if not path.is_file() or self._should_ignore(path):
             return
-        
+
         log.info(f"Processing {rel_path}")
-        
+
         try:
             # Generate review
-            review = await self.processor.generate_review(file_change)
+            review = await self.processor.generate_review(file_change, model_role=model_role)
             
-            # Save review
-            output_path = self.processor.save_review(file_change, review)
+            # Save review (sync I/O, run in thread to avoid blocking event loop)
+            output_path = await asyncio.to_thread(self.processor.save_review, file_change, review)
             log.info(f"Saved review to {output_path}")
             
             # Output to console if enabled
@@ -145,7 +146,6 @@ class FileSentinel:
         
         # Debounce parameters
         debounce_base = self.config.watch.debounce_ms / 1000
-        debounce_max = 10.0  # Maximum debounce time in seconds
         
         async for changes in awatch(watch_dir, recursive=self.config.watch.recursive):
             now = time.monotonic()
@@ -170,8 +170,8 @@ class FileSentinel:
             for path, timestamp in list(pending_events.items()):
                 time_since_change = current_time - timestamp
                 
-                # If file has been stable for debounce_base or maximum time reached
-                if time_since_change >= debounce_base or time_since_change >= debounce_max:
+                # File is stable if idle for debounce_base, or force-flush at debounce_max
+                if time_since_change >= debounce_base:
                     stable_files.append(FileChange(path=path, change_type=Change.modified))
                     pending_events.pop(path, None)
             

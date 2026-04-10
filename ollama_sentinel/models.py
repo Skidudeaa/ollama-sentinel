@@ -4,7 +4,9 @@ Data models for Ollama Sentinel configuration.
 from enum import Enum
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, validator
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, field_validator
 
 
 class ModelRole(str, Enum):
@@ -36,8 +38,20 @@ class OllamaConfig(BaseModel):
     host: str = "http://localhost:11434"
     models: Dict[str, OllamaModelConfig]
     request_timeout: int = 120
-    
-    @validator("models")
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, v: str) -> str:
+        """Validate the Ollama host URL has a safe scheme."""
+        parsed = urlparse(v)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Ollama host must use http or https scheme, got '{parsed.scheme}'")
+        if not parsed.hostname:
+            raise ValueError("Ollama host must include a hostname")
+        return v
+
+    @field_validator("models")
+    @classmethod
     def validate_models(cls, v):
         """Ensure there's at least a default model."""
         if "default" not in v:
@@ -76,6 +90,18 @@ class OutputConfig(BaseModel):
     compress: bool = False
     diff_based_history: bool = False
     history: HistoryConfig = HistoryConfig()
+
+    @field_validator("directory")
+    @classmethod
+    def validate_directory(cls, v: str) -> str:
+        """Ensure output directory is a safe relative path."""
+        from pathlib import PurePosixPath
+        parts = PurePosixPath(v).parts
+        if ".." in parts:
+            raise ValueError("Output directory must not contain '..' components")
+        if PurePosixPath(v).is_absolute():
+            raise ValueError("Output directory must be a relative path")
+        return v
 
 
 class NotificationsConfig(BaseModel):

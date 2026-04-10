@@ -98,7 +98,7 @@ def review(
     async def run_review():
         sentinel = FileSentinel(config_file)
         file_change = FileChange(path=file_path, change_type=Change.modified)
-        await sentinel.process_change(file_change)
+        await sentinel.process_change(file_change, model_role=model)
         await sentinel.processor.close()
     
     try:

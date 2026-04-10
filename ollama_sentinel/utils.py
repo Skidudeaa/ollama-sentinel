@@ -31,7 +31,9 @@ def safe_read(path: pathlib.Path, watch_dir: pathlib.Path) -> str:
         
         # Check for path traversal
         watch_dir_abs = watch_dir.resolve()
-        if not str(abs_path).startswith(str(watch_dir_abs)):
+        try:
+            abs_path.relative_to(watch_dir_abs)
+        except ValueError:
             log.error(f"Security: Path traversal attempt {path} -> {abs_path}")
             return ""
         
@@ -73,11 +75,11 @@ def chunk_content_by_lines(content: str, max_chars: int, overlap: int) -> List[s
             overlap_size = 0
             overlap_chunk = []
             
-            for line in reversed(current_chunk):
-                if overlap_size + len(line) > overlap:
+            for prev_line in reversed(current_chunk):
+                if overlap_size + len(prev_line) > overlap:
                     break
-                overlap_chunk.insert(0, line)
-                overlap_size += len(line)
+                overlap_chunk.insert(0, prev_line)
+                overlap_size += len(prev_line)
             
             current_chunk = overlap_chunk
             current_size = overlap_size

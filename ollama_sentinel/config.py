@@ -68,7 +68,7 @@ def create_default_config(directory: str, output_dir: str = ".ollama_reviews") -
             "host": "http://localhost:11434",
             "models": {
                 "default": {
-                    "name": "codellama:13b",
+                    "name": "gemma3:4b",
                     "system_prompt": (
                         "You are a senior code reviewer. Return constructive, actionable feedback "
                         "for each file: identify bugs (with line numbers), design smells, and "

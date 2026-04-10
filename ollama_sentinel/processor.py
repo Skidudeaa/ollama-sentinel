@@ -45,7 +45,9 @@ class OllamaClient:
     
     def __init__(self, config: Dict):
         self.config = config
-        self.client = httpx.AsyncClient(timeout=config["request_timeout"])
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=float(config["request_timeout"]), write=5.0, pool=5.0)
+        )
     
     async def close(self):
         """Close the HTTP client."""
@@ -110,7 +112,7 @@ class FileProcessor:
         self.config = config
         self.watch_dir = pathlib.Path(config.watch.directory).resolve()
         self.output_dir = self.watch_dir / config.output.directory
-        self.ollama_client = OllamaClient(config.ollama.dict())
+        self.ollama_client = OllamaClient(config.ollama.model_dump())
         self.repo = None
         
         # Try to initialize Git repository if git_diff_mode is enabled
@@ -175,35 +177,39 @@ class FileProcessor:
         # Use line-based chunking
         return chunk_content_by_lines(content, max_chars, overlap)
     
-    def format_prompt(self, file_change: FileChange, chunk_index: int = 0, total_chunks: int = 1) -> str:
+    def format_prompt(
+        self,
+        file_change: FileChange,
+        chunk_text: Optional[str] = None,
+        chunk_index: int = 0,
+        total_chunks: int = 1,
+    ) -> str:
         """
         Format the prompt for the Ollama model.
-        
+
         Args:
             file_change: File change to format prompt for
+            chunk_text: Pre-computed chunk text (avoids redundant re-chunking)
             chunk_index: Index of the current chunk
             total_chunks: Total number of chunks
-            
+
         Returns:
             Formatted prompt string
         """
         rel_path = file_change.path.relative_to(self.watch_dir)
-        
+
         if file_change.diff is not None:
             return f"FILE: {rel_path} (Git Diff)\n```diff\n{file_change.diff}\n```"
-        
-        content = file_change.content
+
+        content = chunk_text if chunk_text is not None else file_change.content
         if not content:
             return f"FILE: {rel_path}\n```{file_change.file_type}\n<Empty File>\n```"
-        
-        chunks = self.chunk_content(content, file_change.file_type)
-        chunk = chunks[chunk_index]
-        
+
         chunk_info = ""
         if total_chunks > 1:
             chunk_info = f" (Part {chunk_index + 1}/{total_chunks})"
-        
-        return f"FILE: {rel_path}{chunk_info}\n```{file_change.file_type}\n{chunk}\n```"
+
+        return f"FILE: {rel_path}{chunk_info}\n```{file_change.file_type}\n{content}\n```"
     
     async def generate_review(self, file_change: FileChange, model_role: str = "default") -> str:
         """
@@ -216,7 +222,7 @@ class FileProcessor:
         Returns:
             Generated review text
         """
-        self.prepare_file_content(file_change)
+        await asyncio.to_thread(self.prepare_file_content, file_change)
         
         if file_change.diff is not None:
             # For git diffs, we don't need chunking
@@ -229,14 +235,14 @@ class FileProcessor:
             return await self.ollama_client.generate_review(model_role, prompt)
         
         chunks = self.chunk_content(content, file_change.file_type)
-        
+
         if len(chunks) == 1:
-            prompt = self.format_prompt(file_change)
+            prompt = self.format_prompt(file_change, chunk_text=chunks[0])
             return await self.ollama_client.generate_review(model_role, prompt)
-        
+
         # For multiple chunks, generate review for each concurrently
         async def review_chunk(chunk_idx, total_chunks):
-            prompt = self.format_prompt(file_change, chunk_idx, total_chunks)
+            prompt = self.format_prompt(file_change, chunk_text=chunks[chunk_idx], chunk_index=chunk_idx, total_chunks=total_chunks)
             return await self.ollama_client.generate_review(model_role, prompt)
         
         # Use a semaphore to limit concurrent chunk processing
