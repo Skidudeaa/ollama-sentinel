@@ -138,5 +138,90 @@ def init(
     log.info(f"Created configuration file: {config_path}")
 
 
+@app.command()
+def report(
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+    min_count: int = typer.Option(
+        2,
+        "--min-count",
+        "-n",
+        help="Minimum occurrence count to include",
+    ),
+    limit: int = typer.Option(
+        20,
+        "--limit",
+        "-l",
+        help="Maximum number of violations to show",
+    ),
+    output_format: str = typer.Option(
+        "table",
+        "--format",
+        "-f",
+        help="Output format: table or json",
+    ),
+):
+    """Show recurring code review violations ranked by frequency."""
+    import json as json_mod
+
+    from rich.table import Table
+
+    from .config import load_config
+    from .violation_db import ViolationDB
+
+    config_file = pathlib.Path(config_path)
+    if not config_file.exists():
+        log.error(f"Configuration file not found: {config_file}")
+        raise typer.Exit(code=1)
+
+    config = load_config(config_file)
+    if not config:
+        log.error("Failed to load configuration")
+        raise typer.Exit(code=1)
+
+    db_path = pathlib.Path(config.watch.directory).resolve() / config.memory.db_path
+    if not db_path.exists():
+        console.print("[yellow]No violation database found. Run some reviews first.[/yellow]")
+        raise typer.Exit()
+
+    db = ViolationDB(str(db_path))
+    try:
+        violations = db.get_recurring(min_count=min_count, limit=limit)
+    finally:
+        db.close()
+
+    if not violations:
+        console.print("[green]No recurring violations found.[/green]")
+        raise typer.Exit()
+
+    if output_format == "json":
+        console.print(json_mod.dumps(violations, indent=2))
+    else:
+        table = Table(title=f"Recurring Violations (seen >= {min_count}x)")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Count", style="bold red", width=6)
+        table.add_column("Severity", width=10)
+        table.add_column("Category", width=12)
+        table.add_column("File", style="cyan")
+        table.add_column("Lines", width=8)
+        table.add_column("Description")
+
+        for i, v in enumerate(violations, 1):
+            table.add_row(
+                str(i),
+                str(v["occurrence_count"]),
+                v["severity"],
+                v["category"],
+                v["file_path"],
+                f"{v['line_start']}-{v['line_end']}",
+                v["description"][:60],
+            )
+        console.print(table)
+
+
 if __name__ == "__main__":
     app()
