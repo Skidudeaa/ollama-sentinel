@@ -11,8 +11,10 @@ import pathspec
 from watchfiles import awatch, Change
 
 from .config import load_config
+from .extractor import extract_findings
 from .models import SentinelConfig
 from .processor import FileChange, FileProcessor
+from .violation_db import ViolationDB
 
 log = logging.getLogger("ollama-sentinel")
 
@@ -34,11 +36,19 @@ class FileSentinel:
             raise ValueError(f"Failed to load configuration from {config_path}")
 
         self.config: SentinelConfig = loaded
-        
-        self.processor = FileProcessor(self.config)
+
+        # Initialize violation memory if enabled
+        self.violation_db = None
+        if self.config.memory.enabled:
+            db_dir = pathlib.Path(self.config.watch.directory).resolve()
+            db_path = db_dir / self.config.memory.db_path
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.violation_db = ViolationDB(str(db_path))
+
+        self.processor = FileProcessor(self.config, violation_db=self.violation_db)
         self.pending_changes: Set[FileChange] = set()
         self.processing_lock = asyncio.Lock()
-        
+
         # Initialize git ignore patterns
         self._initialize_ignore_spec()
     
@@ -102,20 +112,33 @@ class FileSentinel:
         try:
             # Generate review
             review = await self.processor.generate_review(file_change, model_role=model_role)
-            
+
+            # Extract and persist findings (best-effort — never blocks review saving)
+            if self.violation_db:
+                try:
+                    findings = await extract_findings(
+                        review, str(rel_path), self.processor.ollama_client, model_role
+                    )
+                    if findings:
+                        await asyncio.to_thread(
+                            self.violation_db.persist_findings, str(rel_path), findings
+                        )
+                        log.info(f"Persisted {len(findings)} findings for {rel_path}")
+                except Exception as e:
+                    log.warning(f"Finding extraction/persistence failed for {rel_path}: {e}")
+
             # Save review (sync I/O, run in thread to avoid blocking event loop)
             output_path = await asyncio.to_thread(self.processor.save_review, file_change, review)
             log.info(f"Saved review to {output_path}")
-            
+
             # Output to console if enabled
             if self.config.output.console_output:
-                # A basic way to display the result in terminal
                 print("\n" + "=" * 80)
                 print(f"Review for {path.name}")
                 print("=" * 80)
                 print(review)
                 print("=" * 80 + "\n")
-        
+
         except Exception as e:
             log.error(f"Failed to process {rel_path}: {e}")
     

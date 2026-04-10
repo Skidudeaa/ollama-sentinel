@@ -105,12 +105,13 @@ class OllamaClient:
 
 class FileProcessor:
     """Processes file changes and generates reviews."""
-    
-    def __init__(self, config: SentinelConfig):
+
+    def __init__(self, config: SentinelConfig, violation_db=None):
         self.config = config
         self.watch_dir = pathlib.Path(config.watch.directory).resolve()
         self.output_dir = self.watch_dir / config.output.directory
         self.ollama_client = OllamaClient(config.ollama.model_dump())
+        self.violation_db = violation_db
         self.repo = None
         
         # Try to initialize Git repository if git_diff_mode is enabled
@@ -175,12 +176,26 @@ class FileProcessor:
         # Use line-based chunking
         return chunk_content_by_lines(content, max_chars, overlap)
     
+    @staticmethod
+    def _format_violations(violations: List[dict]) -> str:
+        """Format prior violations into a prompt block."""
+        lines = ["PRIOR UNRESOLVED ISSUES (address or escalate if still present):"]
+        for v in violations:
+            count = v.get("occurrence_count", 1)
+            first = v.get("first_seen", "unknown")[:10]
+            lines.append(
+                f"- [{v['severity']}] {v['category']} at line {v['line_start']}: "
+                f"{v['description']} (seen {count}x since {first})"
+            )
+        return "\n".join(lines)
+
     def format_prompt(
         self,
         file_change: FileChange,
         chunk_text: Optional[str] = None,
         chunk_index: int = 0,
         total_chunks: int = 1,
+        prior_violations: Optional[List[dict]] = None,
     ) -> str:
         """
         Format the prompt for the Ollama model.
@@ -190,57 +205,77 @@ class FileProcessor:
             chunk_text: Pre-computed chunk text (avoids redundant re-chunking)
             chunk_index: Index of the current chunk
             total_chunks: Total number of chunks
+            prior_violations: Prior unresolved findings to inject into the prompt
 
         Returns:
             Formatted prompt string
         """
         rel_path = file_change.path.relative_to(self.watch_dir)
 
+        violation_block = ""
+        if prior_violations:
+            violation_block = self._format_violations(prior_violations) + "\n\n"
+
         if file_change.diff is not None:
-            return f"FILE: {rel_path} (Git Diff)\n```diff\n{file_change.diff}\n```"
+            return f"{violation_block}FILE: {rel_path} (Git Diff)\n```diff\n{file_change.diff}\n```"
 
         content = chunk_text if chunk_text is not None else file_change.content
         if not content:
-            return f"FILE: {rel_path}\n```{file_change.file_type}\n<Empty File>\n```"
+            return f"{violation_block}FILE: {rel_path}\n```{file_change.file_type}\n<Empty File>\n```"
 
         chunk_info = ""
         if total_chunks > 1:
             chunk_info = f" (Part {chunk_index + 1}/{total_chunks})"
 
-        return f"FILE: {rel_path}{chunk_info}\n```{file_change.file_type}\n{content}\n```"
+        return f"{violation_block}FILE: {rel_path}{chunk_info}\n```{file_change.file_type}\n{content}\n```"
     
+    async def _get_prior_violations(self, file_path: pathlib.Path) -> Optional[List[dict]]:
+        """Query ViolationDB for prior unresolved findings if memory is enabled."""
+        if not self.violation_db:
+            return None
+        try:
+            rel = str(file_path.relative_to(self.watch_dir))
+            violations = await asyncio.to_thread(self.violation_db.get_unresolved, rel)
+            return violations if violations else None
+        except Exception:
+            log.warning("Failed to query prior violations; continuing without them")
+            return None
+
     async def generate_review(self, file_change: FileChange, model_role: str = "default") -> str:
         """
         Generate a review for the file change.
-        
+
         Args:
             file_change: File change to review
             model_role: Role of the model to use
-            
+
         Returns:
             Generated review text
         """
         await asyncio.to_thread(self.prepare_file_content, file_change)
-        
+
+        # Fetch prior violations for prompt injection
+        prior = await self._get_prior_violations(file_change.path)
+
         if file_change.diff is not None:
-            # For git diffs, we don't need chunking
-            prompt = self.format_prompt(file_change)
+            prompt = self.format_prompt(file_change, prior_violations=prior)
             return await self.ollama_client.generate_review(model_role, prompt)
-        
+
         content = file_change.content
         if not content:
-            prompt = self.format_prompt(file_change)
+            prompt = self.format_prompt(file_change, prior_violations=prior)
             return await self.ollama_client.generate_review(model_role, prompt)
-        
+
         chunks = self.chunk_content(content, file_change.file_type)
 
         if len(chunks) == 1:
-            prompt = self.format_prompt(file_change, chunk_text=chunks[0])
+            prompt = self.format_prompt(file_change, chunk_text=chunks[0], prior_violations=prior)
             return await self.ollama_client.generate_review(model_role, prompt)
 
-        # For multiple chunks, generate review for each concurrently
+        # For multiple chunks, inject violations only in the first chunk
         async def review_chunk(chunk_idx, total_chunks):
-            prompt = self.format_prompt(file_change, chunk_text=chunks[chunk_idx], chunk_index=chunk_idx, total_chunks=total_chunks)
+            violations = prior if chunk_idx == 0 else None
+            prompt = self.format_prompt(file_change, chunk_text=chunks[chunk_idx], chunk_index=chunk_idx, total_chunks=total_chunks, prior_violations=violations)
             return await self.ollama_client.generate_review(model_role, prompt)
         
         # Use a semaphore to limit concurrent chunk processing
