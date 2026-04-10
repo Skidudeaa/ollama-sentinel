@@ -136,7 +136,7 @@ analyze → search → read → code_search → impact_scan → synthesize → v
 
 ### Phase 1: Sentinel — Cumulative Violation Memory
 
-- [ ] **Unit 1: ViolationDB — SQLite persistence layer**
+- [x] **Unit 1: ViolationDB — SQLite persistence layer**
 
 **Goal:** Create a SQLite-backed storage layer for structured violation records.
 
@@ -175,7 +175,7 @@ analyze → search → read → code_search → impact_scan → synthesize → v
 
 ---
 
-- [ ] **Unit 2: Finding extractor — parse review into structured records**
+- [x] **Unit 2: Finding extractor — parse review into structured records**
 
 **Goal:** Extract structured violation records from raw Ollama review markdown using a focused LLM extraction prompt.
 
@@ -211,7 +211,7 @@ analyze → search → read → code_search → impact_scan → synthesize → v
 
 ---
 
-- [ ] **Unit 3: Prompt injection — include prior violations in review context**
+- [x] **Unit 3: Prompt injection — include prior violations in review context**
 
 **Goal:** When generating a review, query ViolationDB for prior unresolved findings and inject them into the prompt so the model can reference and escalate recurring issues.
 
@@ -246,7 +246,7 @@ analyze → search → read → code_search → impact_scan → synthesize → v
 
 ---
 
-- [ ] **Unit 4: Persist findings after each review**
+- [x] **Unit 4: Persist findings after each review**
 
 **Goal:** After each review, extract findings and persist them to ViolationDB.
 
@@ -276,7 +276,7 @@ analyze → search → read → code_search → impact_scan → synthesize → v
 
 ---
 
-- [ ] **Unit 5: `report` CLI command**
+- [x] **Unit 5: `report` CLI command**
 
 **Goal:** Add `ollama-sentinel report` command that reads the violation database and prints a ranked summary of recurring violations.
 
@@ -314,7 +314,7 @@ analyze → search → read → code_search → impact_scan → synthesize → v
 
 ### Phase 2: Research Agent — Dependency-Aware Impact Mapping
 
-- [ ] **Unit 6: AST import graph resolver**
+- [x] **Unit 6: AST import graph resolver**
 
 **Goal:** Build a Python import graph resolver that maps file-level dependencies using `ast.parse`.
 
@@ -353,7 +353,7 @@ analyze → search → read → code_search → impact_scan → synthesize → v
 
 ---
 
-- [ ] **Unit 7: Impact analysis data models**
+- [x] **Unit 7: Impact analysis data models**
 
 **Goal:** Define structured data models for impact analysis results.
 
