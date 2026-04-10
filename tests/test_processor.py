@@ -309,3 +309,208 @@ class TestFileProcessorGenerateReview:
         assert "Combined Review" in result
         assert "## Part 1/" in result
         assert "## Part 2/" in result
+
+
+# ---------------------------------------------------------------------------
+# FileProcessor.save_review tests
+# ---------------------------------------------------------------------------
+
+
+def _make_sentinel_config(tmp_path, *, history_enabled=True, max_versions=3,
+                          output_format=OutputFormat.MARKDOWN, compress=False,
+                          diff_based_history=False):
+    """Helper to build a SentinelConfig with controllable output settings."""
+    return SentinelConfig(
+        watch=WatchConfig(directory=str(tmp_path)),
+        ollama=OllamaConfig(
+            host="http://localhost:11434",
+            models={
+                "default": OllamaModelConfig(
+                    name="test-model", system_prompt="Review code."
+                )
+            },
+        ),
+        output=OutputConfig(
+            directory=".ollama_reviews",
+            format=output_format,
+            console_output=False,
+            compress=compress,
+            diff_based_history=diff_based_history,
+            history=HistoryConfig(enabled=history_enabled, max_versions=max_versions),
+        ),
+    )
+
+
+def _make_file_change(tmp_path, rel="src/app.py"):
+    """Create a real file in tmp_path and return a FileChange pointing to it."""
+    file_path = tmp_path / rel
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text("print('hello')")
+    return FileChange(path=file_path, change_type=Change.modified)
+
+
+class TestSaveReview:
+    """Tests for FileProcessor.save_review."""
+
+    def test_save_markdown_creates_versioned_and_latest(self, tmp_path):
+        """Saving a markdown review creates both a versioned file and a latest file."""
+        cfg = _make_sentinel_config(tmp_path)
+        fp = FileProcessor(cfg)
+        fc = _make_file_change(tmp_path)
+
+        fake_now = datetime.datetime(2025, 3, 15, 10, 30, 45)
+        with patch("ollama_sentinel.processor.datetime") as mock_dt:
+            mock_dt.datetime.now.return_value = fake_now
+            result_path = fp.save_review(fc, "Great code!")
+
+        output_dir = tmp_path / ".ollama_reviews" / "src"
+        # Versioned file
+        versioned = output_dir / "app_20250315103045.md"
+        assert versioned.exists()
+        assert versioned.read_text() == "Great code!"
+        assert result_path == versioned
+
+        # Latest file
+        latest = output_dir / "app.md"
+        assert latest.exists()
+        assert latest.read_text() == "Great code!"
+
+    def test_multiple_saves_create_multiple_versioned_files(self, tmp_path):
+        """Saving reviews at different timestamps creates distinct versioned files."""
+        cfg = _make_sentinel_config(tmp_path, max_versions=10)
+        fp = FileProcessor(cfg)
+        fc = _make_file_change(tmp_path)
+
+        timestamps = [
+            datetime.datetime(2025, 1, 1, 0, 0, i) for i in range(1, 4)
+        ]
+        for ts in timestamps:
+            with patch("ollama_sentinel.processor.datetime") as mock_dt:
+                mock_dt.datetime.now.return_value = ts
+                fp.save_review(fc, f"Review at {ts}")
+
+        output_dir = tmp_path / ".ollama_reviews" / "src"
+        versioned_files = sorted(
+            p for p in output_dir.glob("app_*.md")
+        )
+        assert len(versioned_files) == 3
+
+    def test_history_cleanup_removes_oldest(self, tmp_path):
+        """When more than max_versions versioned files exist, the oldest are deleted."""
+        cfg = _make_sentinel_config(tmp_path, max_versions=2)
+        fp = FileProcessor(cfg)
+        fc = _make_file_change(tmp_path)
+
+        timestamps = [
+            datetime.datetime(2025, 1, 1, 10, 0, i) for i in range(1, 5)
+        ]
+        for ts in timestamps:
+            with patch("ollama_sentinel.processor.datetime") as mock_dt:
+                mock_dt.datetime.now.return_value = ts
+                fp.save_review(fc, f"Review at {ts}")
+
+        output_dir = tmp_path / ".ollama_reviews" / "src"
+        versioned_files = sorted(output_dir.glob("app_*.md"))
+        # Only the newest 2 should survive
+        assert len(versioned_files) == 2
+        names = [p.name for p in versioned_files]
+        assert "app_20250101100001.md" not in names
+        assert "app_20250101100002.md" not in names
+        assert "app_20250101100003.md" in names
+        assert "app_20250101100004.md" in names
+
+    def test_json_format_output(self, tmp_path):
+        """JSON format wraps the review in a JSON object with expected keys."""
+        cfg = _make_sentinel_config(tmp_path, output_format=OutputFormat.JSON)
+        fp = FileProcessor(cfg)
+        fc = _make_file_change(tmp_path)
+
+        fake_now = datetime.datetime(2025, 6, 1, 12, 0, 0)
+        with patch("ollama_sentinel.processor.datetime") as mock_dt:
+            mock_dt.datetime.now.return_value = fake_now
+            fp.save_review(fc, "JSON review content")
+
+        output_dir = tmp_path / ".ollama_reviews" / "src"
+        latest = output_dir / "app.json"
+        assert latest.exists()
+
+        data = json.loads(latest.read_text())
+        assert data["file"] == "src/app.py"
+        assert data["timestamp"] == "20250601120000"
+        assert data["review"] == "JSON review content"
+
+    def test_save_without_history_only_latest(self, tmp_path):
+        """With history disabled, only the latest file is written, no versioned files."""
+        cfg = _make_sentinel_config(tmp_path, history_enabled=False)
+        fp = FileProcessor(cfg)
+        fc = _make_file_change(tmp_path)
+
+        fp.save_review(fc, "No history review")
+
+        output_dir = tmp_path / ".ollama_reviews" / "src"
+        latest = output_dir / "app.md"
+        assert latest.exists()
+        assert latest.read_text() == "No history review"
+
+        # No versioned files should exist
+        versioned = list(output_dir.glob("app_*.md"))
+        assert versioned == []
+
+    def test_output_directory_created_automatically(self, tmp_path):
+        """The output directory tree is created automatically even if it does not exist."""
+        cfg = _make_sentinel_config(tmp_path)
+        fp = FileProcessor(cfg)
+        # Use a nested path to verify parents=True behavior
+        fc = _make_file_change(tmp_path, rel="deep/nested/dir/module.py")
+
+        fake_now = datetime.datetime(2025, 1, 1, 0, 0, 0)
+        with patch("ollama_sentinel.processor.datetime") as mock_dt:
+            mock_dt.datetime.now.return_value = fake_now
+            result_path = fp.save_review(fc, "Nested review")
+
+        assert result_path.exists()
+        assert result_path.read_text() == "Nested review"
+        # Verify the full directory structure was created
+        expected_dir = tmp_path / ".ollama_reviews" / "deep" / "nested" / "dir"
+        assert expected_dir.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# Config loading tests
+# ---------------------------------------------------------------------------
+
+
+class TestConfigLoading:
+    """Tests for ollama_sentinel.config functions."""
+
+    def test_load_config_valid_yaml(self, config_yaml_path):
+        """load_config with a valid YAML file returns a SentinelConfig."""
+        result = load_config(config_yaml_path)
+        assert result is not None
+        assert isinstance(result, SentinelConfig)
+
+    def test_load_config_missing_file(self, tmp_path):
+        """load_config with a non-existent file returns None."""
+        missing = tmp_path / "does_not_exist.yaml"
+        result = load_config(missing)
+        assert result is None
+
+    def test_load_config_invalid_yaml(self, tmp_path):
+        """load_config with malformed YAML returns None."""
+        bad_yaml = tmp_path / "bad.yaml"
+        bad_yaml.write_text("watch:\n  directory: [unterminated")
+        result = load_config(bad_yaml)
+        assert result is None
+
+    def test_create_default_config_has_expected_keys(self):
+        """create_default_config returns a dict with all top-level config sections."""
+        result = create_default_config("/some/dir")
+        assert isinstance(result, dict)
+        for key in ("watch", "ollama", "processing", "output"):
+            assert key in result, f"Missing top-level key: {key}"
+
+    def test_create_default_config_default_model_is_gemma(self):
+        """The default model in create_default_config is gemma3:4b."""
+        result = create_default_config("/some/dir")
+        default_model = result["ollama"]["models"]["default"]["name"]
+        assert default_model == "gemma3:4b"
