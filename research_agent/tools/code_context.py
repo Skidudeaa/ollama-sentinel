@@ -1,10 +1,8 @@
 # research_agent/tools/code_context.py
 from __future__ import annotations
 import os
-import sys # Import sys
-import logging
-import re
-from typing import List, Dict, Any, Optional, Union, Tuple
+import sys
+from typing import List, Optional
 
 from langchain_core.tools import BaseTool
 from llama_index.core import VectorStoreIndex, Settings

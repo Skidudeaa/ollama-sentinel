@@ -2,9 +2,8 @@
 from __future__ import annotations
 import os
 import toml
-import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Union, List
+from typing import Any, Dict, Optional, Union
 
 from research_agent.core.logging import get_logger
 

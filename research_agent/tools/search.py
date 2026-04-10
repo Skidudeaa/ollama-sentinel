@@ -1,12 +1,9 @@
 # research_agent/tools/search.py
 from __future__ import annotations
 import asyncio
-import logging
-import time
-from typing import Dict, List, Optional, Any, Literal, Union, Callable
+from typing import List, Optional, Any
 from enum import Enum
 from dataclasses import dataclass
-import random
 from urllib.parse import urlparse
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
@@ -14,7 +11,7 @@ from langchain_core.tools import BaseTool
 from langchain_community.utilities import SerpAPIWrapper
 from duckduckgo_search import DDGS
 import requests
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from research_agent.utils.cache import Cache
 from research_agent.core.logging import get_logger
 
