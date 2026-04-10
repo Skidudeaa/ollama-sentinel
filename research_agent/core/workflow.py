@@ -1,6 +1,12 @@
 # research_agent/core/workflow.py
 from __future__ import annotations
+import ast
 import asyncio
+import json
+import os
+import re
+from dataclasses import asdict
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, cast, TypedDict
 from contextlib import nullcontext
 
@@ -13,8 +19,11 @@ from research_agent.tools.code_context import CodeSearchTool
 from research_agent.tools.memory import EnhancedMemoryStore, WebPage, SearchQuery
 from research_agent.tools.synthesis import SynthesisTool
 from research_agent.tools.verification import VerificationTool
+from research_agent.tools.import_resolver import ImportResolver
 from research_agent.utils.cache import Cache
-from research_agent.core.models import ResearchSession, ContentItem, ImpactAnalysis
+from research_agent.core.models import (
+    ResearchSession, ContentItem, ImpactAnalysis, ImpactItem,
+)
 from research_agent.tools.search import SearchResult
 from research_agent.core.logging import get_logger
 
@@ -316,9 +325,9 @@ Output just the search query, nothing else.
             step.output = code_results
             session.complete_step("code_search", code_results)
             state["code_results"] = code_results
-            state["step"] = "synthesize"
+            state["step"] = "impact_scan"
             return state
-            
+
         except Exception as e:
             logger.error(f"Error in code search step: {e}")
             session.fail_step("code_search", str(e))
@@ -326,7 +335,269 @@ Output just the search query, nothing else.
             current_state_snapshot["session"] = state["session"]
             current_state_snapshot["step"] = "failed"
             return cast(AgentState, current_state_snapshot)
-    
+
+    def impact_scan(state: AgentState) -> AgentState:
+        """Scan the repository for code locations affected by the researched topic."""
+        session = state["session"]
+        step = session.start_step("impact_scan")
+
+        try:
+            # ----------------------------------------------------------
+            # Unit 10: check cache before running full analysis
+            # ----------------------------------------------------------
+            query_normalized = re.sub(r"\s+", "_", session.query.strip().lower())
+            cache_key = f"impact_{query_normalized}"
+            cached = cache.get(cache_key)
+
+            if cached and isinstance(cached, dict) and "analysis" in cached:
+                stored_mtimes = cached.get("file_mtimes", {})
+                files_unchanged = True
+                for fpath, old_mtime in stored_mtimes.items():
+                    try:
+                        if os.path.getmtime(fpath) != old_mtime:
+                            files_unchanged = False
+                            break
+                    except OSError:
+                        files_unchanged = False
+                        break
+
+                if files_unchanged:
+                    # Reconstruct ImpactAnalysis from cached dict
+                    a = cached["analysis"]
+                    items = [
+                        ImpactItem(**item_dict) for item_dict in a.get("items", [])
+                    ]
+                    impact = ImpactAnalysis(
+                        query=a["query"],
+                        entity_count=a["entity_count"],
+                        affected_files=a["affected_files"],
+                        items=items,
+                        timestamp=a.get("timestamp", 0.0),
+                    )
+                    logger.info("Using cached impact analysis for query: %s", session.query)
+                    step.output = impact
+                    session.complete_step("impact_scan", impact)
+                    state["impact_analysis"] = impact
+                    state["step"] = "synthesize"
+                    return state
+
+            # ----------------------------------------------------------
+            # Step 1: Use LLM to extract concrete entities
+            # ----------------------------------------------------------
+            content_summaries = ""
+            content_items = state.get("content_items") or []
+            for ci in content_items[:5]:
+                snippet = (ci.content or "")[:800]
+                content_summaries += f"SOURCE ({ci.url}):\n{snippet}\n\n"
+
+            code_results_str = state.get("code_results") or ""
+
+            extract_prompt = f"""Extract concrete code entities (library names, function names, \
+class names, method names) that are discussed as changing, deprecated, removed, or \
+requiring migration in the following research context.
+
+QUERY: {session.query}
+
+WEB SOURCES:
+{content_summaries}
+
+CODE CONTEXT:
+{code_results_str[:2000]}
+
+Return ONLY a JSON array of strings, e.g. ["requests.get", "Session.execute", "flask.ext"].
+If there are no concrete entities, return an empty array: []
+"""
+            with telemetry.span("extract_entities") if telemetry else nullcontext():
+                raw_entities = llm.invoke(extract_prompt).content.strip()
+
+            # Parse entities from LLM response
+            entities: List[str] = []
+            # Try to find a JSON array in the response
+            match = re.search(r"\[.*?\]", raw_entities, re.DOTALL)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                    if isinstance(parsed, list):
+                        entities = [str(e).strip() for e in parsed if str(e).strip()]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+            # ----------------------------------------------------------
+            # Step 2: If no entities, pass through unchanged
+            # ----------------------------------------------------------
+            if not entities:
+                logger.info("No entities extracted for impact scan; skipping.")
+                step.output = None
+                session.complete_step("impact_scan", None)
+                state["impact_analysis"] = None
+                state["step"] = "synthesize"
+                return state
+
+            # ----------------------------------------------------------
+            # Step 3: Build import graph and scan for call sites
+            # ----------------------------------------------------------
+            resolver = ImportResolver(repo_path)
+            import_graph = resolver.build_graph()
+
+            impact_items: List[ImpactItem] = []
+            affected_files_set: set[str] = set()
+
+            for entity in entities:
+                # Split entity into parts for flexible matching
+                entity_parts = entity.split(".")
+                # The leaf name is the most specific identifier
+                leaf = entity_parts[-1] if entity_parts else entity
+
+                for file_path in import_graph:
+                    if not os.path.isfile(file_path):
+                        continue
+
+                    try:
+                        source_text = Path(file_path).read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+
+                    # --- AST-based matching ---
+                    try:
+                        tree = ast.parse(source_text, filename=file_path)
+                    except SyntaxError:
+                        tree = None
+
+                    found_lines: List[tuple[int, str]] = []
+
+                    if tree is not None:
+                        for node in ast.walk(tree):
+                            node_match = False
+                            snippet = ""
+
+                            if isinstance(node, ast.Attribute) and node.attr == leaf:
+                                node_match = True
+                                snippet = f".{node.attr}"
+                            elif isinstance(node, ast.Name) and node.id == leaf:
+                                node_match = True
+                                snippet = node.id
+                            elif isinstance(node, ast.Call):
+                                func = node.func
+                                if isinstance(func, ast.Attribute) and func.attr == leaf:
+                                    node_match = True
+                                    snippet = f".{func.attr}(...)"
+                                elif isinstance(func, ast.Name) and func.id == leaf:
+                                    node_match = True
+                                    snippet = f"{func.id}(...)"
+
+                            if node_match and hasattr(node, "lineno"):
+                                found_lines.append((node.lineno, snippet))
+
+                    # --- Fallback: string matching for non-parseable or missed cases ---
+                    if not found_lines:
+                        for lineno, line in enumerate(source_text.splitlines(), 1):
+                            if leaf in line:
+                                stripped = line.strip()
+                                if stripped:
+                                    found_lines.append((lineno, stripped[:120]))
+
+                    for lineno, pattern in found_lines:
+                        affected_files_set.add(file_path)
+                        impact_items.append(ImpactItem(
+                            file_path=file_path,
+                            line_number=lineno,
+                            pattern=pattern,
+                            severity="LOW",  # default; classified below
+                            action="",
+                            entity=entity,
+                        ))
+
+            # ----------------------------------------------------------
+            # Step 4: Classify severity
+            # ----------------------------------------------------------
+            query_lower = session.query.lower()
+            for item in impact_items:
+                if any(kw in query_lower for kw in ("removed", "breaking", "delete", "remove", "drop")):
+                    item.severity = "HIGH"
+                elif any(kw in query_lower for kw in ("deprecated", "deprecate", "warning")):
+                    item.severity = "MEDIUM"
+                else:
+                    item.severity = "LOW"
+
+            # ----------------------------------------------------------
+            # Step 5: LLM-suggested migration for HIGH severity items
+            # ----------------------------------------------------------
+            high_items = [it for it in impact_items if it.severity == "HIGH"]
+            if high_items:
+                high_summary = "\n".join(
+                    f"  {it.file_path}:{it.line_number}  {it.pattern}  (entity: {it.entity})"
+                    for it in high_items[:20]
+                )
+                migration_prompt = f"""These HIGH severity code locations use APIs/functions that \
+are being removed or have breaking changes.
+
+QUERY: {session.query}
+
+AFFECTED LOCATIONS:
+{high_summary}
+
+For each location, suggest a brief migration action (one line each).
+Format: file:line -> action
+"""
+                with telemetry.span("suggest_migrations") if telemetry else nullcontext():
+                    migration_text = llm.invoke(migration_prompt).content.strip()
+
+                # Parse migration suggestions back onto items
+                for line in migration_text.splitlines():
+                    if "->" in line:
+                        parts = line.split("->", 1)
+                        action_text = parts[1].strip()
+                        # Match by file:line prefix
+                        loc = parts[0].strip()
+                        for it in high_items:
+                            loc_key = f"{it.file_path}:{it.line_number}"
+                            if loc_key in loc or os.path.basename(it.file_path) in loc:
+                                if not it.action:
+                                    it.action = action_text
+
+                # Fill default action for any HIGH items still without one
+                for it in high_items:
+                    if not it.action:
+                        it.action = f"Review and migrate usage of {it.entity}"
+
+            # ----------------------------------------------------------
+            # Step 6: Build ImpactAnalysis and set on state
+            # ----------------------------------------------------------
+            impact = ImpactAnalysis(
+                query=session.query,
+                entity_count=len(entities),
+                affected_files=sorted(affected_files_set),
+                items=impact_items,
+            )
+
+            # ----------------------------------------------------------
+            # Unit 10: persist to cache with file mtimes
+            # ----------------------------------------------------------
+            file_mtimes: Dict[str, float] = {}
+            for fpath in affected_files_set:
+                try:
+                    file_mtimes[fpath] = os.path.getmtime(fpath)
+                except OSError:
+                    pass
+            cache.set(cache_key, {
+                "analysis": asdict(impact),
+                "file_mtimes": file_mtimes,
+            })
+
+            step.output = impact
+            session.complete_step("impact_scan", impact)
+            state["impact_analysis"] = impact
+            state["step"] = "synthesize"
+            return state
+
+        except Exception as e:
+            logger.error(f"Error in impact scan step: {e}")
+            session.fail_step("impact_scan", str(e))
+            current_state_snapshot = {k: state.get(k) for k in AgentState.__annotations__}
+            current_state_snapshot["session"] = state["session"]
+            current_state_snapshot["step"] = "failed"
+            return cast(AgentState, current_state_snapshot)
+
     def synthesize(state: AgentState) -> AgentState:
         """Synthesize an answer from gathered information."""
         # Get session from state
@@ -348,7 +619,8 @@ Output just the search query, nothing else.
                 synthesis_result = synthesis_tool.synthesize(
                     query=session.query,
                     sources=content_items, # Can be empty list
-                    code_context=full_code_context if full_code_context else None
+                    code_context=full_code_context if full_code_context else None,
+                    impact_analysis=state.get("impact_analysis"),
                 )
             
             # Update state
@@ -532,16 +804,18 @@ Output just the search queries, one per line, nothing else.
     workflow.add_node("search", search)
     workflow.add_node("read", read)
     workflow.add_node("code_search", code_search)
+    workflow.add_node("impact_scan", impact_scan)
     workflow.add_node("synthesize", synthesize)
     workflow.add_node("verify", verify)
     workflow.add_node("refine", refine)
     workflow.add_node("finalize", finalize)
-    
+
     # Define edges
     workflow.add_edge("analyze", "search")
     workflow.add_edge("search", "read")
     workflow.add_edge("read", "code_search")
-    workflow.add_edge("code_search", "synthesize")
+    workflow.add_edge("code_search", "impact_scan")
+    workflow.add_edge("impact_scan", "synthesize")
     workflow.add_edge("synthesize", "verify")
     workflow.add_edge("refine", "search")
     

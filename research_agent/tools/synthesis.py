@@ -7,7 +7,7 @@ from pybars import Compiler
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-from research_agent.core.models import ContentItem
+from research_agent.core.models import ContentItem, ImpactAnalysis
 from research_agent.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -128,43 +128,109 @@ Assess your confidence in the final answer on a scale of 0-1.
             
         return processed
     
+    @staticmethod
+    def format_impact_report(impact_analysis: ImpactAnalysis) -> str:
+        """Build a structured impact report from an ImpactAnalysis object.
+
+        The report is returned as a plain-text string suitable for use as
+        the synthesized answer when impact data is available.
+        """
+        items = impact_analysis.items
+        affected_files = impact_analysis.affected_files
+
+        high = [it for it in items if it.severity == "HIGH"]
+        medium = [it for it in items if it.severity == "MEDIUM"]
+        low = [it for it in items if it.severity == "LOW"]
+
+        lines: List[str] = [
+            f"IMPACT ANALYSIS: {len(items)} call sites across {len(affected_files)} files",
+            "",
+        ]
+
+        if high:
+            lines.append("HIGH SEVERITY (breaking):")
+            for it in high:
+                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {it.action}")
+            lines.append("")
+
+        if medium:
+            lines.append("MEDIUM SEVERITY (deprecated):")
+            for it in medium:
+                action = it.action if it.action else "Review usage"
+                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
+            lines.append("")
+
+        if low:
+            lines.append("LOW SEVERITY (changed):")
+            for it in low:
+                action = it.action if it.action else "Monitor for changes"
+                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
+            lines.append("")
+
+        if high:
+            lines.append("SUGGESTED FIRST COMMIT:")
+            for it in high:
+                lines.append(f"  [ ] {it.file_path}:{it.line_number} - {it.action}")
+            lines.append("")
+
+        return "\n".join(lines)
+
     def synthesize(
-        self, 
-        query: str, 
-        sources: List[ContentItem], 
-        code_context: Optional[str] = None
+        self,
+        query: str,
+        sources: List[ContentItem],
+        code_context: Optional[str] = None,
+        impact_analysis: Optional[ImpactAnalysis] = None,
     ) -> Dict[str, Any]:
-        """Synthesize an answer from sources and code context."""
+        """Synthesize an answer from sources and code context.
+
+        When *impact_analysis* is provided and contains items, a structured
+        impact report is returned instead of the narrative LLM synthesis.
+        """
         logger.info(f"Synthesizing answer for query: {query}")
-        
+
+        # -----------------------------------------------------------
+        # Structured impact output (Unit 9)
+        # -----------------------------------------------------------
+        if impact_analysis is not None and impact_analysis.items:
+            report = self.format_impact_report(impact_analysis)
+            return {
+                "answer": report,
+                "references": [],
+                "confidence": 0.9,
+            }
+
+        # -----------------------------------------------------------
+        # Existing narrative synthesis (unchanged)
+        # -----------------------------------------------------------
         try:
             # Preprocess sources
             processed_sources = self._preprocess_sources(sources)
-            
+
             # Prepare template variables
             template_vars = {
                 "query": query,
                 "web_sources": processed_sources,
                 "code_context": code_context
             }
-            
+
             # Render the prompt template
             prompt = self.main_template(template_vars)
-            
+
             # Generate answer
             response = self.llm.invoke(prompt)
             content = response.content
-            
+
             # Extract references and confidence
             references = self._extract_references(content)
             confidence = self._extract_confidence(content)
-            
+
             return {
                 "answer": content,
                 "references": references,
                 "confidence": confidence
             }
-            
+
         except Exception as e:
             logger.error(f"Error synthesizing answer: {e}")
             return {

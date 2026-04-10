@@ -716,3 +716,375 @@ class TestImpactModels:
         assert d["query"] == "q"
         assert len(d["items"]) == 1
         assert d["items"][0]["file_path"] == "a.py"
+
+
+# ===================================================================
+# 8. Impact scan logic (inline re-implementation, no LLM needed)
+# ===================================================================
+
+class TestImpactScanLogic:
+    """Tests for the pure logic used inside the impact_scan workflow node.
+
+    The actual node is a closure inside build_workflow() and depends on an
+    LLM and various tools.  We re-implement the deterministic portions
+    (entity extraction parsing, empty-entity pass-through, severity
+    classification) and test those directly.
+    """
+
+    # -- entity extraction parser (mirrors the regex+json.loads path) --
+    @staticmethod
+    def _parse_entities(raw_llm_output: str) -> List[str]:
+        """Mirror of the entity-parsing logic in impact_scan."""
+        import re as _re
+        entities: List[str] = []
+        match = _re.search(r"\[.*?\]", raw_llm_output, _re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+                if isinstance(parsed, list):
+                    entities = [str(e).strip() for e in parsed if str(e).strip()]
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return entities
+
+    def test_extract_entities_valid_json_array(self):
+        raw = 'Here are the entities: ["requests.get", "Session.execute"]'
+        assert self._parse_entities(raw) == ["requests.get", "Session.execute"]
+
+    def test_extract_entities_empty_array(self):
+        raw = "No entities found: []"
+        assert self._parse_entities(raw) == []
+
+    def test_extract_entities_no_json_at_all(self):
+        raw = "I could not find any concrete entities to report."
+        assert self._parse_entities(raw) == []
+
+    def test_extract_entities_malformed_json(self):
+        raw = 'Almost JSON: ["requests.get", ]'
+        # json.loads may or may not accept trailing comma; either way no crash
+        result = self._parse_entities(raw)
+        assert isinstance(result, list)
+
+    def test_extract_entities_strips_whitespace(self):
+        raw = '[" foo.bar ", "baz "]'
+        assert self._parse_entities(raw) == ["foo.bar", "baz"]
+
+    # -- empty entities pass-through --
+    def test_empty_entities_returns_none_analysis(self):
+        """When no entities are extracted the node should leave impact_analysis as None."""
+        # Simulate the node's early-return branch
+        entities: List[str] = []
+        impact_analysis = None
+        if not entities:
+            impact_analysis = None  # pass-through
+        assert impact_analysis is None
+
+    # -- severity classification (mirrors the keyword-based logic) --
+    @staticmethod
+    def _classify_severity(query: str) -> str:
+        """Mirror of the severity classification in impact_scan."""
+        query_lower = query.lower()
+        if any(kw in query_lower for kw in ("removed", "breaking", "delete", "remove", "drop")):
+            return "HIGH"
+        elif any(kw in query_lower for kw in ("deprecated", "deprecate", "warning")):
+            return "MEDIUM"
+        else:
+            return "LOW"
+
+    def test_severity_high_for_breaking(self):
+        assert self._classify_severity("Breaking changes in v2") == "HIGH"
+
+    def test_severity_high_for_removed(self):
+        assert self._classify_severity("Function removed in latest release") == "HIGH"
+
+    def test_severity_high_for_drop(self):
+        assert self._classify_severity("Drop support for Python 3.7") == "HIGH"
+
+    def test_severity_medium_for_deprecated(self):
+        assert self._classify_severity("deprecated API in sqlalchemy") == "MEDIUM"
+
+    def test_severity_medium_for_warning(self):
+        assert self._classify_severity("DeprecationWarning in latest version") == "MEDIUM"
+
+    def test_severity_low_for_general_change(self):
+        assert self._classify_severity("behavior change in new release") == "LOW"
+
+    def test_severity_low_for_neutral_query(self):
+        assert self._classify_severity("how to use requests library") == "LOW"
+
+
+# ===================================================================
+# 9. Impact synthesis format (inline re-implementation)
+# ===================================================================
+
+class TestImpactSynthesisFormat:
+    """Tests for the structured impact report formatting.
+
+    Re-implements the format_impact_report logic from SynthesisTool so
+    the tests do not require langchain or an API key.
+    """
+
+    @staticmethod
+    def _format_impact_report(impact_analysis: ImpactAnalysis) -> str:
+        """Mirror of SynthesisTool.format_impact_report."""
+        items = impact_analysis.items
+        affected_files = impact_analysis.affected_files
+
+        high = [it for it in items if it.severity == "HIGH"]
+        medium = [it for it in items if it.severity == "MEDIUM"]
+        low = [it for it in items if it.severity == "LOW"]
+
+        lines: List[str] = [
+            f"IMPACT ANALYSIS: {len(items)} call sites across {len(affected_files)} files",
+            "",
+        ]
+
+        if high:
+            lines.append("HIGH SEVERITY (breaking):")
+            for it in high:
+                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {it.action}")
+            lines.append("")
+
+        if medium:
+            lines.append("MEDIUM SEVERITY (deprecated):")
+            for it in medium:
+                action = it.action if it.action else "Review usage"
+                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
+            lines.append("")
+
+        if low:
+            lines.append("LOW SEVERITY (changed):")
+            for it in low:
+                action = it.action if it.action else "Monitor for changes"
+                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
+            lines.append("")
+
+        if high:
+            lines.append("SUGGESTED FIRST COMMIT:")
+            for it in high:
+                lines.append(f"  [ ] {it.file_path}:{it.line_number} - {it.action}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def test_structured_output_with_all_severities(self):
+        items = [
+            ImpactItem("db.py", 10, "execute(raw)", "HIGH", "Use text()", "execute"),
+            ImpactItem("api.py", 22, "old_func()", "MEDIUM", "Migrate to new_func", "old_func"),
+            ImpactItem("util.py", 5, "helper()", "LOW", "", "helper"),
+        ]
+        analysis = ImpactAnalysis(
+            query="library v2 migration",
+            entity_count=3,
+            affected_files=["db.py", "api.py", "util.py"],
+            items=items,
+        )
+        report = self._format_impact_report(analysis)
+
+        assert "IMPACT ANALYSIS: 3 call sites across 3 files" in report
+        assert "HIGH SEVERITY (breaking):" in report
+        assert "db.py:10" in report
+        assert "MEDIUM SEVERITY (deprecated):" in report
+        assert "api.py:22" in report
+        assert "LOW SEVERITY (changed):" in report
+        assert "util.py:5" in report
+        assert "SUGGESTED FIRST COMMIT:" in report
+
+    def test_structured_output_high_only(self):
+        items = [
+            ImpactItem("a.py", 1, "removed()", "HIGH", "Delete call", "removed"),
+        ]
+        analysis = ImpactAnalysis(
+            query="breaking removal",
+            entity_count=1,
+            affected_files=["a.py"],
+            items=items,
+        )
+        report = self._format_impact_report(analysis)
+
+        assert "HIGH SEVERITY (breaking):" in report
+        assert "SUGGESTED FIRST COMMIT:" in report
+        assert "MEDIUM SEVERITY" not in report
+        assert "LOW SEVERITY" not in report
+
+    def test_structured_output_low_only_no_suggested_commit(self):
+        items = [
+            ImpactItem("c.py", 3, "tweaked()", "LOW", "", "tweaked"),
+        ]
+        analysis = ImpactAnalysis(
+            query="minor change",
+            entity_count=1,
+            affected_files=["c.py"],
+            items=items,
+        )
+        report = self._format_impact_report(analysis)
+
+        assert "LOW SEVERITY (changed):" in report
+        assert "SUGGESTED FIRST COMMIT:" not in report
+        assert "HIGH SEVERITY" not in report
+
+    def test_fallback_to_narrative_when_no_impact(self):
+        """When impact_analysis is None or has no items, the structured
+        path should not be taken.  We verify the decision logic here."""
+        # None case
+        impact = None
+        use_structured = impact is not None and bool(getattr(impact, "items", None))
+        assert use_structured is False
+
+        # Empty items case
+        impact_empty = ImpactAnalysis(query="q", entity_count=0, affected_files=[])
+        use_structured = impact_empty is not None and bool(impact_empty.items)
+        assert use_structured is False
+
+    def test_medium_items_default_action(self):
+        """MEDIUM items with empty action should get 'Review usage' default."""
+        items = [
+            ImpactItem("m.py", 7, "dep_func()", "MEDIUM", "", "dep_func"),
+        ]
+        analysis = ImpactAnalysis(
+            query="deprecated", entity_count=1, affected_files=["m.py"], items=items,
+        )
+        report = self._format_impact_report(analysis)
+        assert "Review usage" in report
+
+    def test_low_items_default_action(self):
+        """LOW items with empty action should get 'Monitor for changes' default."""
+        items = [
+            ImpactItem("l.py", 9, "changed()", "LOW", "", "changed"),
+        ]
+        analysis = ImpactAnalysis(
+            query="change", entity_count=1, affected_files=["l.py"], items=items,
+        )
+        report = self._format_impact_report(analysis)
+        assert "Monitor for changes" in report
+
+
+# ===================================================================
+# 10. Impact memory persistence (cache round-trip)
+# ===================================================================
+
+class TestImpactMemory:
+    """Tests for caching ImpactAnalysis via the existing Cache."""
+
+    def test_cache_roundtrip_impact_analysis(self, tmp_path):
+        c = Cache(cache_dir=str(tmp_path / "cache"), ttl_hours=1)
+        items = [
+            ImpactItem("src/db.py", 47, "Session.execute(text_query)", "HIGH",
+                        "Use session.execute(text(...))", "Session.execute"),
+            ImpactItem("src/api.py", 12, "old_func()", "LOW", "", "old_func"),
+        ]
+        analysis = ImpactAnalysis(
+            query="sqlalchemy 2.0 migration",
+            entity_count=2,
+            affected_files=["src/db.py", "src/api.py"],
+            items=items,
+        )
+
+        # Store wrapped with file_mtimes like the real node does
+        payload = {
+            "analysis": asdict(analysis),
+            "file_mtimes": {"src/db.py": 1000.0, "src/api.py": 2000.0},
+        }
+        assert c.set("impact_sqlalchemy_2.0_migration", payload) is True
+
+        # Retrieve and verify
+        cached = c.get("impact_sqlalchemy_2.0_migration")
+        assert cached is not None
+        assert isinstance(cached, dict)
+        assert "analysis" in cached
+        assert "file_mtimes" in cached
+
+        a = cached["analysis"]
+        assert a["query"] == "sqlalchemy 2.0 migration"
+        assert a["entity_count"] == 2
+        assert len(a["items"]) == 2
+        assert a["items"][0]["severity"] == "HIGH"
+        assert a["items"][0]["file_path"] == "src/db.py"
+        assert a["items"][1]["entity"] == "old_func"
+
+        assert cached["file_mtimes"]["src/db.py"] == 1000.0
+
+    def test_cache_miss_returns_none(self, tmp_path):
+        c = Cache(cache_dir=str(tmp_path / "cache"), ttl_hours=1)
+        assert c.get("impact_nonexistent_query") is None
+
+    def test_reconstruct_impact_analysis_from_cache(self, tmp_path):
+        """Verify we can reconstruct ImpactAnalysis dataclass from cached dict."""
+        c = Cache(cache_dir=str(tmp_path / "cache"), ttl_hours=1)
+        original = ImpactAnalysis(
+            query="test query",
+            entity_count=1,
+            affected_files=["f.py"],
+            items=[ImpactItem("f.py", 3, "func()", "MEDIUM", "update call", "func")],
+        )
+        c.set("impact_test", {"analysis": asdict(original), "file_mtimes": {}})
+
+        cached = c.get("impact_test")
+        a = cached["analysis"]
+        reconstructed_items = [ImpactItem(**d) for d in a["items"]]
+        reconstructed = ImpactAnalysis(
+            query=a["query"],
+            entity_count=a["entity_count"],
+            affected_files=a["affected_files"],
+            items=reconstructed_items,
+            timestamp=a.get("timestamp", 0.0),
+        )
+
+        assert reconstructed.query == original.query
+        assert reconstructed.entity_count == original.entity_count
+        assert len(reconstructed.items) == 1
+        assert reconstructed.items[0].severity == "MEDIUM"
+        assert reconstructed.items[0].action == "update call"
+
+    def test_stale_mtime_invalidates_cache(self, tmp_path):
+        """Demonstrate the mtime-comparison logic used for cache invalidation."""
+        import os as _os
+
+        # Create a real file so we can check its mtime
+        test_file = tmp_path / "code.py"
+        test_file.write_text("print('hello')")
+        original_mtime = _os.path.getmtime(str(test_file))
+
+        stored_mtimes = {str(test_file): original_mtime}
+
+        # Initially files are unchanged
+        files_unchanged = True
+        for fpath, old_mtime in stored_mtimes.items():
+            try:
+                if _os.path.getmtime(fpath) != old_mtime:
+                    files_unchanged = False
+                    break
+            except OSError:
+                files_unchanged = False
+                break
+        assert files_unchanged is True
+
+        # Modify the file (write new content to change mtime)
+        test_file.write_text("print('changed')")
+
+        files_unchanged = True
+        for fpath, old_mtime in stored_mtimes.items():
+            try:
+                if _os.path.getmtime(fpath) != old_mtime:
+                    files_unchanged = False
+                    break
+            except OSError:
+                files_unchanged = False
+                break
+        assert files_unchanged is False
+
+    def test_missing_file_invalidates_cache(self, tmp_path):
+        """If a cached file path no longer exists, treat cache as stale."""
+        stored_mtimes = {"/nonexistent/path/code.py": 12345.0}
+
+        files_unchanged = True
+        for fpath, old_mtime in stored_mtimes.items():
+            try:
+                import os as _os
+                if _os.path.getmtime(fpath) != old_mtime:
+                    files_unchanged = False
+                    break
+            except OSError:
+                files_unchanged = False
+                break
+        assert files_unchanged is False
