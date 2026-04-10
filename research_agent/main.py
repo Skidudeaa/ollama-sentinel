@@ -2,11 +2,9 @@
 #!/usr/bin/env python
 from __future__ import annotations
 import os
-import sys
-import argparse
 import logging
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
 import click
 

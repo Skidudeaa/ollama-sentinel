@@ -15,7 +15,6 @@ from langchain_community.utilities import SerpAPIWrapper
 from duckduckgo_search import DDGS
 import requests
 from pydantic import BaseModel, Field, ValidationError
-from langchain_community.utilities import SerpAPIWrapper
 from research_agent.utils.cache import Cache
 from research_agent.core.logging import get_logger
 

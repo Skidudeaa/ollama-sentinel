@@ -1,8 +1,7 @@
 # research_agent/utils/extraction.py
 from __future__ import annotations
 import re
-import logging
-from typing import Optional, Dict, List, Any, Tuple
+from typing import Optional, Tuple
 from html import unescape
 from bs4 import BeautifulSoup
 import trafilatura

@@ -11,7 +11,6 @@ import pathspec
 from watchfiles import awatch, Change
 
 from .config import load_config
-from .models import SentinelConfig
 from .processor import FileChange, FileProcessor
 
 log = logging.getLogger("ollama-sentinel")

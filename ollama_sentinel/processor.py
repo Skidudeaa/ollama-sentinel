@@ -5,11 +5,9 @@ import asyncio
 import datetime
 import json
 import logging
-import os
 import pathlib
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional
 
 import git
 import httpx

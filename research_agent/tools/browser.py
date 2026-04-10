@@ -1,22 +1,12 @@
 # research_agent/tools/browser.py
 from __future__ import annotations
-import warnings
-from bs4 import XMLParsedAsHTMLWarning
-
-warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 import asyncio
-import time
-import logging
-import re
-import urllib.parse
-from typing import List, Dict, Any, Optional, Tuple
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
-from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
-from bs4 import BeautifulSoup
-import trafilatura
-import justext
-from markdownify import markdownify
 import ipaddress
+import time
+import urllib.parse
+from typing import List, Optional, Tuple
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeoutError
 
 from research_agent.utils.cache import Cache
 from research_agent.core.models import ContentItem

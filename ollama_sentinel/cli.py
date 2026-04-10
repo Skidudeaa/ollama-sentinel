@@ -4,8 +4,6 @@ Command-line interface for Ollama Sentinel.
 import asyncio
 import logging
 import pathlib
-import sys
-from typing import Optional
 
 import typer
 import yaml
@@ -13,7 +11,7 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from . import __version__
-from .config import create_default_config, load_config
+from .config import create_default_config
 from .processor import FileChange
 from .watcher import FileSentinel
 from watchfiles import Change

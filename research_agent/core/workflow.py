@@ -1,12 +1,11 @@
 # research_agent/core/workflow.py
 from __future__ import annotations
-import logging
 import asyncio
-from typing import Dict, Any, List, Optional, Tuple, cast, TypedDict # Added TypedDict
+from typing import Dict, Any, List, Optional, Tuple, cast, TypedDict
 from contextlib import nullcontext
 
 from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph
 
 from research_agent.tools.search import SearchTool, SearchEngine
 from research_agent.tools.browser import BrowserTool

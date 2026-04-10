@@ -2,8 +2,7 @@
 from __future__ import annotations
 import json
 import os
-import time
-from typing import Any, Optional, Dict, Union
+from typing import Any, Optional, Dict
 import diskcache
 
 class Cache:
