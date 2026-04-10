@@ -1,5 +1,8 @@
 """Tests for OllamaClient and FileProcessor."""
+import datetime
+import json
 import pathlib
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -7,9 +10,13 @@ from pytest_httpx import HTTPXMock
 from tenacity import wait_none
 from watchfiles import Change
 
+from ollama_sentinel.config import create_default_config, load_config
 from ollama_sentinel.models import (
+    HistoryConfig,
     OllamaConfig,
     OllamaModelConfig,
+    OutputConfig,
+    OutputFormat,
     SentinelConfig,
     WatchConfig,
     ProcessingConfig,
