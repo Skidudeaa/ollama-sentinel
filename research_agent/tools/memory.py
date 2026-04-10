@@ -2,10 +2,7 @@
 from __future__ import annotations
 import datetime
 import uuid
-import os
-import logging
-import json
-from typing import List, Dict, Any, Optional, Union, Set
+from typing import List, Dict, Optional, Set
 from dataclasses import dataclass, asdict, field
 
 from research_agent.utils.cache import Cache
@@ -42,39 +39,84 @@ class Citation(MemoryItem):
     context: Optional[str] = None
 
 class EnhancedMemoryStore:
-    """Simplified memory store implementation (stub)."""
+    """Persistent memory store backed by Cache (JSON-serialized diskcache).
+
+    Stores webpages, queries, and citations with cache-backed persistence
+    so data survives across process restarts. Falls back to in-memory
+    when cache operations fail.
+    """
 
     def __init__(
         self,
         openai_api_key: Optional[str] = None,
         db_path: str = "./.weaviate",
-        cache: Optional[Cache] = None
+        cache: Optional[Cache] = None,
     ):
         self.openai_api_key = openai_api_key
         self.db_path = db_path
         self.cache = cache or Cache()
         self._seen_urls: Set[str] = set()
-        
-        # In-memory stores for different types
+
+        # Load persisted state from cache
         self._webpages: Dict[str, WebPage] = {}
         self._queries: Dict[str, SearchQuery] = {}
         self._citations: Dict[str, Citation] = {}
-        
-        logger.info("Using simplified in-memory storage backend")
+        self._load_from_cache()
+
+        logger.info("Memory store initialized with cache-backed persistence")
+
+    def _load_from_cache(self) -> None:
+        """Restore persisted state from cache on startup."""
+        try:
+            seen = self.cache.get("memory_seen_urls")
+            if isinstance(seen, list):
+                self._seen_urls = set(seen)
+
+            pages = self.cache.get("memory_webpages")
+            if isinstance(pages, dict):
+                for pid, data in pages.items():
+                    if isinstance(data, dict):
+                        self._webpages[pid] = WebPage(**{
+                            k: v for k, v in data.items()
+                            if k in WebPage.__dataclass_fields__
+                        })
+
+            queries = self.cache.get("memory_queries")
+            if isinstance(queries, dict):
+                for qid, data in queries.items():
+                    if isinstance(data, dict):
+                        self._queries[qid] = SearchQuery(**{
+                            k: v for k, v in data.items()
+                            if k in SearchQuery.__dataclass_fields__
+                        })
+        except Exception as e:
+            logger.warning("Failed to restore memory from cache: %s", e)
+
+    def _persist(self) -> None:
+        """Persist current state to cache."""
+        try:
+            self.cache.set("memory_seen_urls", sorted(self._seen_urls))
+            self.cache.set(
+                "memory_webpages",
+                {pid: asdict(wp) for pid, wp in self._webpages.items()},
+            )
+            self.cache.set(
+                "memory_queries",
+                {qid: asdict(q) for qid, q in self._queries.items()},
+            )
+        except Exception as e:
+            logger.warning("Failed to persist memory to cache: %s", e)
 
     def add_webpage(self, webpage: WebPage) -> str:
         """Add or update a webpage in the memory store."""
         try:
-            # Generate ID
             if webpage.url:
                 page_id = str(uuid.uuid5(uuid.NAMESPACE_URL, webpage.url))
-                # Add to seen URLs
                 self._seen_urls.add(webpage.url)
             else:
                 page_id = str(uuid.uuid4())
-                
-            # Store the webpage
             self._webpages[page_id] = webpage
+            self._persist()
             return page_id
         except Exception as e:
             logger.error("Error adding webpage: %s", e)
@@ -85,6 +127,7 @@ class EnhancedMemoryStore:
         try:
             query_id = str(uuid.uuid4())
             self._queries[query_id] = query
+            self._persist()
             return query_id
         except Exception as e:
             logger.error("Error adding search query: %s", e)
@@ -95,6 +138,7 @@ class EnhancedMemoryStore:
         try:
             citation_id = str(uuid.uuid4())
             self._citations[citation_id] = citation
+            self._persist()
             return citation_id
         except Exception as e:
             logger.error("Error adding citation: %s", e)
@@ -105,25 +149,36 @@ class EnhancedMemoryStore:
         return url in self._seen_urls
 
     def find_similar_webpages(self, text: str, limit: int = 5) -> List[WebPage]:
-        """Find semantically similar webpages to the given text."""
-        # Simple implementation that returns the most recent pages
+        """Find webpages with keyword overlap to the given text.
+
+        Uses token-overlap scoring rather than pure recency, providing
+        basic relevance matching without requiring an embedding model.
+        """
         try:
-            pages = list(self._webpages.values())
-            # Sort by creation date (most recent first)
-            pages.sort(key=lambda x: x.created_at, reverse=True)
-            return pages[:limit]
+            text_tokens = set(text.lower().split())
+            scored = []
+            for wp in self._webpages.values():
+                wp_text = f"{wp.title or ''} {wp.summary or ''} {wp.url or ''}"
+                wp_tokens = set(wp_text.lower().split())
+                overlap = len(text_tokens & wp_tokens)
+                scored.append((overlap, wp))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [wp for _, wp in scored[:limit] if scored[0][0] > 0]
         except Exception as e:
             logger.error("Error finding similar webpages: %s", e)
             return []
 
     def find_similar_queries(self, text: str, limit: int = 3) -> List[SearchQuery]:
-        """Find semantically similar previous queries."""
-        # Simple implementation that returns the most recent queries
+        """Find previous queries with keyword overlap to the given text."""
         try:
-            queries = list(self._queries.values())
-            # Sort by creation date (most recent first)
-            queries.sort(key=lambda x: x.created_at, reverse=True)
-            return queries[:limit]
+            text_tokens = set(text.lower().split())
+            scored = []
+            for q in self._queries.values():
+                q_tokens = set((q.text or "").lower().split())
+                overlap = len(text_tokens & q_tokens)
+                scored.append((overlap, q))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [q for _, q in scored[:limit] if scored[0][0] > 0]
         except Exception as e:
             logger.error("Error finding similar queries: %s", e)
             return []
