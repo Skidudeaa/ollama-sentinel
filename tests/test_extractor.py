@@ -263,3 +263,72 @@ class TestExtractFindingsErrors:
 
         assert results == []
         assert len(httpx_mock.get_requests()) == 5
+
+
+# ---------------------------------------------------------------------------
+# Regex fallback tests
+# ---------------------------------------------------------------------------
+
+from ollama_sentinel.extractor import _extract_from_markdown
+
+
+class TestRegexFallback:
+    """Tests for the regex-based markdown fallback extractor."""
+
+    def test_extracts_from_bullet_points_with_line_refs(self):
+        review = """## Code Review
+
+- **Line 42**: Null pointer dereference — `user` may be None here
+- **Line 15-20**: SQL injection vulnerability via string formatting
+- **Line 88**: Minor style issue — consider renaming variable
+"""
+        findings = _extract_from_markdown(review, "app.py")
+        assert len(findings) == 3
+        assert findings[0].line_start == 42
+        assert findings[0].file_path == "app.py"
+        assert findings[1].line_start == 15
+        assert findings[1].line_end == 20
+        assert findings[1].category == "security"
+
+    def test_extracts_from_numbered_list(self):
+        review = """1. Line 10: Bug — off-by-one error in loop condition
+2. Line 30: Performance issue — this runs in O(n^2)
+3. No line reference here, should be skipped
+"""
+        findings = _extract_from_markdown(review, "x.py")
+        assert len(findings) == 2
+        assert findings[0].line_start == 10
+        assert findings[0].category == "bug"
+        assert findings[1].category == "performance"
+
+    def test_no_line_references_returns_empty(self):
+        review = "This code looks great! No issues found."
+        findings = _extract_from_markdown(review, "clean.py")
+        assert findings == []
+
+    def test_severity_detection(self):
+        review = """- Line 5: Critical security vulnerability — SQL injection
+- Line 10: Minor nit — trailing whitespace
+"""
+        findings = _extract_from_markdown(review, "a.py")
+        assert findings[0].severity == "critical"
+        assert findings[1].severity == "low"
+
+    async def test_fallback_used_on_malformed_json(self, ollama_config, httpx_mock: HTTPXMock):
+        """When LLM returns garbage, regex fallback extracts from original review."""
+        review_text = """## Review
+- Line 42: Bug — possible null pointer
+- Line 88: Style — rename this variable
+"""
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "Sorry, I can't produce JSON"}},
+        )
+        client = OllamaClient(ollama_config)
+        try:
+            results = await extract_findings(review_text, "app.py", client)
+        finally:
+            await client.close()
+        # Regex fallback should find the 2 items from the original review
+        assert len(results) == 2
+        assert results[0].line_start == 42

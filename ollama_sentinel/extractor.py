@@ -56,6 +56,92 @@ def _parse_finding(raw: dict, file_path: str) -> Finding | None:
         return None
 
 
+_LINE_REF_PATTERN = re.compile(
+    r"(?:line|lines?)\s*(\d+)(?:\s*[-–]\s*(\d+))?",
+    re.IGNORECASE,
+)
+
+_SEVERITY_KEYWORDS = {
+    "critical": "critical",
+    "severe": "critical",
+    "high": "high",
+    "important": "high",
+    "medium": "medium",
+    "moderate": "medium",
+    "low": "low",
+    "minor": "low",
+    "style": "low",
+    "nit": "low",
+}
+
+_CATEGORY_KEYWORDS = {
+    "bug": "bug",
+    "error": "bug",
+    "null": "bug",
+    "crash": "bug",
+    "security": "security",
+    "vulnerability": "security",
+    "injection": "security",
+    "xss": "security",
+    "performance": "performance",
+    "slow": "performance",
+    "memory": "performance",
+    "style": "style",
+    "naming": "style",
+    "readability": "style",
+    "design": "design",
+    "refactor": "design",
+    "architecture": "design",
+}
+
+
+def _extract_from_markdown(review_text: str, file_path: str) -> List[Finding]:
+    """Regex fallback: extract findings from review markdown when LLM JSON fails.
+
+    Looks for bullet points or numbered items that reference line numbers.
+    """
+    findings: List[Finding] = []
+    # Split into bullet/numbered items
+    items = re.split(r"\n\s*(?:[-*]|\d+\.)\s+", review_text)
+
+    for item in items:
+        item = item.strip()
+        if not item or len(item) < 15:
+            continue
+
+        line_match = _LINE_REF_PATTERN.search(item)
+        if not line_match:
+            continue
+
+        line_start = int(line_match.group(1))
+        line_end = int(line_match.group(2)) if line_match.group(2) else line_start
+
+        item_lower = item.lower()
+        severity = "medium"
+        for kw, sev in _SEVERITY_KEYWORDS.items():
+            if kw in item_lower:
+                severity = sev
+                break
+
+        category = "style"
+        for kw, cat in _CATEGORY_KEYWORDS.items():
+            if kw in item_lower:
+                category = cat
+                break
+
+        description = item[:200].replace("\n", " ").strip()
+        findings.append(Finding(
+            file_path=file_path,
+            line_start=line_start,
+            line_end=line_end,
+            category=category,
+            severity=severity,
+            description=description,
+        ))
+
+    return findings
+
+
 async def extract_findings(
     review_text: str,
     file_path: str,
@@ -64,38 +150,31 @@ async def extract_findings(
 ) -> List[Finding]:
     """Extract structured findings from free-form review text.
 
-    Sends a focused extraction prompt to the Ollama model and parses the
-    JSON response into Finding objects.
+    Primary: sends a focused extraction prompt to the Ollama model and parses
+    the JSON response. Fallback: regex-based extraction from the original
+    review markdown when the LLM doesn't produce valid JSON.
 
-    Args:
-        review_text: The raw review markdown/text to extract from.
-        file_path: Source file path to attach to each Finding.
-        ollama_client: An initialised OllamaClient instance.
-        model_role: Ollama model role to use for extraction.
-
-    Returns:
-        A list of Finding objects.  Returns an empty list on any error
-        (malformed JSON, network failure, etc.).
+    Returns an empty list on complete failure (never raises).
     """
     prompt = _EXTRACTION_PROMPT.format(review_text=review_text)
 
     try:
         response = await ollama_client.generate_review(model_role, prompt)
     except Exception:
-        log.warning("Ollama API error during finding extraction; returning empty list")
-        return []
+        log.warning("Ollama API error during finding extraction; trying regex fallback")
+        return _extract_from_markdown(review_text, file_path)
 
     cleaned = _strip_code_fences(response)
 
     try:
         parsed = json.loads(cleaned)
     except (json.JSONDecodeError, TypeError):
-        log.warning("Malformed JSON from extraction model; returning empty list")
-        return []
+        log.warning("Malformed JSON from extraction model; trying regex fallback")
+        return _extract_from_markdown(review_text, file_path)
 
     if not isinstance(parsed, list):
-        log.warning("Extraction response is not a JSON array; returning empty list")
-        return []
+        log.warning("Extraction response is not a JSON array; trying regex fallback")
+        return _extract_from_markdown(review_text, file_path)
 
     findings: List[Finding] = []
     for entry in parsed:
@@ -104,5 +183,12 @@ async def extract_findings(
             findings.append(finding)
         else:
             log.warning("Skipping malformed finding entry: %s", entry)
+
+    # If LLM produced empty results but review has content, try regex too
+    if not findings and len(review_text) > 100:
+        regex_findings = _extract_from_markdown(review_text, file_path)
+        if regex_findings:
+            log.info("LLM extraction empty; regex fallback found %d findings", len(regex_findings))
+            return regex_findings
 
     return findings
