@@ -11,6 +11,7 @@ import pathspec
 from watchfiles import awatch, Change
 
 from .config import load_config
+from .models import SentinelConfig
 from .processor import FileChange, FileProcessor
 
 log = logging.getLogger("ollama-sentinel")
@@ -27,10 +28,12 @@ class FileSentinel:
             config_path: Path to configuration file
         """
         self.config_path = config_path
-        self.config = load_config(config_path)
-        
-        if not self.config:
+        loaded = load_config(config_path)
+
+        if not loaded:
             raise ValueError(f"Failed to load configuration from {config_path}")
+
+        self.config: SentinelConfig = loaded
         
         self.processor = FileProcessor(self.config)
         self.pending_changes: Set[FileChange] = set()
