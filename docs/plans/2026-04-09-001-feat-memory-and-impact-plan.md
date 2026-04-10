@@ -1,7 +1,7 @@
 ---
 title: "feat: Add cumulative violation memory and dependency-aware impact mapping"
 type: feat
-status: active
+status: completed
 date: 2026-04-09
 ---
 
@@ -384,7 +384,7 @@ analyze → search → read → code_search → impact_scan → synthesize → v
 
 ---
 
-- [ ] **Unit 8: `impact_scan` workflow node**
+- [x] **Unit 8: `impact_scan` workflow node**
 
 **Goal:** Add a new workflow node that combines web research results with AST-based code analysis to produce structured impact analysis.
 
@@ -422,7 +422,7 @@ analyze → search → read → code_search → impact_scan → synthesize → v
 
 ---
 
-- [ ] **Unit 9: Structured impact output in synthesis**
+- [x] **Unit 9: Structured impact output in synthesis**
 
 **Goal:** When impact analysis is available, format the synthesis output as a structured impact report instead of a narrative essay.
 
@@ -455,7 +455,7 @@ analyze → search → read → code_search → impact_scan → synthesize → v
 
 ---
 
-- [ ] **Unit 10: Impact memory persistence**
+- [x] **Unit 10: Impact memory persistence**
 
 **Goal:** Persist past impact analyses so repeated queries about the same library reuse prior results for files that haven't changed.
 
