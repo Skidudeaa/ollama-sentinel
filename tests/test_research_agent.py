@@ -15,7 +15,9 @@ import pytest
 # ---------------------------------------------------------------------------
 # Tier 1 — always importable (verified: models, cache, config)
 # ---------------------------------------------------------------------------
-from research_agent.core.models import ContentItem, ResearchSession, ResearchStep
+from research_agent.core.models import (
+    ContentItem, ImpactAnalysis, ImpactItem, ResearchSession, ResearchStep,
+)
 from research_agent.utils.cache import Cache
 from research_agent.core.config import Config
 
@@ -648,3 +650,69 @@ class TestVerifyRouterLogic:
         config = {"agent": {"max_iterations": 3}}
         # 16 steps, limit is 15, 16 <= 15 is False → finalize
         assert self.verify_router(state, config) == "finalize"
+
+
+# ===================================================================
+# 7. ImpactItem and ImpactAnalysis data models
+# ===================================================================
+
+class TestImpactModels:
+    """Tests for the impact analysis data models."""
+
+    def test_impact_item_construct(self):
+        item = ImpactItem(
+            file_path="src/db.py",
+            line_number=47,
+            pattern="Session.execute(text_query)",
+            severity="HIGH",
+            action="Use session.execute(text(...))",
+            entity="Session.execute",
+        )
+        assert item.file_path == "src/db.py"
+        assert item.severity == "HIGH"
+        assert item.entity == "Session.execute"
+
+    def test_impact_analysis_construct(self):
+        items = [
+            ImpactItem("a.py", 10, "old_func()", "HIGH", "Use new_func()", "old_func"),
+            ImpactItem("b.py", 20, "old_func()", "MEDIUM", "Consider new_func()", "old_func"),
+        ]
+        analysis = ImpactAnalysis(
+            query="library 2.0 migration",
+            entity_count=1,
+            affected_files=["a.py", "b.py"],
+            items=items,
+        )
+        assert analysis.query == "library 2.0 migration"
+        assert analysis.entity_count == 1
+        assert len(analysis.items) == 2
+        assert len(analysis.affected_files) == 2
+        assert analysis.timestamp > 0
+
+    def test_impact_analysis_empty_items(self):
+        analysis = ImpactAnalysis(
+            query="no impact query",
+            entity_count=0,
+            affected_files=[],
+        )
+        assert analysis.items == []
+        assert analysis.affected_files == []
+
+    def test_impact_item_serializes_to_dict(self):
+        item = ImpactItem("x.py", 5, "code", "LOW", "fix it", "entity")
+        d = asdict(item)
+        assert d["file_path"] == "x.py"
+        assert d["line_number"] == 5
+        assert d["severity"] == "LOW"
+
+    def test_impact_analysis_serializes_to_dict(self):
+        analysis = ImpactAnalysis(
+            query="q",
+            entity_count=0,
+            affected_files=["a.py"],
+            items=[ImpactItem("a.py", 1, "p", "HIGH", "a", "e")],
+        )
+        d = asdict(analysis)
+        assert d["query"] == "q"
+        assert len(d["items"]) == 1
+        assert d["items"][0]["file_path"] == "a.py"

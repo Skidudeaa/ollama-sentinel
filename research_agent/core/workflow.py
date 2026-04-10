@@ -14,7 +14,7 @@ from research_agent.tools.memory import EnhancedMemoryStore, WebPage, SearchQuer
 from research_agent.tools.synthesis import SynthesisTool
 from research_agent.tools.verification import VerificationTool
 from research_agent.utils.cache import Cache
-from research_agent.core.models import ResearchSession, ContentItem
+from research_agent.core.models import ResearchSession, ContentItem, ImpactAnalysis
 from research_agent.tools.search import SearchResult
 from research_agent.core.logging import get_logger
 
@@ -32,6 +32,7 @@ class AgentState(TypedDict):
     verification: Optional[Any] # Replace Any with the actual type of verification_result if known (e.g., a Pydantic model)
     refined_queries: Optional[List[str]]
     final_answer: Optional[str]
+    impact_analysis: Optional[ImpactAnalysis]
 
 def build_workflow(
     config: Dict[str, Any],

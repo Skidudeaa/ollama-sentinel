@@ -110,6 +110,12 @@ class NotificationsConfig(BaseModel):
     url: Optional[str] = None
 
 
+class MemoryConfig(BaseModel):
+    """Configuration for violation memory."""
+    enabled: bool = True
+    db_path: str = ".ollama_reviews/memory.db"
+
+
 class SentinelConfig(BaseModel):
     """Main application configuration."""
     watch: WatchConfig
@@ -117,3 +123,4 @@ class SentinelConfig(BaseModel):
     processing: ProcessingConfig = ProcessingConfig()
     output: OutputConfig = OutputConfig()
     notifications: NotificationsConfig = NotificationsConfig()
+    memory: MemoryConfig = MemoryConfig()

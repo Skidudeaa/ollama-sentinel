@@ -94,3 +94,24 @@ class ResearchSession:
         if self.end_time:
             return self.end_time - self.start_time
         return time.time() - self.start_time
+
+
+@dataclass
+class ImpactItem:
+    """A single code location affected by a library change, CVE, or API migration."""
+    file_path: str
+    line_number: int
+    pattern: str  # the code snippet that matches
+    severity: str  # "HIGH", "MEDIUM", "LOW"
+    action: str  # suggested migration or fix
+    entity: str  # the library entity that's affected (e.g., "Session.execute")
+
+
+@dataclass
+class ImpactAnalysis:
+    """Structured impact analysis result for a research query."""
+    query: str
+    entity_count: int
+    affected_files: List[str]
+    items: List[ImpactItem] = field(default_factory=list)
+    timestamp: float = field(default_factory=time.time)
