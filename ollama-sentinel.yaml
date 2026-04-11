@@ -34,3 +34,6 @@ output:
   history:
     enabled: true
     max_versions: 5
+memory:
+  enabled: true
+  db_path: .ollama_reviews/memory.db

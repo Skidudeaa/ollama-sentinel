@@ -100,6 +100,7 @@ class ResearchAgent:
             "verification": None,
             "refined_queries": None,
             "final_answer": None,
+            "impact_analysis": None,
         }
         
         # Execute workflow

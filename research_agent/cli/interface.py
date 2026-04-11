@@ -332,13 +332,13 @@ class EnhancedCLI:
                         self.console.print("[red]Invalid history reference[/red]")
                         continue
                 
-                # Execute research query
-                session = ResearchSession(query=query)
-                
-                # Start research in background and display progress
-                research_task = self.agent.research(query)
-                result = self._display_research_progress(research_task)
-                
+                # Execute research query (synchronous - returns the finalized session)
+                if self.enable_rich:
+                    self.console.print(f"[dim]Researching: {query}...[/dim]")
+                else:
+                    print(f"Researching: {query}...")
+                result = self.agent.research(query)
+
                 # Display results
                 self._display_results(result)
                 
