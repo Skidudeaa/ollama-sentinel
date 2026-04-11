@@ -42,3 +42,12 @@ coverage.xml
 # Jupyter Notebook
 .ipynb_checkpoints
 .aider*
+
+# Claude Code auto-generated
+.claude/repo-map.md
+
+# Runtime data not belonging to this project
+/config/
+/config copy/
+/reviews
+/reviews copy

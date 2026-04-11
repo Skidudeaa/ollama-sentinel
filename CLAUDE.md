@@ -35,7 +35,7 @@ python -m research_agent.main setup
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v                    # 232 tests, <1 second
+pytest tests/ -v                    # 247 tests, <1 second
 pytest tests/ -k "security"         # run security-specific tests
 pytest tests/test_violation_db.py   # run one module's tests
 ```
@@ -126,6 +126,4 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 - Research agent requires `pip install -e ".[research]"` (heavy deps: langchain, playwright, llama-index). Not installed by default.
 - `impact_scan` node tested with mocked logic only -- needs integration test against real LangGraph compile with OpenAI key
 - `EnhancedMemoryStore.find_similar_*` uses token-overlap scoring, not embeddings. Good enough for keyword matching but won't find semantic similarity.
-- The `config/` directory at repo root contains unrelated codex artifacts (sqlite3, secret_key) -- should be gitignored or removed
-- `"ollama_sentinel copy/"`, `"config copy/"`, `"reviews copy"` are stale duplicates that should be deleted
-- Stale duplicate directories `cli/` and `core/` at root were deleted but the copy variants remain
+- `_archive/` holds superseded snapshots (`ollama_sentinel_pre_memory_snapshot/`, `research_agent_orphans/`). Do not import from it. See `_archive/README.md` for provenance.

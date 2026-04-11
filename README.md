@@ -51,7 +51,7 @@ python -m research_agent.main interactive
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v   # 232 tests, <1 second
+pytest tests/ -v   # 247 tests, <1 second
 ```
 
 ## License
