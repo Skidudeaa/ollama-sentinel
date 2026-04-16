@@ -241,3 +241,59 @@ class TestSentinelConfig:
         assert config.processing.max_concurrent_reviews == 3
         assert config.output.directory == ".ollama_reviews"
         assert config.notifications.enabled is False
+
+
+# ---------------------------------------------------------------------------
+# ContextBuilder config additions (Task 10)
+# ---------------------------------------------------------------------------
+
+from ollama_sentinel.models import (  # noqa: E402
+    EmbeddingConfig,
+    MemoryConfig,
+    ProcessingConfig,
+)
+
+
+class TestEmbeddingConfig:
+    def test_defaults(self):
+        cfg = EmbeddingConfig()
+        assert cfg.enabled is True
+        assert cfg.model == "nomic-embed-text"
+
+
+class TestOllamaModelConfigTokenFields:
+    def test_context_window_default(self):
+        cfg = OllamaModelConfig(name="m", system_prompt="p")
+        assert cfg.context_window == 8192
+        assert cfg.output_reserve_tokens == 2000
+
+
+class TestMemoryConfigSemanticFields:
+    def test_neighbor_k_and_semantic_recall_defaults(self):
+        cfg = MemoryConfig()
+        assert cfg.neighbor_k == 10
+        assert cfg.semantic_recall is True
+
+
+class TestProcessingConfigDeprecation:
+    def test_legacy_fields_are_accepted_and_warn_once(self, caplog):
+        # Reset the module-level flag so this test works in isolation.
+        import ollama_sentinel.models as models_module
+        models_module._PROCESSING_DEPRECATION_LOGGED = False
+
+        with caplog.at_level("WARNING"):
+            ProcessingConfig(max_chars_per_chunk=99, overlap_chars=7)
+        assert "deprecated" in caplog.text.lower() or "ignored" in caplog.text.lower()
+
+
+class TestSentinelConfigEmbeddingField:
+    def test_embedding_defaults_populate(self, tmp_path):
+        cfg = SentinelConfig(
+            watch=WatchConfig(directory=str(tmp_path)),
+            ollama=OllamaConfig(
+                host="http://localhost:11434",
+                models={"default": OllamaModelConfig(name="m", system_prompt="p")},
+            ),
+        )
+        assert isinstance(cfg.embedding, EmbeddingConfig)
+        assert cfg.embedding.enabled is True

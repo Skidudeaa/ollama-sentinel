@@ -1,12 +1,17 @@
 """
 Data models for Ollama Sentinel configuration.
 """
+import logging
 from enum import Enum
 from typing import Dict, List, Optional
 
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
+
+log = logging.getLogger("ollama-sentinel")
+
+_PROCESSING_DEPRECATION_LOGGED = False
 
 
 class ModelRole(str, Enum):
@@ -31,6 +36,8 @@ class OllamaModelConfig(BaseModel):
     temperature: float = 0.1
     top_p: float = 0.9
     max_tokens: Optional[int] = None
+    context_window: int = 8192
+    output_reserve_tokens: int = 2000
 
 
 class OllamaConfig(BaseModel):
@@ -69,11 +76,28 @@ class WatchConfig(BaseModel):
 
 class ProcessingConfig(BaseModel):
     """Configuration for file processing."""
-    max_chars_per_chunk: int = 12000
-    overlap_chars: int = 500
     max_concurrent_reviews: int = 3
     max_concurrent_chunks_per_file: int = 2
     git_diff_mode: bool = False
+    # Legacy fields — kept as declared for back-compat; deprecated in favor of
+    # OllamaModelConfig.context_window. Remove when no callers reference them.
+    max_chars_per_chunk: int = 12000
+    overlap_chars: int = 500
+
+    @model_validator(mode="after")
+    def _warn_legacy_fields(self):
+        global _PROCESSING_DEPRECATION_LOGGED
+        # A deprecation warning fires when non-default values are set for these fields.
+        if (self.max_chars_per_chunk != 12000 or self.overlap_chars != 500):
+            if not _PROCESSING_DEPRECATION_LOGGED:
+                log.warning(
+                    "ProcessingConfig.max_chars_per_chunk and overlap_chars are "
+                    "deprecated; chunk sizing now derives from "
+                    "OllamaModelConfig.context_window. Remove these fields "
+                    "from your YAML to silence this warning."
+                )
+                _PROCESSING_DEPRECATION_LOGGED = True
+        return self
 
 
 class HistoryConfig(BaseModel):
@@ -110,10 +134,18 @@ class NotificationsConfig(BaseModel):
     url: Optional[str] = None
 
 
+class EmbeddingConfig(BaseModel):
+    """Configuration for the Ollama embedding backend."""
+    enabled: bool = True
+    model: str = "nomic-embed-text"
+
+
 class MemoryConfig(BaseModel):
     """Configuration for violation memory."""
     enabled: bool = True
     db_path: str = ".ollama_reviews/memory.db"
+    neighbor_k: int = 10
+    semantic_recall: bool = True
 
 
 class SentinelConfig(BaseModel):
@@ -124,3 +156,4 @@ class SentinelConfig(BaseModel):
     output: OutputConfig = OutputConfig()
     notifications: NotificationsConfig = NotificationsConfig()
     memory: MemoryConfig = MemoryConfig()
+    embedding: EmbeddingConfig = EmbeddingConfig()
