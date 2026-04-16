@@ -103,6 +103,27 @@ class OllamaClient:
             raise  # Re-raise to trigger retry
 
 
+class _DiskcacheAdapter:
+    """Adapts diskcache.Cache to the _CacheLike Protocol used by OllamaEmbedder.
+
+    OllamaEmbedder calls .set(key, value, ttl=...); diskcache calls it .set(key, value, expire=...).
+    """
+
+    def __init__(self, path: str):
+        import diskcache
+        self._cache = diskcache.Cache(path)
+
+    def get(self, key):
+        return self._cache.get(key)
+
+    def set(self, key, value, ttl=None):
+        self._cache.set(key, value, expire=ttl)
+        return True
+
+    def close(self):
+        self._cache.close()
+
+
 class FileProcessor:
     """Processes file changes and generates reviews."""
 
@@ -129,8 +150,7 @@ class FileProcessor:
 
         if config.embedding.enabled and config.memory.semantic_recall:
             try:
-                from research_agent.utils.cache import Cache
-                self._cache = Cache(cache_dir=str(self.output_dir / ".embed_cache"))
+                self._cache = _DiskcacheAdapter(str(self.output_dir / ".embed_cache"))
             except Exception:
                 self._cache = None
             try:
@@ -164,6 +184,8 @@ class FileProcessor:
         await self.ollama_client.close()
         if self.embedder is not None:
             await self.embedder.close()
+        if self._cache is not None and hasattr(self._cache, "close"):
+            self._cache.close()
 
     def prepare_file_content(self, file_change: FileChange) -> None:
         """

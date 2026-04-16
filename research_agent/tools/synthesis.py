@@ -177,6 +177,9 @@ Assess your confidence in the final answer on a scale of 0-1.
             # The recipe is async; this method is sync to preserve the existing
             # LangGraph node contract. Run the coroutine on a fresh loop.
             import asyncio
+            # synthesize() is intentionally sync: the LangGraph node that calls it is a
+            # plain def. Do NOT call this method from within a running event loop — use
+            # an async wrapper or asyncio.run_coroutine_threadsafe() instead.
             loop = asyncio.new_event_loop()
             try:
                 asyncio.set_event_loop(loop)
