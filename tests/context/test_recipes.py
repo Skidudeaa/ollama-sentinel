@@ -1,5 +1,4 @@
 """Integration tests for the two recipes."""
-from ollama_sentinel.context.assembler import Priority
 from ollama_sentinel.context.recipes import build_review_context
 from ollama_sentinel.context.retrievers import NullRetriever
 from ollama_sentinel.context.tokens import TokenCounter
