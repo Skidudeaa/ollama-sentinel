@@ -5,7 +5,7 @@ import difflib
 import gzip
 import logging
 import pathlib
-from typing import List, Optional
+from typing import List
 
 log = logging.getLogger("ollama-sentinel")
 
