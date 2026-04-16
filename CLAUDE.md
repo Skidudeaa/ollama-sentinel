@@ -35,7 +35,7 @@ python -m research_agent.main setup
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v                    # 247 tests, <1 second
+pytest tests/ -v                    # ~278 tests, <2 seconds
 pytest tests/ -k "security"         # run security-specific tests
 pytest tests/test_violation_db.py   # run one module's tests
 ```
@@ -44,20 +44,25 @@ pytest tests/test_violation_db.py   # run one module's tests
 
 ## Architecture
 
-### Sentinel data flow (with violation memory)
+### Sentinel data flow (with violation memory + semantic recall)
 
 ```
 CLI (Typer) -> FileSentinel -> awatch loop (debounce)
                                  |
                            FileProcessor.generate_review()
                              |- prepare_file_content() via asyncio.to_thread
-                             |- ViolationDB.get_unresolved() -> prior violations
-                             |- format_prompt() with PRIOR UNRESOLVED ISSUES block
-                             |- chunk_content_by_lines() (line-aware, overlap)
+                             |- _get_ranked_prior_violations()
+                             |    semantic: ViolationDB.get_neighbors_by_similarity()
+                             |    fallback:  ViolationDB.get_unresolved(path)
+                             |- format_prompt() -> build_review_context() recipe
+                             |    MUST_FIT: active file / diff block
+                             |    OPTIONAL: PRIOR UNRESOLVED (retriever-ranked)
+                             |- chunk_content() -> chunk_by_lines (token-aware)
                              |- OllamaClient.generate_review() (httpx, tenacity retry)
                                  |
                            extract_findings() (LLM JSON + regex fallback)
-                             |- ViolationDB.persist_findings() (SQLite upsert)
+                             |- ViolationDB.persist_findings() (SQLite upsert,
+                                populates embed_text for semantic recall)
                                  |
                            FileProcessor.save_review()
                              |- versioned output with history cleanup
@@ -80,12 +85,17 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 | Module | Purpose |
 |--------|---------|
-| `ollama_sentinel/processor.py` | FileProcessor, OllamaClient, prompt formatting, review generation |
-| `ollama_sentinel/violation_db.py` | SQLite-backed Finding persistence with upsert and occurrence counting |
+| `ollama_sentinel/processor.py` | FileProcessor, OllamaClient, async prompt formatting via recipe, review generation |
+| `ollama_sentinel/violation_db.py` | SQLite-backed Finding persistence with upsert, `embed_text` column, and `get_neighbors_by_similarity` |
 | `ollama_sentinel/extractor.py` | LLM JSON extraction + regex fallback for parsing review findings |
 | `ollama_sentinel/watcher.py` | FileSentinel, file watching, ignore logic, pipeline orchestration |
-| `ollama_sentinel/models.py` | Pydantic v2 config models with validators (host, output dir, memory) |
+| `ollama_sentinel/models.py` | Pydantic v2 config models: Ollama/Embedding/Memory/Processing with validators |
 | `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report |
+| `ollama_sentinel/context/assembler.py` | `Section` / `Priority` / `ContextItem` dataclasses + `assemble()` + `chunk_by_lines` — pure, token-budgeted |
+| `ollama_sentinel/context/tokens.py` | `TokenCounter` (tiktoken `cl100k_base` with char-based fallback) |
+| `ollama_sentinel/context/embeddings.py` | `OllamaEmbedder` — async `/api/embeddings` client, cache-backed, `EmbeddingUnavailable` on failure |
+| `ollama_sentinel/context/retrievers.py` | `NullRetriever`, `SemanticRetriever` (cosine, pure Python) |
+| `ollama_sentinel/context/recipes.py` | `build_review_context`, `build_research_context` — named recipes consumed by sentinel and research agent |
 | `research_agent/core/workflow.py` | LangGraph StateGraph with all nodes including impact_scan |
 | `research_agent/tools/import_resolver.py` | AST-based Python import graph resolver |
 | `research_agent/tools/synthesis.py` | Answer synthesis with structured impact report output |
@@ -125,5 +135,6 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 - Research agent requires `pip install -e ".[research]"` (heavy deps: langchain, playwright, llama-index). Not installed by default.
 - `impact_scan` node tested with mocked logic only -- needs integration test against real LangGraph compile with OpenAI key
-- `EnhancedMemoryStore.find_similar_*` uses token-overlap scoring, not embeddings. Good enough for keyword matching but won't find semantic similarity.
+- `ollama-sentinel run` requires `ollama pull nomic-embed-text` once on first use (or set `memory.semantic_recall: false` to fall back to the legacy exact-path recall).
+- `EnhancedMemoryStore.find_similar_*` (research agent) still uses token-overlap scoring. `ViolationDB` now has real semantic recall via `get_neighbors_by_similarity`; the `EnhancedMemoryStore` upgrade is deferred as optional Phase 9 follow-up of the ContextBuilder plan.
 - `_archive/` holds superseded snapshots (`ollama_sentinel_pre_memory_snapshot/`, `research_agent_orphans/`). Do not import from it. See `_archive/README.md` for provenance.
