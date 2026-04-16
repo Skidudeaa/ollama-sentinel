@@ -76,3 +76,27 @@ class TestCreateDefaultConfig:
         config = create_default_config(".", "my_reviews")
         patterns = config["watch"]["ignore_patterns"]
         assert any("my_reviews" in p for p in patterns)
+
+    def test_emits_memory_section(self):
+        config = create_default_config(".", "my_reviews")
+        assert "memory" in config
+        assert config["memory"]["semantic_recall"] is True
+        assert config["memory"]["neighbor_k"] == 10
+        assert "my_reviews" in config["memory"]["db_path"]
+
+    def test_emits_embedding_section(self):
+        config = create_default_config(".")
+        assert "embedding" in config
+        assert config["embedding"]["model"] == "nomic-embed-text"
+        assert config["embedding"]["enabled"] is True
+
+    def test_default_model_has_context_window(self):
+        config = create_default_config(".")
+        m = config["ollama"]["models"]["default"]
+        assert m["context_window"] == 8192
+        assert m["output_reserve_tokens"] == 2000
+
+    def test_processing_drops_deprecated_char_fields(self):
+        config = create_default_config(".")
+        assert "max_chars_per_chunk" not in config["processing"]
+        assert "overlap_chars" not in config["processing"]

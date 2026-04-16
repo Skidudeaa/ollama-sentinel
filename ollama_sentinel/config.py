@@ -75,16 +75,16 @@ def create_default_config(directory: str, output_dir: str = ".ollama_reviews") -
                         "small refactors that improve readability and performance. "
                         "Respond in GitHub-flavored markdown. "
                         "If the file is auto-generated or purely data, say 'No actionable feedback.'"
-                    )
+                    ),
+                    "context_window": 8192,
+                    "output_reserve_tokens": 2000,
                 }
             }
         },
         "processing": {
-            "max_chars_per_chunk": 12000,
-            "overlap_chars": 500,
             "max_concurrent_reviews": 3,
             "max_concurrent_chunks_per_file": 2,
-            "git_diff_mode": False
+            "git_diff_mode": False,
         },
         "output": {
             "directory": output_dir,
@@ -94,7 +94,17 @@ def create_default_config(directory: str, output_dir: str = ".ollama_reviews") -
             "diff_based_history": False,
             "history": {
                 "enabled": True,
-                "max_versions": 5
+                "max_versions": 5,
             }
-        }
+        },
+        "memory": {
+            "enabled": True,
+            "db_path": f"{output_dir}/memory.db",
+            "neighbor_k": 10,
+            "semantic_recall": True,
+        },
+        "embedding": {
+            "enabled": True,
+            "model": "nomic-embed-text",
+        },
     }
