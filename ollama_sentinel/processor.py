@@ -107,6 +107,14 @@ class _DiskcacheAdapter:
     """Adapts diskcache.Cache to the _CacheLike Protocol used by OllamaEmbedder.
 
     OllamaEmbedder calls .set(key, value, ttl=...); diskcache calls it .set(key, value, expire=...).
+
+    Note on serialization: diskcache uses pickle by default. This deviates from
+    the project's "Cache uses JSON serialization" security guarantee, which
+    exists to prevent pickle deserialization attacks on content fetched from
+    untrusted web sources. That guarantee is still honored in
+    research_agent.utils.cache.Cache. Here it's safe because embedding vectors
+    are generated locally from local-filesystem content and never crossed with
+    untrusted bytes.
     """
 
     def __init__(self, path: str):
