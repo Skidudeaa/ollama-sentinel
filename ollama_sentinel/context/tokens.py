@@ -6,7 +6,7 @@ Falls back to a char-based estimator if tiktoken cannot load.
 from __future__ import annotations
 
 import logging
-from typing import Literal, Optional
+from typing import Literal
 
 log = logging.getLogger("ollama-sentinel")
 
