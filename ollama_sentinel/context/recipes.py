@@ -87,3 +87,98 @@ async def build_review_context(
         counter=counter,
         query=content if content else diff,
     )
+
+
+def _format_impact_report(impact) -> str:
+    """Inline impact report formatter (duplicated from research_agent.tools.synthesis
+    to keep the context package independent of the research_agent package).
+
+    `impact` is duck-typed: it must have .items (iterable of objects with
+    .file_path, .line_number, .pattern, .severity, .action) and .affected_files.
+    """
+    items = getattr(impact, "items", []) or []
+    affected = getattr(impact, "affected_files", []) or []
+    high = [it for it in items if getattr(it, "severity", "") == "HIGH"]
+    medium = [it for it in items if getattr(it, "severity", "") == "MEDIUM"]
+    low = [it for it in items if getattr(it, "severity", "") == "LOW"]
+
+    lines: List[str] = [
+        f"{len(items)} call sites across {len(affected)} files",
+        "",
+    ]
+    if high:
+        lines.append("HIGH SEVERITY (breaking):")
+        for it in high:
+            lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {it.action}")
+        lines.append("")
+    if medium:
+        lines.append("MEDIUM SEVERITY (deprecated):")
+        for it in medium:
+            action = it.action or "Review usage"
+            lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
+        lines.append("")
+    if low:
+        lines.append("LOW SEVERITY (changed):")
+        for it in low:
+            action = it.action or "Monitor for changes"
+            lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _content_item_to_context_item(src) -> ContextItem:
+    """Convert a research_agent ContentItem (duck-typed) into a ContextItem."""
+    url = getattr(src, "url", "") or ""
+    title = getattr(src, "title", "") or ""
+    content = getattr(src, "content", "") or ""
+    text = f"SOURCE: {url}\n{title}\n---\n{content}"
+    if url:
+        key = f"source:{hashlib.sha1(url.encode('utf-8')).hexdigest()[:16]}"
+    else:
+        key = f"source:{hashlib.sha1(content[:256].encode('utf-8')).hexdigest()[:16]}"
+    return ContextItem(text=text, embed_key=key)
+
+
+async def build_research_context(
+    *,
+    query: str,
+    web_sources: Sequence,
+    code_results: Optional[str],
+    impact,  # Optional[ImpactAnalysis] — duck-typed to keep packages decoupled
+    counter: TokenCounter,
+    total_budget: int,
+    retriever: Retriever,
+) -> str:
+    """Research-agent recipe — replaces the 4000-char truncation in synthesis."""
+    sections: List[Section] = []
+
+    if impact is not None and getattr(impact, "items", None):
+        sections.append(Section(
+            name="IMPACT ANALYSIS",
+            items=[_format_impact_report(impact)],
+            priority=Priority.MUST_FIT,
+            soft_budget=int(total_budget * 0.30),
+            truncate="tail",
+        ))
+
+    if code_results:
+        sections.append(Section(
+            name="CODE CONTEXT",
+            items=[code_results],
+            priority=Priority.MUST_FIT,
+            soft_budget=int(total_budget * 0.20),
+            truncate="tail",
+        ))
+
+    if web_sources:
+        sections.append(Section(
+            name="WEB SOURCES",
+            items=[_content_item_to_context_item(s) for s in web_sources],
+            priority=Priority.OPTIONAL,
+            soft_budget=int(total_budget * 0.45),
+            retriever=retriever,
+        ))
+
+    return await assemble(
+        sections, total_budget=total_budget, counter=counter, query=query,
+    )

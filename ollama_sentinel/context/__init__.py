@@ -8,6 +8,7 @@ from ollama_sentinel.context.assembler import (
     chunk_by_lines,
 )
 from ollama_sentinel.context.embeddings import EmbeddingUnavailable, OllamaEmbedder
+from ollama_sentinel.context.recipes import build_research_context, build_review_context
 from ollama_sentinel.context.retrievers import NullRetriever, SemanticRetriever
 from ollama_sentinel.context.tokens import TokenCounter
 
@@ -22,5 +23,7 @@ __all__ = [
     "SemanticRetriever",
     "TokenCounter",
     "assemble",
+    "build_research_context",
+    "build_review_context",
     "chunk_by_lines",
 ]

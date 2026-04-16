@@ -72,3 +72,76 @@ class TestBuildReviewContext:
         assert "PRIOR UNRESOLVED ISSUES" in out
         assert "[high]" in out and "hardcoded password" in out
         assert "seen 3x since 2026-01-01" in out
+
+
+from dataclasses import dataclass, field
+from typing import List
+
+from ollama_sentinel.context.recipes import build_research_context
+
+
+@dataclass
+class _FakeContentItem:
+    url: str = ""
+    title: str = ""
+    content: str = ""
+
+
+@dataclass
+class _FakeImpactItem:
+    file_path: str = ""
+    line_number: int = 0
+    pattern: str = ""
+    severity: str = "LOW"
+    action: str = ""
+    entity: str = ""
+
+
+@dataclass
+class _FakeImpactAnalysis:
+    query: str = ""
+    entity_count: int = 0
+    affected_files: List[str] = field(default_factory=list)
+    items: List[_FakeImpactItem] = field(default_factory=list)
+    timestamp: float = 0.0
+
+
+class TestBuildResearchContext:
+    async def test_code_and_sources(self):
+        counter = TokenCounter()
+        sources = [
+            _FakeContentItem(url="http://a", title="A", content="alpha body"),
+            _FakeContentItem(url="http://b", title="B", content="beta body"),
+        ]
+        out = await build_research_context(
+            query="how do I migrate?",
+            web_sources=sources,
+            code_results="matched lines: ...",
+            impact=None,
+            counter=counter,
+            total_budget=1000,
+            retriever=NullRetriever(),
+        )
+        assert "CODE CONTEXT" in out and "matched lines" in out
+        assert "WEB SOURCES" in out and "http://a" in out and "alpha body" in out
+        assert "IMPACT ANALYSIS" not in out
+
+    async def test_impact_renders_first(self):
+        counter = TokenCounter()
+        impact = _FakeImpactAnalysis(
+            query="q",
+            entity_count=1,
+            affected_files=["a.py"],
+            items=[_FakeImpactItem(file_path="a.py", line_number=1, pattern="x", severity="HIGH", action="fix it")],
+        )
+        out = await build_research_context(
+            query="q",
+            web_sources=[],
+            code_results=None,
+            impact=impact,
+            counter=counter,
+            total_budget=1000,
+            retriever=NullRetriever(),
+        )
+        assert "IMPACT ANALYSIS" in out
+        assert "a.py:1" in out and "fix it" in out
