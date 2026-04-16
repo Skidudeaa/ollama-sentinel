@@ -44,53 +44,54 @@ def safe_read(path: pathlib.Path, watch_dir: pathlib.Path) -> str:
         return ""
 
 
+_CHUNK_BY_LINES_WARNED = False
+
+
 def chunk_content_by_lines(content: str, max_chars: int, overlap: int) -> List[str]:
+    """Deprecated: use ollama_sentinel.context.assembler.chunk_by_lines.
+
+    This shim preserves the old char-based API for legacy callers.
     """
-    Split content into chunks, trying to break at line boundaries.
-    
-    Args:
-        content: Text content to split
-        max_chars: Maximum characters per chunk
-        overlap: Number of characters to overlap between chunks
-        
-    Returns:
-        List of content chunks
-    """
+    global _CHUNK_BY_LINES_WARNED
+    if not _CHUNK_BY_LINES_WARNED:
+        log.warning(
+            "chunk_content_by_lines is deprecated; use "
+            "ollama_sentinel.context.assembler.chunk_by_lines."
+        )
+        _CHUNK_BY_LINES_WARNED = True
+
     if len(content) <= max_chars:
         return [content]
-    
+
     chunks = []
-    lines = content.splitlines(True)  # Keep line endings
+    lines = content.splitlines(True)
     current_chunk = []
     current_size = 0
-    
+
     for line in lines:
         line_size = len(line)
-        
+
         if current_size + line_size > max_chars and current_chunk:
-            # Join current chunk and add to results
             chunks.append("".join(current_chunk))
-            
-            # Calculate overlap: keep some lines from the end of the current chunk
+
             overlap_size = 0
             overlap_chunk = []
-            
+
             for prev_line in reversed(current_chunk):
                 if overlap_size + len(prev_line) > overlap:
                     break
                 overlap_chunk.insert(0, prev_line)
                 overlap_size += len(prev_line)
-            
+
             current_chunk = overlap_chunk
             current_size = overlap_size
-        
+
         current_chunk.append(line)
         current_size += line_size
-    
-    # Add the last chunk if not empty
+
     if current_chunk:
         chunks.append("".join(current_chunk))
-    
+
     return chunks
 
 

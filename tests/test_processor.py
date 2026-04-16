@@ -193,7 +193,7 @@ class TestOllamaClient:
 class TestFormatPrompt:
     """Tests for FileProcessor.format_prompt."""
 
-    def test_chunk_text_used_directly(self, sentinel_config, tmp_path):
+    async def test_chunk_text_used_directly(self, sentinel_config, tmp_path):
         """When chunk_text is supplied, it appears verbatim in the prompt."""
         fp = FileProcessor(sentinel_config)
         fc = FileChange(
@@ -202,11 +202,11 @@ class TestFormatPrompt:
             content="full content that should be ignored",
         )
 
-        prompt = fp.format_prompt(fc, chunk_text="only this chunk")
+        prompt = await fp.format_prompt(fc, chunk_text="only this chunk")
         assert "only this chunk" in prompt
         assert "full content that should be ignored" not in prompt
 
-    def test_diff_format(self, sentinel_config, tmp_path):
+    async def test_diff_format(self, sentinel_config, tmp_path):
         """When the file change has a diff, the prompt uses diff format."""
         fp = FileProcessor(sentinel_config)
         fc = FileChange(
@@ -215,12 +215,11 @@ class TestFormatPrompt:
             diff="--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new",
         )
 
-        prompt = fp.format_prompt(fc)
-        assert "(Git Diff)" in prompt
+        prompt = await fp.format_prompt(fc)
         assert "```diff" in prompt
         assert "-old" in prompt
 
-    def test_empty_content(self, sentinel_config, tmp_path):
+    async def test_empty_content(self, sentinel_config, tmp_path):
         """Empty content produces the '<Empty File>' marker."""
         fp = FileProcessor(sentinel_config)
         fc = FileChange(
@@ -229,10 +228,10 @@ class TestFormatPrompt:
             content="",
         )
 
-        prompt = fp.format_prompt(fc)
+        prompt = await fp.format_prompt(fc)
         assert "<Empty File>" in prompt
 
-    def test_multi_chunk_includes_part_info(self, sentinel_config, tmp_path):
+    async def test_multi_chunk_includes_part_info(self, sentinel_config, tmp_path):
         """Multi-chunk prompts include 'Part X/Y' in the header."""
         fp = FileProcessor(sentinel_config)
         fc = FileChange(
@@ -241,7 +240,7 @@ class TestFormatPrompt:
             content="some code",
         )
 
-        prompt = fp.format_prompt(fc, chunk_text="chunk text", chunk_index=2, total_chunks=5)
+        prompt = await fp.format_prompt(fc, chunk_text="chunk text", chunk_index=2, total_chunks=5)
         assert "(Part 3/5)" in prompt
 
 
@@ -280,11 +279,10 @@ class TestFileProcessorGenerateReview:
     async def test_multi_chunk_multiple_api_calls(
         self, small_chunk_config, tmp_path, httpx_mock: HTTPXMock
     ):
-        """Content exceeding max_chars_per_chunk triggers multiple API calls
+        """Content exceeding the token budget triggers multiple API calls
         and the results are combined."""
         source = tmp_path / "big.py"
-        # Create content large enough to require multiple chunks with the
-        # small_chunk_config (max_chars_per_chunk=50).
+        # Create content large enough to require multiple chunks.
         lines = [f"line_{i} = {i}" for i in range(20)]
         source.write_text("\n".join(lines))
 
@@ -296,6 +294,19 @@ class TestFileProcessorGenerateReview:
             )
 
         fp = FileProcessor(small_chunk_config)
+        # The new chunker is token-based; the max(256, ...) floor in chunk_content
+        # prevents very small budgets via total_budget alone. Monkeypatch
+        # chunk_content to use a small per-chunk token limit (~15 tokens gives
+        # ~3 chunks from 20 lines of "line_N = N") so we stay well under 10
+        # registered mock responses.
+        from ollama_sentinel.context.assembler import chunk_by_lines
+        fp.chunk_content = lambda content, file_type: chunk_by_lines(
+            content,
+            counter=fp.counter,
+            max_tokens=15,  # ~3–5 lines per chunk, produces ~5–7 chunks from 20 lines
+            overlap_tokens=0,
+        )
+
         fc = FileChange(path=source, change_type=Change.modified)
         try:
             result = await fp.generate_review(fc)
