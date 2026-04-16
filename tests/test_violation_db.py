@@ -196,3 +196,82 @@ class TestMarkResolved:
             assert db.get_unresolved("src/app.py") == []
         finally:
             db.close()
+
+
+class TestMigration:
+    def test_embed_text_column_added_on_init(self, tmp_path):
+        db_path = str(tmp_path / "v.db")
+        db = ViolationDB(db_path)
+        cur = db._conn.execute("PRAGMA table_info(findings)")
+        cols = {row[1] for row in cur.fetchall()}
+        assert "embed_text" in cols
+        db.close()
+
+    def test_migrate_is_idempotent(self, tmp_path):
+        db_path = str(tmp_path / "v.db")
+        db1 = ViolationDB(db_path)
+        db1.close()
+        # Second init should not raise.
+        db2 = ViolationDB(db_path)
+        cur = db2._conn.execute("PRAGMA table_info(findings)")
+        cols = {row[1] for row in cur.fetchall()}
+        assert "embed_text" in cols
+        db2.close()
+
+    def test_backfill_populates_embed_text_for_existing_rows(self, tmp_path):
+        db_path = str(tmp_path / "v.db")
+        # Simulate a pre-migration DB by manually creating the old schema.
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL,
+                line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                description TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                resolved INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute(
+            "INSERT INTO findings(file_path, line_start, line_end, category, severity, "
+            "description, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("a.py", 5, 5, "bug", "high", "null deref", "2026-01-01", "2026-01-01"),
+        )
+        conn.commit()
+        conn.close()
+
+        db = ViolationDB(db_path)
+        rows = db._conn.execute("SELECT embed_text FROM findings").fetchall()
+        assert rows[0][0] is not None
+        assert "null deref" in rows[0][0]
+        db.close()
+
+
+class TestGetAllUnresolved:
+    def test_returns_rows_across_files(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        db.persist_findings("a.py", [Finding("a.py", 1, 1, "bug", "low", "x")])
+        db.persist_findings("b.py", [Finding("b.py", 2, 2, "perf", "medium", "y")])
+        rows = db.get_all_unresolved()
+        files = {r["file_path"] for r in rows}
+        assert files == {"a.py", "b.py"}
+        db.close()
+
+
+class TestEmbedTextOnInsert:
+    def test_new_findings_have_embed_text(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        db.persist_findings("a.py", [
+            Finding("a.py", 10, 12, "security", "critical", "plaintext password"),
+        ])
+        row = db._conn.execute("SELECT embed_text FROM findings WHERE id=1").fetchone()
+        assert row[0] is not None
+        assert "plaintext password" in row[0]
+        assert "[critical]" in row[0]
+        db.close()

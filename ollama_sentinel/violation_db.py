@@ -33,7 +33,8 @@ class ViolationDB:
             first_seen      TEXT    NOT NULL,
             last_seen       TEXT    NOT NULL,
             occurrence_count INTEGER NOT NULL DEFAULT 1,
-            resolved        INTEGER NOT NULL DEFAULT 0
+            resolved        INTEGER NOT NULL DEFAULT 0,
+            embed_text      TEXT
         )
     """
 
@@ -42,6 +43,28 @@ class ViolationDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(self._CREATE_TABLE)
         self._conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Idempotent migration: add the embed_text column and backfill values."""
+        try:
+            cur = self._conn.execute("PRAGMA table_info(findings)")
+            cols = {row[1] for row in cur.fetchall()}
+            if "embed_text" not in cols:
+                self._conn.execute("ALTER TABLE findings ADD COLUMN embed_text TEXT")
+                self._conn.execute(
+                    """
+                    UPDATE findings
+                    SET embed_text =
+                        '[' || severity || '] ' || category || ' at ' ||
+                        file_path || ':' || line_start || ': ' || description
+                    WHERE embed_text IS NULL
+                    """
+                )
+                self._conn.commit()
+        except sqlite3.DatabaseError as e:
+            import logging
+            logging.getLogger("ollama-sentinel").error("ViolationDB migration failed: %s", e)
 
     # ------------------------------------------------------------------
     # Write operations
@@ -84,12 +107,15 @@ class ViolationDB:
                         (now, row[0]),
                     )
                 else:
+                    embed_text = (
+                        f"[{f.severity}] {f.category} at {f.file_path}:{f.line_start}: {f.description}"
+                    )
                     cur.execute(
                         """
                         INSERT INTO findings
                             (file_path, line_start, line_end, category,
-                             severity, description, first_seen, last_seen)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                             severity, description, first_seen, last_seen, embed_text)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             f.file_path,
@@ -100,6 +126,7 @@ class ViolationDB:
                             f.description,
                             now,
                             now,
+                            embed_text,
                         ),
                     )
             self._conn.commit()
@@ -125,6 +152,11 @@ class ViolationDB:
             "SELECT * FROM findings WHERE file_path = ? AND resolved = 0",
             (file_path,),
         )
+        return self._rows_to_dicts(cur)
+
+    def get_all_unresolved(self) -> List[dict]:
+        """Return every unresolved finding across all files."""
+        cur = self._conn.execute("SELECT * FROM findings WHERE resolved = 0")
         return self._rows_to_dicts(cur)
 
     def get_neighbors_unresolved(self, file_paths: List[str]) -> List[dict]:
