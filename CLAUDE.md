@@ -138,3 +138,4 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 - `ollama-sentinel run` requires `ollama pull nomic-embed-text` once on first use (or set `memory.semantic_recall: false` to fall back to the legacy exact-path recall).
 - `EnhancedMemoryStore.find_similar_*` (research agent) still uses token-overlap scoring. `ViolationDB` now has real semantic recall via `get_neighbors_by_similarity`; the `EnhancedMemoryStore` upgrade is deferred as optional Phase 9 follow-up of the ContextBuilder plan.
 - `_archive/` holds superseded snapshots (`ollama_sentinel_pre_memory_snapshot/`, `research_agent_orphans/`). Do not import from it. See `_archive/README.md` for provenance.
+- 2026-04-16: ContextBuilder landed (plan: `docs/superpowers/plans/2026-04-16-context-builder.md`). Prompt assembly + violation memory are now embedding-ranked and token-budgeted. Tests: 278 passed, 15 skipped, ~1.4s.
