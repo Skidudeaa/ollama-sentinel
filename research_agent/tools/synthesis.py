@@ -9,6 +9,13 @@ from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from research_agent.core.models import ContentItem, ImpactAnalysis
 from research_agent.core.logging import get_logger
+from ollama_sentinel.context import (
+    NullRetriever,
+    OllamaEmbedder,
+    SemanticRetriever,
+    TokenCounter,
+    build_research_context,
+)
 
 logger = get_logger(__name__)
 
@@ -17,25 +24,29 @@ compiler = Compiler()
 
 class SynthesisTool:
     """Advanced answer synthesis with templating and structured output."""
-    
+
     def __init__(
-        self, 
+        self,
         openai_api_key: str,
         model_name: str = "gpt-4o-preview",
-        temperature: float = 0.1
+        temperature: float = 0.1,
+        *,
+        total_budget: int = 12000,
+        embedder: Optional["OllamaEmbedder"] = None,
     ):
         self.openai_api_key = openai_api_key
         self.model_name = model_name
         self.temperature = temperature
-        
-        # Initialize LLM
+        self.total_budget = total_budget
+        self.counter = TokenCounter()
+        self.retriever = SemanticRetriever(embedder) if embedder is not None else NullRetriever()
+
         self.llm = ChatOpenAI(
             model=model_name,
             temperature=temperature,
-            api_key=openai_api_key
+            api_key=openai_api_key,
         )
-        
-        # Prepare synthesis prompt template
+
         self.main_template = compiler.compile("""
 <system>
 You are a top-tier research synthesis system that creates comprehensive, accurate answers by combining information from web sources and code repositories.
@@ -54,19 +65,7 @@ GUIDELINES:
 
 QUERY: {{query}}
 
-{{#if code_context}}
-CODE CONTEXT:
-{{code_context}}
-{{/if}}
-
-WEB SOURCES:
-{{#each web_sources}}
-SOURCE {{@index}}: {{url}}
-{{title}}
----
-{{content}}
-
-{{/each}}
+{{assembled_context}}
 
 TASK: Synthesize a comprehensive, accurate answer that integrates web information with code context.
 Include inline citations [1], [2], etc. and a REFERENCES section at the end.
@@ -110,23 +109,6 @@ Assess your confidence in the final answer on a scale of 0-1.
                     pass
                     
         return confidence
-    
-    def _preprocess_sources(self, sources: List[ContentItem]) -> List[Dict[str, str]]:
-        """Preprocess sources for template rendering."""
-        processed = []
-        for source in sources:
-            # Truncate content to reasonable size
-            content = source.content
-            if len(content) > 4000:
-                content = content[:4000] + "... [content truncated]"
-                
-            processed.append({
-                "url": source.url,
-                "title": source.title,
-                "content": content
-            })
-            
-        return processed
     
     @staticmethod
     def format_impact_report(impact_analysis: ImpactAnalysis) -> str:
@@ -182,59 +164,44 @@ Assess your confidence in the final answer on a scale of 0-1.
         code_context: Optional[str] = None,
         impact_analysis: Optional[ImpactAnalysis] = None,
     ) -> Dict[str, Any]:
-        """Synthesize an answer from sources and code context.
-
-        When *impact_analysis* is provided and contains items, a structured
-        impact report is returned instead of the narrative LLM synthesis.
-        """
+        """Synthesize an answer from sources and code context."""
         logger.info(f"Synthesizing answer for query: {query}")
 
-        # -----------------------------------------------------------
-        # Structured impact output (Unit 9)
-        # -----------------------------------------------------------
+        # Structured impact output short-circuit (unchanged behavior).
         if impact_analysis is not None and impact_analysis.items:
             report = self.format_impact_report(impact_analysis)
-            return {
-                "answer": report,
-                "references": [],
-                "confidence": 0.9,
-            }
+            return {"answer": report, "references": [], "confidence": 0.9}
 
-        # -----------------------------------------------------------
-        # Existing narrative synthesis (unchanged)
-        # -----------------------------------------------------------
         try:
-            # Preprocess sources
-            processed_sources = self._preprocess_sources(sources)
+            # Build the assembled context via the shared recipe.
+            # The recipe is async; this method is sync to preserve the existing
+            # LangGraph node contract. Run the coroutine on a fresh loop.
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(loop)
+                assembled = loop.run_until_complete(
+                    build_research_context(
+                        query=query,
+                        web_sources=sources,
+                        code_results=code_context,
+                        impact=impact_analysis,
+                        counter=self.counter,
+                        total_budget=self.total_budget,
+                        retriever=self.retriever,
+                    )
+                )
+            finally:
+                loop.close()
 
-            # Prepare template variables
-            template_vars = {
-                "query": query,
-                "web_sources": processed_sources,
-                "code_context": code_context
-            }
-
-            # Render the prompt template
-            prompt = self.main_template(template_vars)
-
-            # Generate answer
+            prompt = self.main_template({"query": query, "assembled_context": assembled})
             response = self.llm.invoke(prompt)
             content = response.content
 
-            # Extract references and confidence
             references = self._extract_references(content)
             confidence = self._extract_confidence(content)
-
-            return {
-                "answer": content,
-                "references": references,
-                "confidence": confidence
-            }
+            return {"answer": content, "references": references, "confidence": confidence}
 
         except Exception as e:
             logger.error(f"Error synthesizing answer: {e}")
-            return {
-                "answer": f"Error synthesizing answer: {str(e)}",
-                "references": [],
-                "confidence": 0.0
-            }
+            return {"answer": f"Error synthesizing answer: {str(e)}", "references": [], "confidence": 0.0}

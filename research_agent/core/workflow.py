@@ -89,10 +89,27 @@ def build_workflow(
         cache=cache
     )
     
+    # Optional: build a shared embedder for semantic ranking of web sources.
+    _embedder = None
+    embed_cfg = config.get("embedding", {})
+    if embed_cfg.get("enabled", False):
+        try:
+            from ollama_sentinel.context import OllamaEmbedder
+            _embedder = OllamaEmbedder(
+                host=embed_cfg.get("host", "http://localhost:11434"),
+                model=embed_cfg.get("model", "nomic-embed-text"),
+                cache=cache,
+            )
+        except Exception as e:
+            logger.warning("Failed to initialize embedder (%s); synthesis will use identity ranking.", e)
+            _embedder = None
+
     synthesis_tool = SynthesisTool(
         openai_api_key=openai_api_key,
         model_name=config["api"]["openai_model"],
-        temperature=config["agent"]["synthesis_temperature"]
+        temperature=config["agent"]["synthesis_temperature"],
+        total_budget=config["api"].get("synthesis_context_tokens", 12000),
+        embedder=_embedder,
     )
     
     verification_tool = VerificationTool(
@@ -858,7 +875,8 @@ Output just the search queries, one per line, nothing else.
         "code_tool": code_tool,
         "synthesis_tool": synthesis_tool,
         "verification_tool": verification_tool,
-        "cache": cache
+        "cache": cache,
+        "embedder": _embedder,
     }
     
     return compiled_graph, components

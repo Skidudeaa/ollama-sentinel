@@ -40,7 +40,13 @@ class Config:
             "api": {
                 "openai_model": "gpt-4o-preview",
                 "local_embedding_model": "sentence-transformers/all-mpnet-base-v2",
-                "use_local_embeddings": True
+                "use_local_embeddings": True,
+                "synthesis_context_tokens": 12000,
+            },
+            "embedding": {
+                "enabled": False,
+                "host": "http://localhost:11434",
+                "model": "nomic-embed-text",
             },
             "search": {
                 "primary_engine": "auto",
