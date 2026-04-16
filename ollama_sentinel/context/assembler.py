@@ -134,7 +134,7 @@ async def assemble(
     # ------------------------------------------------------------------
     rendered: List[str] = []
     for s in must:
-        body = await _render_section(s, counter=counter, budget=must_budgets[s.name], query=query)
+        body = await _render_section(s, counter=counter, budget=must_budgets[s.name])
         if body:
             rendered.append(body)
 
@@ -155,7 +155,7 @@ async def assemble(
 
 
 async def _render_section(
-    s: Section, *, counter: TokenCounter, budget: int, query: Optional[str]
+    s: Section, *, counter: TokenCounter, budget: int,
 ) -> str:
     """Render a MUST_FIT section. Items are joined; overflow is truncated.
 

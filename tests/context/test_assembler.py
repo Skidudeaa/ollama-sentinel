@@ -1,6 +1,4 @@
 """Tests for assembler primitives and functions."""
-import pytest
-
 from ollama_sentinel.context.assembler import (
     ContextItem,
     Priority,
@@ -79,7 +77,7 @@ class _CountByLen:
 
 
 class _ReverseRetriever:
-    async def rank(self, items, query):
+    async def rank(self, items, _query):
         return list(reversed(list(items)))
 
 

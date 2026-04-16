@@ -14,6 +14,6 @@ class NullRetriever:
     """Returns items in their original order."""
 
     async def rank(
-        self, items: Sequence[ContextItem], query: str
+        self, items: Sequence[ContextItem], _query: str
     ) -> List[ContextItem]:
         return list(items)
