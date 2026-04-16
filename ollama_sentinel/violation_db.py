@@ -183,6 +183,58 @@ class ViolationDB:
         )
         return self._rows_to_dicts(cur)
 
+    async def get_neighbors_by_similarity(
+        self,
+        query_text: str,
+        embedder,
+        k: int = 10,
+    ) -> List[dict]:
+        """Rank all unresolved findings by cosine similarity to query_text.
+
+        `embedder` is duck-typed (OllamaEmbedder or any object with an async
+        `embed(text, *, cache_key=None) -> list[float]`). Returns [] if the
+        embedder cannot embed the query.
+        """
+        import asyncio
+        import hashlib
+        import math
+        from ollama_sentinel.context.embeddings import EmbeddingUnavailable
+
+        rows = self.get_all_unresolved()
+        if not rows:
+            return []
+
+        query_key = f"query:{hashlib.sha256(query_text.encode('utf-8')).hexdigest()}"
+        try:
+            query_vec = await embedder.embed(query_text, cache_key=query_key)
+        except EmbeddingUnavailable:
+            return []
+
+        async def _embed_row(row):
+            embed_text = row.get("embed_text") or (
+                f"[{row['severity']}] {row['category']} at {row['file_path']}:"
+                f"{row['line_start']}: {row['description']}"
+            )
+            try:
+                vec = await embedder.embed(embed_text, cache_key=f"finding:{row['id']}")
+            except EmbeddingUnavailable:
+                vec = None
+            return row, vec
+
+        pairs = await asyncio.gather(*(_embed_row(r) for r in rows))
+        scored = []
+        for row, vec in pairs:
+            if vec is None:
+                continue
+            dot = sum(a * b for a, b in zip(query_vec, vec))
+            na = math.sqrt(sum(a * a for a in query_vec))
+            nb = math.sqrt(sum(b * b for b in vec))
+            score = dot / (na * nb) if na and nb else 0.0
+            scored.append((score, row))
+
+        scored.sort(key=lambda p: p[0], reverse=True)
+        return [row for _score, row in scored[:k]]
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------

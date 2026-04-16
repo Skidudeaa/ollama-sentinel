@@ -275,3 +275,55 @@ class TestEmbedTextOnInsert:
         assert "plaintext password" in row[0]
         assert "[critical]" in row[0]
         db.close()
+
+
+from ollama_sentinel.context.embeddings import EmbeddingUnavailable
+
+
+class _MapEmbedder:
+    """Fake embedder: text->vector lookup; raises for unknown keys."""
+    def __init__(self, mapping):
+        self._m = mapping
+
+    async def embed(self, text, *, cache_key=None):
+        for needle, vec in self._m.items():
+            if needle in text or needle == cache_key:
+                return vec
+        raise EmbeddingUnavailable(f"no mapping for {text!r}")
+
+
+class TestGetNeighborsBySimilarity:
+    async def test_returns_top_k_by_cosine(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        db.persist_findings("a.py", [
+            Finding("a.py", 1, 1, "security", "high", "sql injection via string format"),
+            Finding("a.py", 2, 2, "style", "low", "line too long"),
+            Finding("a.py", 3, 3, "perf", "medium", "nested loop over items"),
+        ])
+        embedder = _MapEmbedder({
+            "query_vec": [1.0, 0.0, 0.0],
+            "sql injection": [1.0, 0.0, 0.0],        # cosine 1.0
+            "nested loop": [0.5, 0.5, 0.0],          # cosine 0.707
+            "line too long": [0.0, 1.0, 0.0],        # cosine 0.0
+        })
+        rows = await db.get_neighbors_by_similarity(
+            query_text="query_vec", embedder=embedder, k=2,
+        )
+        assert len(rows) == 2
+        descriptions = [r["description"] for r in rows]
+        assert descriptions[0] == "sql injection via string format"
+        assert descriptions[1] == "nested loop over items"
+        db.close()
+
+    async def test_returns_empty_when_embedding_unavailable(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        db.persist_findings("a.py", [Finding("a.py", 1, 1, "bug", "low", "x")])
+        # Embedder always raises.
+        class _BadEmbedder:
+            async def embed(self, text, *, cache_key=None):
+                raise EmbeddingUnavailable("down")
+        rows = await db.get_neighbors_by_similarity(
+            query_text="anything", embedder=_BadEmbedder(), k=10,
+        )
+        assert rows == []
+        db.close()
