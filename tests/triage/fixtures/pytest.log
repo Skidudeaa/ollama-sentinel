@@ -1,0 +1,6 @@
+============================= FAILURES =============================
+_________________ test_empty_optional_section_is_dropped _________________
+
+tests/context/test_assembler.py:80: in test_empty_optional_section_is_dropped
+    assert "HIST" not in out
+E   AssertionError: assert 'HIST' not in 'FILE:\n...'

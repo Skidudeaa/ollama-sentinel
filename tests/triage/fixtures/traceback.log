@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "ollama_sentinel/processor.py", line 42, in generate_review
+    return await self.client.post(url, headers=headers, json=payload)
+  File "ollama_sentinel/utils.py", line 17, in safe_read
+    return abs_path.read_text(errors="replace")
+FileNotFoundError: [Errno 2] No such file or directory

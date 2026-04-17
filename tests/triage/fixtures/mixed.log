@@ -1,0 +1,5 @@
+pytest tests/ reported:
+tests/context/test_assembler.py:80: in test_empty_optional_section_is_dropped
+
+Traceback (most recent call last):
+  File "ollama_sentinel/processor.py", line 42, in generate_review

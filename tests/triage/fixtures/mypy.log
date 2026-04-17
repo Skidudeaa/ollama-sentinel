@@ -1,0 +1,3 @@
+ollama_sentinel/processor.py:115:12: error: Incompatible types  [assignment]
+ollama_sentinel/context/assembler.py:42:5: error: Missing return statement  [return]
+Found 2 errors in 2 files (checked 42 source files)

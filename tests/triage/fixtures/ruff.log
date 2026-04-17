@@ -1,0 +1,3 @@
+ollama_sentinel/models.py:7:1: F401 `typing.Optional` imported but unused
+ollama_sentinel/utils.py:8:21: E501 Line too long (95 > 88)
+Found 2 errors.
