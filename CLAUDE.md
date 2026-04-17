@@ -23,6 +23,8 @@ ollama-sentinel review file.py      # review a single file
 ollama-sentinel review file.py -m security   # use security model role
 ollama-sentinel report              # show recurring violations
 ollama-sentinel init                # create config file
+ollama-sentinel triage < pytest.log # diagnose tool output via local model
+ollama-sentinel triage log.txt -o out.md   # triage a saved log, save result
 
 python -m research_agent.main query "question" --context file.py --output result.md
 python -m research_agent.main interactive
@@ -35,7 +37,7 @@ python -m research_agent.main setup
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v                    # ~278 tests, <2 seconds
+pytest tests/ -v                    # ~308 tests, <2 seconds
 pytest tests/ -k "security"         # run security-specific tests
 pytest tests/test_violation_db.py   # run one module's tests
 ```
@@ -95,7 +97,9 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 | `ollama_sentinel/context/tokens.py` | `TokenCounter` (tiktoken `cl100k_base` with char-based fallback) |
 | `ollama_sentinel/context/embeddings.py` | `OllamaEmbedder` — async `/api/embeddings` client, cache-backed, `EmbeddingUnavailable` on failure |
 | `ollama_sentinel/context/retrievers.py` | `NullRetriever`, `SemanticRetriever` (cosine, pure Python) |
-| `ollama_sentinel/context/recipes.py` | `build_review_context`, `build_research_context` — named recipes consumed by sentinel and research agent |
+| `ollama_sentinel/context/recipes.py` | `build_review_context`, `build_research_context`, `build_triage_context` — named recipes consumed by sentinel and research agent |
+| `ollama_sentinel/triage/extractor.py` | Pure regex-driven extraction of file+line references from tool output (traceback/pytest/mypy/ruff/generic) |
+| `ollama_sentinel/triage/runner.py` | `run_triage()` + `TRIAGE_SYSTEM_PROMPT` — orchestrates extract → recipe → model with hybrid role fallback |
 | `research_agent/core/workflow.py` | LangGraph StateGraph with all nodes including impact_scan |
 | `research_agent/tools/import_resolver.py` | AST-based Python import graph resolver |
 | `research_agent/tools/synthesis.py` | Answer synthesis with structured impact report output |
@@ -140,3 +144,4 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 - `_archive/` holds superseded snapshots (`ollama_sentinel_pre_memory_snapshot/`, `research_agent_orphans/`). Do not import from it. See `_archive/README.md` for provenance.
 - 2026-04-16: ContextBuilder landed (plan: `docs/superpowers/plans/2026-04-16-context-builder.md`). Prompt assembly + violation memory are now embedding-ranked and token-budgeted. Tests: 278 passed, 15 skipped, ~1.4s.
 - ContextBuilder follow-ups (deferred, not blockers): (1) `_format_impact_report` in `ollama_sentinel/context/recipes.py` diverges from `SynthesisTool.format_impact_report` (missing `SUGGESTED FIRST COMMIT` block) — dedupe when a second caller appears. (2) Add a `SemanticRetriever`-through-`build_review_context` integration test to `tests/context/test_recipes.py`. (3) Phase 9 optional: upgrade `EnhancedMemoryStore.find_similar_*` to use `SemanticRetriever`.
+- 2026-04-16: `ollama-sentinel triage` landed (plan: `docs/superpowers/plans/2026-04-16-triage.md`). Pipe tool output, get a local-model diagnosis with auto-extracted source context. Tests: +30 new, full suite 308 passed / 15 skipped in ~1.5s. One minor spec deviation: empty stdin returns exit 1 (spec said exit 0). Reasonable: piping nothing is a usage error.
