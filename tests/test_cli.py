@@ -255,3 +255,47 @@ class TestTriageCommand:
         )
         assert result.exit_code == 0
         assert output_path.read_text() == "written body"
+
+    def test_positional_input_file_is_consumed(self, tmp_path, httpx_mock: HTTPXMock):
+        _write_config(tmp_path)
+        log_file = tmp_path / "pytest.log"
+        log_file.write_text("some error from a saved log\n")
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "from-positional-input"}},
+        )
+        result = runner.invoke(
+            app,
+            [
+                "triage",
+                str(log_file),
+                "-c", str(tmp_path / "ollama-sentinel.yaml"),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "from-positional-input" in (result.stdout or "") + (result.output or "")
+
+    def test_positional_input_nonexistent_exits_1(self, tmp_path):
+        _write_config(tmp_path)
+        result = runner.invoke(
+            app,
+            [
+                "triage",
+                str(tmp_path / "does-not-exist.log"),
+                "-c", str(tmp_path / "ollama-sentinel.yaml"),
+            ],
+        )
+        assert result.exit_code == 1
+
+    def test_context_file_not_found_exits_1(self, tmp_path):
+        _write_config(tmp_path)
+        result = runner.invoke(
+            app,
+            [
+                "triage",
+                "-c", str(tmp_path / "ollama-sentinel.yaml"),
+                "--context", str(tmp_path / "missing.py"),
+            ],
+            input="some error\n",
+        )
+        assert result.exit_code == 1

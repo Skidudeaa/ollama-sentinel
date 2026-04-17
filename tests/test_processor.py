@@ -575,3 +575,22 @@ class TestGenerateWithModel:
         finally:
             await client.close()
         assert out == "default output"
+
+    async def test_generate_with_model_config_object(self, ollama_config, httpx_mock):
+        """Passing an OllamaModelConfig object (not dict) also works."""
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "obj output"}},
+        )
+        from ollama_sentinel.models import OllamaModelConfig
+        mc = OllamaModelConfig(name="obj-model", system_prompt="obj prompt")
+        client = OllamaClient(ollama_config)
+        try:
+            out = await client.generate_with_model(mc, "prompt")
+        finally:
+            await client.close()
+        assert out == "obj output"
+        import json as _json
+        body = _json.loads(httpx_mock.get_requests()[0].content)
+        assert body["model"] == "obj-model"
+        assert body["messages"][0]["content"] == "obj prompt"

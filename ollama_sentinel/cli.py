@@ -287,14 +287,10 @@ def triage(
             log.error("No input — pipe tool output or pass a path.")
             raise typer.Exit(code=1)
         input_text = sys.stdin.read()
-        if not input_text.strip():
-            log.error("No input — pipe tool output or pass a path.")
-            raise typer.Exit(code=1)
 
-    # --- Empty-input short-circuit (belt-and-suspenders for file path case).
     if not input_text.strip():
-        log.info("Empty input; nothing to triage.")
-        raise typer.Exit(code=0)
+        log.error("Empty input; nothing to triage.")
+        raise typer.Exit(code=1)
 
     # --- Load config.
     config_file = pathlib.Path(config_path)

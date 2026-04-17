@@ -205,7 +205,11 @@ def _render_referenced_file(
     """Render a referenced file: header + windowed-or-whole fenced excerpt."""
     lines = abs_path.read_text(errors="replace").splitlines()
     total = len(lines) or 1
-    sorted_refs = sorted(set(line_numbers))
+    sorted_refs = sorted(n for n in set(line_numbers) if 1 <= n <= total)
+    if not sorted_refs:
+        # All references are out-of-range; fall back to rendering line 1 (which
+        # triggers the whole-file branch if the file is short enough).
+        sorted_refs = [1]
     refs_display = ", ".join(str(n) for n in sorted_refs)
 
     window_start = max(1, min(sorted_refs) - 8)
