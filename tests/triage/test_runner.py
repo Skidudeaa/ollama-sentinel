@@ -80,7 +80,7 @@ class TestRunTriage:
         assert body["model"] == "t"
         assert body["messages"][0]["content"] == "Triage-custom."
 
-    async def test_unknown_role_raises(self, tmp_path, httpx_mock: HTTPXMock):
+    async def test_unknown_role_raises(self, tmp_path):
         """User-passed role that doesn't exist and isn't 'triage' must error."""
         cfg = _sentinel_config(tmp_path)
         with pytest.raises(KeyError):
