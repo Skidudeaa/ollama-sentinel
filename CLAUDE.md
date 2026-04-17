@@ -138,10 +138,10 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 ## Known Issues / Next Session Breadcrumbs
 
 - Research agent requires `pip install -e ".[research]"` (heavy deps: langchain, playwright, llama-index). Not installed by default.
-- `impact_scan` node tested with mocked logic only -- needs integration test against real LangGraph compile with OpenAI key
+- `impact_scan` node tested with mocked logic only -- needs integration test against real LangGraph compile with OpenAI key.
 - `ollama-sentinel run` requires `ollama pull nomic-embed-text` once on first use (or set `memory.semantic_recall: false` to fall back to the legacy exact-path recall).
-- `EnhancedMemoryStore.find_similar_*` (research agent) still uses token-overlap scoring. `ViolationDB` now has real semantic recall via `get_neighbors_by_similarity`; the `EnhancedMemoryStore` upgrade is deferred as optional Phase 9 follow-up of the ContextBuilder plan.
 - `_archive/` holds superseded snapshots (`ollama_sentinel_pre_memory_snapshot/`, `research_agent_orphans/`). Do not import from it. See `_archive/README.md` for provenance.
-- 2026-04-16: ContextBuilder landed (plan: `docs/superpowers/plans/2026-04-16-context-builder.md`). Prompt assembly + violation memory are now embedding-ranked and token-budgeted. Tests: 278 passed, 15 skipped, ~1.4s.
-- ContextBuilder follow-ups (deferred, not blockers): (1) `_format_impact_report` in `ollama_sentinel/context/recipes.py` diverges from `SynthesisTool.format_impact_report` (missing `SUGGESTED FIRST COMMIT` block) — dedupe when a second caller appears. (2) Add a `SemanticRetriever`-through-`build_review_context` integration test to `tests/context/test_recipes.py`. (3) Phase 9 optional: upgrade `EnhancedMemoryStore.find_similar_*` to use `SemanticRetriever`.
-- 2026-04-16: `ollama-sentinel triage` landed (plan: `docs/superpowers/plans/2026-04-16-triage.md`). Pipe tool output, get a local-model diagnosis with auto-extracted source context. Tests: +30 new, full suite 308 passed / 15 skipped in ~1.5s. One minor spec deviation: empty stdin returns exit 1 (spec said exit 0). Reasonable: piping nothing is a usage error.
+- **Recent landings:**
+  - 2026-04-16: ContextBuilder landed. Prompt assembly + violation memory are now embedding-ranked and token-budgeted. Plan: `docs/superpowers/plans/2026-04-16-context-builder.md`.
+  - 2026-04-16: `ollama-sentinel triage` landed. Pipe tool output, get a local-model diagnosis with auto-extracted source context. Plan: `docs/superpowers/plans/2026-04-16-triage.md`.
+- **Open follow-ups from both landings** (not blockers): see `docs/superpowers/followups.md`. Covers the remaining `EnhancedMemoryStore` → semantic upgrade, impact-formatter dedup, `TRIAGE_SYSTEM_PROMPT` relocation, and several small test / log-level gaps.
