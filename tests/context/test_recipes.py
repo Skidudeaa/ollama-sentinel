@@ -145,3 +145,95 @@ class TestBuildResearchContext:
         )
         assert "IMPACT ANALYSIS" in out
         assert "a.py:1" in out and "fix it" in out
+
+
+from ollama_sentinel.context.recipes import build_triage_context
+from ollama_sentinel.triage.extractor import Reference
+
+
+class TestBuildTriageContext:
+    async def test_tool_output_present(self, tmp_path):
+        counter = TokenCounter()
+        out = await build_triage_context(
+            tool_output="Traceback: ValueError: x is bad",
+            references=[],
+            explicit_context_files=[],
+            counter=counter,
+            total_budget=500,
+            cwd=tmp_path,
+        )
+        assert "TOOL OUTPUT:" in out
+        assert "ValueError: x is bad" in out
+
+    async def test_referenced_source_rendered_in_frequency_order(self, tmp_path):
+        # foo.py mentioned twice, bar.py once — foo appears first.
+        (tmp_path / "foo.py").write_text("\n".join(f"line {i}" for i in range(1, 30)))
+        (tmp_path / "bar.py").write_text("\n".join(f"line {i}" for i in range(1, 30)))
+        refs = [
+            Reference(path="foo.py", line=5, tool_hint="traceback"),
+            Reference(path="foo.py", line=10, tool_hint="traceback"),
+            Reference(path="bar.py", line=3, tool_hint="traceback"),
+        ]
+        counter = TokenCounter()
+        out = await build_triage_context(
+            tool_output="error",
+            references=refs,
+            explicit_context_files=[],
+            counter=counter,
+            total_budget=2000,
+            cwd=tmp_path,
+        )
+        assert "REFERENCED SOURCE:" in out
+        assert out.index("foo.py") < out.index("bar.py")
+
+    async def test_window_clamps_at_file_start(self, tmp_path):
+        f = tmp_path / "x.py"
+        f.write_text("\n".join(f"line {i}" for i in range(1, 30)))
+        refs = [Reference(path="x.py", line=3, tool_hint="traceback")]
+        counter = TokenCounter()
+        out = await build_triage_context(
+            tool_output="error",
+            references=refs,
+            explicit_context_files=[],
+            counter=counter,
+            total_budget=2000,
+            cwd=tmp_path,
+        )
+        # Window for line 3 is max(1, 3-8)=1 to min(29, 3+8)=11 — 11 lines.
+        # File has 29 lines, 11/29 ≈ 0.38 — windowed with prefixes.
+        assert "0001|" in out or "line 1" in out
+        assert "0011|" in out or "line 11" in out
+        assert "0012" not in out
+
+    async def test_whole_file_when_window_covers_most(self, tmp_path):
+        f = tmp_path / "s.py"
+        f.write_text("line 1\nline 2\nline 3\n")  # 3 lines
+        refs = [Reference(path="s.py", line=2, tool_hint="traceback")]
+        counter = TokenCounter()
+        out = await build_triage_context(
+            tool_output="error",
+            references=refs,
+            explicit_context_files=[],
+            counter=counter,
+            total_budget=2000,
+            cwd=tmp_path,
+        )
+        # Window 1..3 covers 100% of a 3-line file — whole file, no prefixes.
+        assert "line 1" in out and "line 2" in out and "line 3" in out
+        assert "0001|" not in out
+
+    async def test_user_provided_after_auto_extracted(self, tmp_path):
+        (tmp_path / "auto.py").write_text("auto body\n")
+        (tmp_path / "user.py").write_text("user body\n")
+        refs = [Reference(path="auto.py", line=1, tool_hint="traceback")]
+        counter = TokenCounter()
+        out = await build_triage_context(
+            tool_output="error",
+            references=refs,
+            explicit_context_files=[tmp_path / "user.py"],
+            counter=counter,
+            total_budget=2000,
+            cwd=tmp_path,
+        )
+        assert "REFERENCED SOURCE:" in out and "USER-PROVIDED CONTEXT:" in out
+        assert out.index("REFERENCED SOURCE:") < out.index("USER-PROVIDED CONTEXT:")

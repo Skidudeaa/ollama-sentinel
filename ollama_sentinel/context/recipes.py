@@ -5,8 +5,10 @@ for its module. Consumers call one function; they do not hand-assemble.
 """
 from __future__ import annotations
 
+import collections
 import hashlib
-from typing import List, Optional, Sequence
+import pathlib
+from typing import Dict, List, Optional, Sequence
 
 from ollama_sentinel.context.assembler import (
     ContextItem,
@@ -181,4 +183,137 @@ async def build_research_context(
 
     return await assemble(
         sections, total_budget=total_budget, counter=counter, query=query,
+    )
+
+
+_LANG_FENCE: Dict[str, str] = {
+    ".py": "py", ".rb": "rb", ".ts": "ts", ".tsx": "tsx", ".js": "js",
+    ".jsx": "jsx", ".go": "go", ".rs": "rs", ".java": "java",
+    ".c": "c", ".cpp": "cpp", ".h": "c", ".sh": "bash",
+    ".yaml": "yaml", ".yml": "yaml", ".json": "json", ".toml": "toml",
+    ".md": "markdown",
+}
+
+
+def _fence_for(path: pathlib.Path) -> str:
+    return _LANG_FENCE.get(path.suffix.lower(), "")
+
+
+def _render_referenced_file(
+    abs_path: pathlib.Path, rel_path: str, line_numbers: Sequence[int],
+) -> str:
+    """Render a referenced file: header + windowed-or-whole fenced excerpt."""
+    lines = abs_path.read_text(errors="replace").splitlines()
+    total = len(lines) or 1
+    sorted_refs = sorted(set(line_numbers))
+    refs_display = ", ".join(str(n) for n in sorted_refs)
+
+    window_start = max(1, min(sorted_refs) - 8)
+    window_end = min(total, max(sorted_refs) + 8)
+    window_len = window_end - window_start + 1
+
+    fence = _fence_for(abs_path)
+    header = f"-- {rel_path} (referenced at lines {refs_display}) --"
+
+    if window_len >= int(total * 0.8):
+        body = "\n".join(lines)
+    else:
+        body_lines = []
+        for i in range(window_start, window_end + 1):
+            body_lines.append(f"{i:04d}|{lines[i - 1]}")
+        body = "\n".join(body_lines)
+
+    return f"{header}\n```{fence}\n{body}\n```"
+
+
+async def build_triage_context(
+    *,
+    tool_output: str,
+    references: Sequence,  # Sequence[Reference] — duck-typed to avoid import cycle
+    explicit_context_files: Sequence[pathlib.Path],
+    counter: TokenCounter,
+    total_budget: int,
+    cwd: pathlib.Path,
+) -> str:
+    """Triage recipe — assembles tool output + referenced source excerpts.
+
+    `references` elements must have .path, .line, .tool_hint attributes (as
+    produced by ollama_sentinel.triage.extractor.Reference).
+    """
+    sections: List[Section] = [
+        Section(
+            name="TOOL OUTPUT",
+            items=[tool_output],
+            priority=Priority.MUST_FIT,
+            soft_budget=int(total_budget * 0.35),
+            truncate="head",
+        ),
+    ]
+
+    # --- REFERENCED SOURCE: one item per unique file, ranked by mention count.
+    if references:
+        by_file: Dict[str, List[int]] = collections.defaultdict(list)
+        raw_path_by_file: Dict[str, str] = {}
+        for ref in references:
+            line = getattr(ref, "line", None)
+            raw_path = getattr(ref, "path", None)
+            if line is None or raw_path is None:
+                continue
+            candidate = pathlib.Path(raw_path)
+            if not candidate.is_absolute():
+                candidate = cwd / candidate
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            key = str(resolved)
+            by_file[key].append(line)
+            raw_path_by_file.setdefault(key, raw_path)
+
+        ranked = sorted(
+            by_file.items(),
+            key=lambda kv: (-len(kv[1]), kv[0]),  # freq desc, path asc tiebreak
+        )
+        ref_items: List[ContextItem] = []
+        for abs_key, line_list in ranked:
+            abs_path = pathlib.Path(abs_key)
+            if not abs_path.is_file():
+                continue
+            rel = raw_path_by_file[abs_key]
+            body = _render_referenced_file(abs_path, rel, line_list)
+            ref_items.append(ContextItem(text=body, embed_key=f"src:{abs_key}"))
+        if ref_items:
+            sections.append(Section(
+                name="REFERENCED SOURCE",
+                items=ref_items,
+                priority=Priority.OPTIONAL,
+                soft_budget=int(total_budget * 0.45),
+                truncate="tail",
+            ))
+
+    # --- USER-PROVIDED CONTEXT: whole files, order preserved.
+    if explicit_context_files:
+        user_items: List[ContextItem] = []
+        for p in explicit_context_files:
+            if not p.is_file():
+                continue
+            fence = _fence_for(p)
+            body = p.read_text(errors="replace")
+            try:
+                rel = str(p.relative_to(cwd)) if p.is_absolute() else str(p)
+            except ValueError:
+                rel = str(p)
+            text = f"-- {rel} --\n```{fence}\n{body}\n```"
+            user_items.append(ContextItem(text=text, embed_key=f"user:{p}"))
+        if user_items:
+            sections.append(Section(
+                name="USER-PROVIDED CONTEXT",
+                items=user_items,
+                priority=Priority.OPTIONAL,
+                soft_budget=int(total_budget * 0.20),
+                truncate="tail",
+            ))
+
+    return await assemble(
+        sections, total_budget=total_budget, counter=counter, query=tool_output,
     )
