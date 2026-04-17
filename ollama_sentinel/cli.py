@@ -348,5 +348,56 @@ def triage(
             raise typer.Exit(code=1)
 
 
+@app.command()
+def dashboard(
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+    refresh: float = typer.Option(
+        1.0,
+        "--refresh",
+        "-r",
+        help="Seconds between refreshes",
+    ),
+    min_count: int = typer.Option(
+        2,
+        "--min-count",
+        "-n",
+        help="Minimum occurrence count for 'Top Recurring'",
+    ),
+):
+    """Live TUI dashboard for a running sentinel (read-only)."""
+    from .config import load_config
+    from .dashboard import run_dashboard
+
+    config_file = pathlib.Path(config_path)
+    if not config_file.exists():
+        log.error(f"Configuration file not found: {config_file}")
+        raise typer.Exit(code=1)
+
+    config = load_config(config_file)
+    if config is None:
+        log.error("Failed to load configuration.")
+        raise typer.Exit(code=1)
+
+    watch_dir = pathlib.Path(config.watch.directory).resolve()
+    reviews_dir = watch_dir / config.output.directory
+    db_path = watch_dir / config.memory.db_path
+
+    try:
+        asyncio.run(run_dashboard(
+            watch_dir=watch_dir,
+            reviews_dir=reviews_dir,
+            db_path=db_path,
+            refresh_s=refresh,
+            min_count=min_count,
+        ))
+    except KeyboardInterrupt:
+        pass
+
+
 if __name__ == "__main__":
     app()
