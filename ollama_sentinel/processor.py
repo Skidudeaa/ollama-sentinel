@@ -55,52 +55,57 @@ class OllamaClient:
         retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
         wait=wait_exponential(multiplier=1, min=2, max=60),
         stop=stop_after_attempt(5),
-        reraise=True  # Important: reraise the original exception
+        reraise=True,
     )
-    async def generate_review(self, model_role: str, prompt: str) -> str:
+    async def generate_with_model(self, model_config, prompt: str) -> str:
+        """Send `prompt` to Ollama using an explicit model config.
+
+        `model_config` is either an OllamaModelConfig-compatible dict
+        (`{"name", "system_prompt", "temperature", "top_p", "max_tokens"?}`)
+        or any object exposing those as attributes (e.g., OllamaModelConfig).
         """
-        Generate a review using the specified Ollama model.
+        def _get(k, default=None):
+            if isinstance(model_config, dict):
+                return model_config.get(k, default)
+            return getattr(model_config, k, default)
 
-        Args:
-            model_role: Role of the model to use (e.g., "default", "security")
-            prompt: Input prompt for the model
+        name = _get("name")
+        if not name:
+            raise ValueError("model_config missing 'name'")
+        system_prompt = _get("system_prompt", "")
+        temperature = _get("temperature", 0.1)
+        top_p = _get("top_p", 0.9)
+        max_tokens = _get("max_tokens", None)
 
-        Returns:
-            Generated review text
-
-        Raises:
-            httpx.HTTPError: If the API request fails
-        """
-        if model_role not in self.config["models"]:
-            log.warning(f"Model role '{model_role}' not found, falling back to default")
-            model_role = "default"
-
-        model_config = self.config["models"][model_role]
         url = f"{self.config['host']}/api/chat"
-
         payload = {
-            "model": model_config["name"],
+            "model": name,
             "messages": [
-                {"role": "system", "content": model_config["system_prompt"]},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
             ],
             "stream": False,
-            "temperature": model_config.get("temperature", 0.1),
-            "top_p": model_config.get("top_p", 0.9)
+            "temperature": temperature,
+            "top_p": top_p,
         }
-
-        if "max_tokens" in model_config:
-            payload["max_tokens"] = model_config["max_tokens"]
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
 
         headers = {"Content-Type": "application/json"}
-
         try:
             response = await self.client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()["message"]["content"]
         except httpx.HTTPError as e:
             log.error(f"Ollama API error: {str(e)}")
-            raise  # Re-raise to trigger retry
+            raise
+
+    async def generate_review(self, model_role: str, prompt: str) -> str:
+        """Send `prompt` to Ollama using a role name looked up in config."""
+        if model_role not in self.config["models"]:
+            log.warning(f"Model role '{model_role}' not found, falling back to default")
+            model_role = "default"
+        return await self.generate_with_model(self.config["models"][model_role], prompt)
 
 
 class _DiskcacheAdapter:

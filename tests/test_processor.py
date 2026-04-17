@@ -157,7 +157,8 @@ class TestOllamaClient:
 
         client = OllamaClient(ollama_config)
         # Disable wait between retries so the test is fast.
-        client.generate_review.retry.wait = wait_none()
+        # The @retry decorator is on generate_with_model (the HTTP layer).
+        client.generate_with_model.retry.wait = wait_none()
         try:
             result = await client.generate_review("default", "review this")
         finally:
@@ -525,3 +526,52 @@ class TestConfigLoading:
         result = create_default_config("/some/dir")
         default_model = result["ollama"]["models"]["default"]["name"]
         assert default_model == "gemma3:4b"
+
+
+# ---------------------------------------------------------------------------
+# OllamaClient.generate_with_model tests
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateWithModel:
+    """Tests for OllamaClient.generate_with_model."""
+
+    async def test_generate_with_explicit_config(self, ollama_config, httpx_mock):
+        """Passing an explicit model dict bypasses the role lookup."""
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "explicit output"}},
+        )
+        client = OllamaClient(ollama_config)
+        try:
+            out = await client.generate_with_model(
+                {
+                    "name": "ad-hoc-model",
+                    "system_prompt": "You are ad-hoc.",
+                    "temperature": 0.1,
+                    "top_p": 0.9,
+                },
+                "a prompt",
+            )
+        finally:
+            await client.close()
+        assert out == "explicit output"
+        # Body was built from the explicit config, not the role lookup.
+        req = httpx_mock.get_requests()[0]
+        import json as _json
+        body = _json.loads(req.content)
+        assert body["model"] == "ad-hoc-model"
+        assert body["messages"][0]["content"] == "You are ad-hoc."
+
+    async def test_generate_review_still_uses_role_lookup(self, ollama_config, httpx_mock):
+        """The existing generate_review(role, prompt) path remains."""
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "default output"}},
+        )
+        client = OllamaClient(ollama_config)
+        try:
+            out = await client.generate_review("default", "a prompt")
+        finally:
+            await client.close()
+        assert out == "default output"

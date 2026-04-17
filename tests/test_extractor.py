@@ -251,7 +251,8 @@ class TestExtractFindingsErrors:
 
         client = OllamaClient(ollama_config)
         # Disable wait between retries for fast test execution.
-        client.generate_review.retry.wait = wait_none()
+        # The @retry decorator is on generate_with_model (the HTTP layer).
+        client.generate_with_model.retry.wait = wait_none()
         try:
             results = await extract_findings(
                 review_text="review text",
