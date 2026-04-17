@@ -1,7 +1,7 @@
 """Tests for ollama_sentinel.triage.extractor."""
 import pathlib
 
-from ollama_sentinel.triage.extractor import Reference, extract_references
+from ollama_sentinel.triage.extractor import extract_references
 
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
