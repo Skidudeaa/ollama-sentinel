@@ -73,22 +73,14 @@ only proves a stable sort, not that original order is preserved.
 **Fix:** change input to `[b, a]` and assert the fallback returns
 `[b, a]`.
 
-### CB-5. Retriever log-level split
+### CB-5. Retriever log-level split — DONE (commit 3b58e66)
 
 **Files:** `ollama_sentinel/context/assembler.py:_render_optional_section`.
 
-**Issue:** all retriever exceptions log at `WARNING`. The approved spec's
-error-handling table says non-`EmbeddingUnavailable` failures should log
-at `ERROR` with traceback.
+`except Exception` now logs at `ERROR` with `exc_info=True`; `EmbeddingUnavailable`
+caught separately at `WARNING`. Import added. Full test suite passes.
 
-**Fix:** split the `except` block:
-
-```python
-except EmbeddingUnavailable:
-    log.warning("Embedding unavailable; using original order for optional section")
-except Exception:
-    log.error("Retriever raised unexpected exception; using original order", exc_info=True)
-```
+---
 
 ### CB-6. `chunk_by_lines` oversized-line caveat undocumented
 

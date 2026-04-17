@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import List, Literal, Optional, Protocol, Sequence, Union
 
+from ollama_sentinel.context.embeddings import EmbeddingUnavailable
 from ollama_sentinel.context.tokens import TokenCounter
 
 log = logging.getLogger("ollama-sentinel")
@@ -203,9 +204,15 @@ async def _render_optional_section(
     if s.retriever is not None and query is not None:
         try:
             items = await s.retriever.rank(items, query)
-        except Exception as e:
+        except EmbeddingUnavailable:
             log.warning(
-                "Retriever failed for section %s (%s); using original order.", s.name, e
+                "Embedding unavailable for section %s; using original order.", s.name
+            )
+        except Exception:
+            log.error(
+                "Retriever raised unexpected exception for section %s; using original order.",
+                s.name,
+                exc_info=True,
             )
 
     header = f"{s.name}:"
