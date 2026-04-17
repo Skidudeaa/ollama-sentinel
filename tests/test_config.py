@@ -100,3 +100,13 @@ class TestCreateDefaultConfig:
         config = create_default_config(".")
         assert "max_chars_per_chunk" not in config["processing"]
         assert "overlap_chars" not in config["processing"]
+
+    def test_emits_triage_model_role(self):
+        config = create_default_config(".")
+        models = config["ollama"]["models"]
+        assert "triage" in models
+        triage = models["triage"]
+        assert "system_prompt" in triage
+        assert "DIAGNOSIS" in triage["system_prompt"]
+        assert triage["context_window"] == 8192
+        assert triage["output_reserve_tokens"] == 2000

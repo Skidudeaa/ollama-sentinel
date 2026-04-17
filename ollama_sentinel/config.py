@@ -8,6 +8,7 @@ from typing import Optional
 import yaml
 
 from .models import SentinelConfig
+from .triage.runner import TRIAGE_SYSTEM_PROMPT
 
 log = logging.getLogger("ollama-sentinel")
 
@@ -76,6 +77,12 @@ def create_default_config(directory: str, output_dir: str = ".ollama_reviews") -
                         "Respond in GitHub-flavored markdown. "
                         "If the file is auto-generated or purely data, say 'No actionable feedback.'"
                     ),
+                    "context_window": 8192,
+                    "output_reserve_tokens": 2000,
+                },
+                "triage": {
+                    "name": "gemma3:4b",
+                    "system_prompt": TRIAGE_SYSTEM_PROMPT,
                     "context_window": 8192,
                     "output_reserve_tokens": 2000,
                 }
