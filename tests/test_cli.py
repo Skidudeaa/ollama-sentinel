@@ -1,7 +1,6 @@
 """Tests for the CLI entry points."""
 import json
 
-import pytest
 import yaml
 from typer.testing import CliRunner
 
