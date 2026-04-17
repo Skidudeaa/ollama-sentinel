@@ -183,3 +183,76 @@ class TestReportCommand:
         # "major" has 5 occurrences, should appear; "minor" has 2, filtered out
         assert "major" in result.output
         assert "minor" not in result.output
+
+
+import pathlib
+import sys
+
+from pytest_httpx import HTTPXMock
+
+from ollama_sentinel.config import create_default_config
+
+
+OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
+
+
+def _write_config(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Write a valid ollama-sentinel.yaml in tmp_path and return its path."""
+    cfg_path = tmp_path / "ollama-sentinel.yaml"
+    cfg_path.write_text(yaml.safe_dump(create_default_config(str(tmp_path))))
+    return cfg_path
+
+
+class TestTriageCommand:
+    def test_help_renders(self):
+        result = runner.invoke(app, ["triage", "--help"])
+        assert result.exit_code == 0
+        # Either the docstring text or the command name should surface.
+        text = (result.stdout or "") + (result.output or "")
+        assert "triage" in text.lower() or "Diagnose" in text
+
+    def test_piped_stdin_is_consumed(self, tmp_path, httpx_mock: HTTPXMock):
+        _write_config(tmp_path)
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "DIAGNOSIS: x"}},
+        )
+        result = runner.invoke(
+            app,
+            ["triage", "-c", str(tmp_path / "ollama-sentinel.yaml")],
+            input="some error log\n",
+        )
+        assert result.exit_code == 0
+        # The rendered markdown contains DIAGNOSIS somewhere.
+        assert "DIAGNOSIS" in (result.stdout or "") + (result.output or "")
+
+    def test_tty_without_input_exits_with_error(self, tmp_path):
+        _write_config(tmp_path)
+        from unittest.mock import patch
+        # Force sys.stdin.isatty() to return True so the TTY guard fires.
+        with patch.object(sys.stdin, "isatty", return_value=True):
+            result = runner.invoke(
+                app,
+                ["triage", "-c", str(tmp_path / "ollama-sentinel.yaml")],
+                input="",
+            )
+        assert result.exit_code == 1
+
+    def test_output_flag_writes_file(self, tmp_path, httpx_mock: HTTPXMock):
+        _write_config(tmp_path)
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "written body"}},
+        )
+        output_path = tmp_path / "out.md"
+        result = runner.invoke(
+            app,
+            [
+                "triage",
+                "-c", str(tmp_path / "ollama-sentinel.yaml"),
+                "-o", str(output_path),
+            ],
+            input="some error\n",
+        )
+        assert result.exit_code == 0
+        assert output_path.read_text() == "written body"

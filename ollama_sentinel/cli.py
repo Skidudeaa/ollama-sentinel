@@ -4,6 +4,8 @@ Command-line interface for Ollama Sentinel.
 import asyncio
 import logging
 import pathlib
+import sys
+from typing import List, Optional
 
 import typer
 import yaml
@@ -221,6 +223,133 @@ def report(
                 v["description"][:60],
             )
         console.print(table)
+
+
+@app.command()
+def triage(
+    input_path: Optional[str] = typer.Argument(
+        None,
+        metavar="[INPUT]",
+        help="Path to a log/output file. Omit to read stdin.",
+    ),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+    model: str = typer.Option(
+        "triage",
+        "--model",
+        "-m",
+        help='Model role (default: "triage"; auto-fallback to "default" if missing)',
+    ),
+    output_path: Optional[str] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Save triage output to this file in addition to printing",
+    ),
+    context: List[str] = typer.Option(
+        [],
+        "--context",
+        help="Additional source file to include (repeatable)",
+    ),
+    no_extract: bool = typer.Option(
+        False,
+        "--no-extract",
+        help="Disable auto-extraction of referenced file paths",
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Debug logging",
+    ),
+):
+    """Diagnose terminal output (tracebacks, lints, failed tests) with the local model."""
+    if verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    from .config import load_config
+    from .triage import run_triage
+
+    # --- Resolve input text.
+    if input_path:
+        path = pathlib.Path(input_path)
+        if not path.is_file():
+            log.error(f"Cannot read {input_path}: file not found")
+            raise typer.Exit(code=1)
+        try:
+            input_text = path.read_text(errors="replace")
+        except OSError as e:
+            log.error(f"Cannot read {input_path}: {e}")
+            raise typer.Exit(code=1)
+    else:
+        if sys.stdin.isatty():
+            log.error("No input — pipe tool output or pass a path.")
+            raise typer.Exit(code=1)
+        input_text = sys.stdin.read()
+        if not input_text.strip():
+            log.error("No input — pipe tool output or pass a path.")
+            raise typer.Exit(code=1)
+
+    # --- Empty-input short-circuit (belt-and-suspenders for file path case).
+    if not input_text.strip():
+        log.info("Empty input; nothing to triage.")
+        raise typer.Exit(code=0)
+
+    # --- Load config.
+    config_file = pathlib.Path(config_path)
+    if not config_file.exists():
+        log.error(f"Configuration file not found: {config_file}")
+        raise typer.Exit(code=1)
+    config = load_config(config_file)
+    if config is None:
+        log.error("Failed to load configuration.")
+        raise typer.Exit(code=1)
+
+    # --- Resolve --context paths.
+    context_paths: list[pathlib.Path] = []
+    for raw in context:
+        p = pathlib.Path(raw).resolve()
+        if not p.is_file():
+            log.error(f"--context file not found: {raw}")
+            raise typer.Exit(code=1)
+        context_paths.append(p)
+
+    cwd = pathlib.Path.cwd().resolve()
+
+    # --- Run.
+    try:
+        result = asyncio.run(run_triage(
+            input_text=input_text,
+            config=config,
+            cwd=cwd,
+            model_role=model,
+            explicit_context=context_paths,
+            extract=not no_extract,
+        ))
+    except KeyError as e:
+        log.error(str(e))
+        raise typer.Exit(code=1)
+    except Exception as e:
+        log.error(f"Triage failed: {e}")
+        raise typer.Exit(code=2)
+
+    # --- Render & save.
+    if console.is_terminal:
+        try:
+            from rich.markdown import Markdown
+            console.print(Markdown(result))
+        except Exception:
+            print(result)
+    else:
+        print(result)
+
+    if output_path:
+        try:
+            pathlib.Path(output_path).write_text(result)
+        except OSError as e:
+            log.error(f"Failed to save --output {output_path}: {e}")
+            raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
