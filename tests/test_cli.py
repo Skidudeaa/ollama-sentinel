@@ -185,7 +185,6 @@ class TestReportCommand:
 
 
 import pathlib
-import sys
 
 from pytest_httpx import HTTPXMock
 
@@ -225,17 +224,23 @@ class TestTriageCommand:
         # The rendered markdown contains DIAGNOSIS somewhere.
         assert "DIAGNOSIS" in (result.stdout or "") + (result.output or "")
 
-    def test_tty_without_input_exits_with_error(self, tmp_path):
+    def test_empty_input_exits_with_error(self, tmp_path, caplog):
         _write_config(tmp_path)
-        from unittest.mock import patch
-        # Force sys.stdin.isatty() to return True so the TTY guard fires.
-        with patch.object(sys.stdin, "isatty", return_value=True):
+        # Click's CliRunner replaces sys.stdin with its own BytesIO whose
+        # isatty() returns False, so this exercises the empty-input branch
+        # (line ~292), not the TTY-true branch (line ~287). The TTY-true
+        # branch reaches the same exit code via "No input — pipe tool output
+        # or pass a path." but isn't exercised here because we cannot make
+        # CliRunner's stdin claim isatty=True without a deeper refactor.
+        with caplog.at_level("ERROR"):
             result = runner.invoke(
                 app,
                 ["triage", "-c", str(tmp_path / "ollama-sentinel.yaml")],
                 input="",
             )
         assert result.exit_code == 1
+        # Pin the guidance message so a refactor that drops it cannot silently pass.
+        assert "Empty input" in caplog.text or "No input" in caplog.text
 
     def test_output_flag_writes_file(self, tmp_path, httpx_mock: HTTPXMock):
         _write_config(tmp_path)
