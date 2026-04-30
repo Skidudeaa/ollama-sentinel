@@ -61,17 +61,13 @@ fallback.
 **Trigger:** when research-agent output quality traces back to the
 `analyze` node's similar-query recall.
 
-### CB-4. Retriever identity-fallback test doesn't prove identity
+### CB-4. Retriever identity-fallback test doesn't prove identity — DONE (commit aa28795)
 
 **Files:** `tests/context/test_retrievers.py` —
 `test_falls_back_to_identity_on_embedding_unavailable`.
 
-**Issue:** input is `[a, b]` and expected fallback is `[a, b]`. The
-assertion would also pass if the fallback returned `sorted(items)` — it
-only proves a stable sort, not that original order is preserved.
-
-**Fix:** change input to `[b, a]` and assert the fallback returns
-`[b, a]`.
+Input flipped to `[b, a]`, assertion updated to require `[b, a]` output.
+Now distinguishes identity preservation from a stable sort by key.
 
 ### CB-5. Retriever log-level split — DONE (commit 3b58e66)
 
@@ -82,24 +78,20 @@ caught separately at `WARNING`. Import added. Full test suite passes.
 
 ---
 
-### CB-6. `chunk_by_lines` oversized-line caveat undocumented
+### CB-6. `chunk_by_lines` oversized-line caveat undocumented — DONE (commit de45da4)
 
 **Files:** `ollama_sentinel/context/assembler.py:chunk_by_lines`.
 
-**Issue:** a single line longer than `max_tokens` produces one chunk that
-exceeds the budget. Downstream `_render_section` truncation catches it,
-but a caller reading `max_tokens` as a hard guarantee would be surprised.
+Docstring now notes that a single line longer than `max_tokens` is
+emitted as one oversized chunk; downstream `_render_section`
+truncation handles the overflow.
 
-**Fix:** one docstring line. No code change needed.
-
-### CB-7. Stale dev-extra duplication in `pyproject.toml`
+### CB-7. Stale dev-extra duplication in `pyproject.toml` — DONE (commit 826648f)
 
 **Files:** `pyproject.toml`.
 
-**Issue:** `diskcache>=5.6.0` appears in both core `dependencies` and the
-`[dev]` extras block. Harmless but redundant after the TR1 promotion.
-
-**Fix:** drop the `[dev]` duplicate.
+`diskcache>=5.6.0` removed from `[dev]` (already in core deps).
+`toml>=0.10.2` retained in `[dev]` because it's not in core.
 
 ---
 
@@ -124,16 +116,19 @@ and `runner.py`.
 
 **Trigger:** if `triage/` ever needs to import from `config`.
 
-### TR-2. TTY-error test message assertion
+### TR-2. TTY-error test message assertion — DONE (commit 350929e)
 
-**Files:** `tests/test_cli.py::test_tty_without_input_exits_with_error`.
+**Files:** `tests/test_cli.py::test_empty_input_exits_with_error` (renamed).
 
-**Issue:** the test asserts `exit_code == 1` only. A refactor that changes
-the `"No input — pipe tool output or pass a path."` message to something
-unhelpful would silently pass.
-
-**Fix:** add
-`assert "No input" in (result.stdout or "") + (result.output or "")`.
+Investigation revealed the original test never reached the TTY-true
+branch (line 287, "No input — pipe tool output or pass a path.") — Click's
+CliRunner replaces `sys.stdin` with its own BytesIO before `invoke` runs,
+defeating the `patch.object(sys.stdin, "isatty", ...)` call. The test
+was always exercising the empty-input branch (line 292, "Empty input;
+nothing to triage."). Renamed accordingly, swapped the doomed patch
+for a `caplog` assertion that pins the guidance text. Reaching the
+TTY-true branch through CliRunner needs a deeper refactor of cli.triage
+stdin handling and is not addressed here.
 
 ### TR-3. Spec deviation: empty-input exit code
 
