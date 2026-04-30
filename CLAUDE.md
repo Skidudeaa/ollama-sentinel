@@ -25,6 +25,7 @@ ollama-sentinel report              # show recurring violations
 ollama-sentinel init                # create config file
 ollama-sentinel triage < pytest.log # diagnose tool output via local model
 ollama-sentinel triage log.txt -o out.md   # triage a saved log, save result
+ollama-sentinel dashboard           # live TUI: recent reviews + recurring violations
 
 python -m research_agent.main query "question" --context file.py --output result.md
 python -m research_agent.main interactive
@@ -37,7 +38,7 @@ python -m research_agent.main setup
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v                    # ~308 tests, <2 seconds
+pytest tests/ -v                    # 336 tests, ~3 seconds
 pytest tests/ -k "security"         # run security-specific tests
 pytest tests/test_violation_db.py   # run one module's tests
 ```
@@ -92,7 +93,8 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 | `ollama_sentinel/extractor.py` | LLM JSON extraction + regex fallback for parsing review findings |
 | `ollama_sentinel/watcher.py` | FileSentinel, file watching, ignore logic, pipeline orchestration |
 | `ollama_sentinel/models.py` | Pydantic v2 config models: Ollama/Embedding/Memory/Processing with validators |
-| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report |
+| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard |
+| `ollama_sentinel/dashboard.py` | Live Rich TUI for `ollama-sentinel dashboard` — polls reviews dir + ViolationDB read-only |
 | `ollama_sentinel/context/assembler.py` | `Section` / `Priority` / `ContextItem` dataclasses + `assemble()` + `chunk_by_lines` — pure, token-budgeted |
 | `ollama_sentinel/context/tokens.py` | `TokenCounter` (tiktoken `cl100k_base` with char-based fallback) |
 | `ollama_sentinel/context/embeddings.py` | `OllamaEmbedder` — async `/api/embeddings` client, cache-backed, `EmbeddingUnavailable` on failure |
@@ -144,4 +146,5 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 - **Recent landings:**
   - 2026-04-16: ContextBuilder landed. Prompt assembly + violation memory are now embedding-ranked and token-budgeted. Plan: `docs/superpowers/plans/2026-04-16-context-builder.md`.
   - 2026-04-16: `ollama-sentinel triage` landed. Pipe tool output, get a local-model diagnosis with auto-extracted source context. Plan: `docs/superpowers/plans/2026-04-16-triage.md`.
+  - 2026-04-16: `ollama-sentinel dashboard` landed. Live Rich TUI of recent reviews + recurring violations, polls the DB read-only. See `ollama_sentinel/dashboard.py`.
 - **Open follow-ups from both landings** (not blockers): see `docs/superpowers/followups.md`. Covers the remaining `EnhancedMemoryStore` → semantic upgrade, impact-formatter dedup, `TRIAGE_SYSTEM_PROMPT` relocation, and several small test / log-level gaps.

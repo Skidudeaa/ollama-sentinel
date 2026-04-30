@@ -34,6 +34,8 @@ ollama-sentinel run                      # watch + auto-review
 ollama-sentinel review file.py -m security   # manual review with model role
 ollama-sentinel report                   # show recurring violations
 ollama-sentinel report -f json           # machine-readable output
+ollama-sentinel triage < pytest.log      # diagnose tool output via local model
+ollama-sentinel dashboard                # live TUI of reviews + recurring violations
 ollama-sentinel init                     # create config file
 
 python -m research_agent.main query "question" --context src/ --output result.md
@@ -51,7 +53,7 @@ python -m research_agent.main interactive
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v   # 247 tests, <1 second
+pytest tests/ -v   # 336 tests, ~3 seconds
 ```
 
 ## License

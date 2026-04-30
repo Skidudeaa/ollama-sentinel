@@ -44,7 +44,11 @@ coverage.xml
 .aider*
 
 # Claude Code auto-generated
-.claude/repo-map.md
+.claude/
+.planning/
+
+# Editor / extension dirs accidentally placed in tree
+phind.*/
 
 # Runtime data not belonging to this project
 /config/

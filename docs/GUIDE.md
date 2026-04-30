@@ -91,6 +91,16 @@ ollama-sentinel report -l 50        # show up to 50 violations
 # Create a config file
 ollama-sentinel init
 ollama-sentinel init ./my-project -o ./reviews
+
+# Diagnose tool output (pytest, mypy, traceback, etc.) with auto-extracted source context
+ollama-sentinel triage < pytest.log
+ollama-sentinel triage error.log -o triage.md
+ollama-sentinel triage error.log --no-extract        # skip source extraction
+ollama-sentinel triage error.log --context src/foo.py:42  # add explicit context
+
+# Live TUI of recent reviews + recurring violations (read-only, polls the DB)
+ollama-sentinel dashboard
+ollama-sentinel dashboard -r 0.5 -n 3                # half-second refresh, min count 3
 ```
 
 ### The Report
@@ -274,22 +284,33 @@ The switching cost is real. After three months, the violation database knows thi
 ```
 ollama-sentinel/
   ollama_sentinel/           # sentinel module
-    cli.py                   # Typer CLI (run, review, init, report)
+    cli.py                   # Typer CLI (run, review, init, report, triage, dashboard)
     config.py                # YAML config loading
     models.py                # Pydantic v2 config models
-    processor.py             # FileProcessor, OllamaClient
-    watcher.py               # FileSentinel, file watching
-    violation_db.py          # SQLite violation memory
+    processor.py             # FileProcessor, OllamaClient, async prompt formatting
+    watcher.py               # FileSentinel, file watching, pipeline orchestration
+    violation_db.py          # SQLite violation memory + semantic recall (embed_text)
     extractor.py             # Finding extraction (LLM + regex fallback)
+    dashboard.py             # Live TUI (Rich) for reviews + recurring violations
     utils.py                 # safe_read, chunking, diff, compression
+    context/                 # token-budgeted prompt assembly + semantic retrieval
+      assembler.py           # Section / Priority / ContextItem + assemble + chunk_by_lines
+      tokens.py              # TokenCounter (tiktoken cl100k_base, char fallback)
+      embeddings.py          # OllamaEmbedder (async /api/embeddings, cache-backed)
+      retrievers.py          # NullRetriever, SemanticRetriever (cosine, pure Python)
+      recipes.py             # build_review_context / build_research_context / build_triage_context
+    triage/                  # `ollama-sentinel triage` pipeline
+      extractor.py           # regex extraction of file+line refs (traceback/pytest/mypy/ruff)
+      runner.py              # run_triage() + TRIAGE_SYSTEM_PROMPT, hybrid role fallback
 
-  research_agent/            # research agent module
+  research_agent/            # research agent module (separate stack: OpenAI + LangChain)
     main.py                  # Click CLI (query, interactive, setup)
     core/
-      workflow.py            # LangGraph StateGraph with all nodes
+      workflow.py            # LangGraph StateGraph with all nodes (incl. impact_scan)
       agent.py               # ResearchAgent orchestrator
       models.py              # Data models (ContentItem, ImpactItem, etc.)
       config.py              # Singleton TOML config
+      logging.py             # Module logger setup
     tools/
       import_resolver.py     # AST-based Python import graph
       browser.py             # Playwright web scraping
@@ -297,14 +318,22 @@ ollama-sentinel/
       synthesis.py           # Answer synthesis + impact report formatting
       verification.py        # Answer verification
       memory.py              # Cache-backed persistent memory
+      code_context.py        # LlamaIndex vector search over the user's repo
     utils/
-      cache.py               # JSON-serialized diskcache
+      cache.py               # JSON-serialized diskcache (no pickle)
       extraction.py          # HTML content extraction
+      embedding.py           # Vector embedding helpers
+      setup.py               # Initialization / env validation
+    cli/
+      history.py             # Interactive REPL history
+      interface.py           # Interactive REPL UI
 
-  tests/                     # 232 tests, <1 second
+  tests/                     # 336 tests, ~3 seconds
   docs/
     plans/                   # implementation plans
+    superpowers/             # specs, plans, and follow-ups for landed features
     GUIDE.md                 # this file
+  _archive/                  # superseded snapshots (do not import; see _archive/README.md)
   ollama-sentinel.yaml       # example config
   pyproject.toml             # package config
 ```
