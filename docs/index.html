@@ -1,0 +1,1252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ollama Sentinel — A Watcher That Remembers</title>
+  <meta name="description" content="A local AI development companion that watches every save, learns your blind spots, and produces dependency-aware impact analysis. Your code never leaves your machine.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <style>
+  :root {
+    --ink:        #0a0a0c;
+    --ink-2:      #111114;
+    --bone:       #ece6d8;
+    --bone-2:     #c8c2b3;
+    --mute:       #5a5a60;
+    --rule:       #1e1e22;
+    --rule-2:     #2a2a30;
+    --cyan:       #3ee5d8;
+    --cyan-dim:   #1a8c84;
+    --ember:      #ff7d4d;
+    --ember-dim:  #b45a39;
+    --amber:      #f5c451;
+    --plum:       #a578d1;
+
+    --serif: "Fraunces", "Iowan Old Style", Georgia, serif;
+    --mono:  "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    --max:  78rem;
+    --gut:  clamp(1.25rem, 4vw, 3rem);
+  }
+
+  *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--ink);
+    color: var(--bone);
+    font-family: var(--serif);
+    font-optical-sizing: auto;
+    font-variation-settings: "SOFT" 30, "WONK" 0;
+    font-size: 18px;
+    line-height: 1.55;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* Subtle ambient grain so the deep ink doesn't look flat. */
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background-image:
+      radial-gradient(rgba(236,230,216,0.025) 1px, transparent 1px);
+    background-size: 3px 3px;
+    pointer-events: none;
+    z-index: 0;
+    mix-blend-mode: screen;
+  }
+
+  ::selection { background: var(--cyan); color: var(--ink); }
+
+  a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--rule-2); transition: border-color .2s, color .2s; }
+  a:hover { border-color: var(--cyan); color: var(--cyan); }
+
+  code, .mono { font-family: var(--mono); font-size: 0.92em; letter-spacing: -0.01em; }
+  pre { font-family: var(--mono); }
+
+  .wrap {
+    position: relative;
+    max-width: var(--max);
+    margin: 0 auto;
+    padding: 0 var(--gut);
+    z-index: 1;
+  }
+
+  /* ======================================================================
+     LEFT TIME RAIL — the recurring "memory accumulates" motif
+     ====================================================================== */
+  .rail {
+    position: fixed;
+    top: 0; bottom: 0; left: 0;
+    width: 5rem;
+    border-right: 1px solid var(--rule);
+    background: var(--ink);
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 1.25rem 0;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--mute);
+  }
+  .rail .brand {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    color: var(--bone);
+    margin-bottom: auto;
+  }
+  .rail .brand b { color: var(--cyan); font-weight: 500; }
+  .rail .ticks { display: flex; flex-direction: column; gap: 1.1rem; align-items: center; flex: 1; justify-content: center; }
+  .rail .tick { display: flex; flex-direction: column; align-items: center; gap: 0.35rem; transition: color .3s; cursor: pointer; }
+  .rail .tick .dot { width: 6px; height: 6px; border: 1px solid var(--mute); transform: rotate(45deg); transition: all .3s; }
+  .rail .tick.active { color: var(--cyan); }
+  .rail .tick.active .dot { background: var(--cyan); border-color: var(--cyan); box-shadow: 0 0 12px rgba(62,229,216,.6); }
+  .rail .meta { writing-mode: vertical-rl; transform: rotate(180deg); margin-top: auto; opacity: .6; }
+  @media (max-width: 900px) { .rail { display: none; } }
+
+  /* Body offset for rail */
+  .page { padding-left: 0; }
+  @media (min-width: 901px) { .page { padding-left: 5rem; } }
+
+  /* ======================================================================
+     SECTION SCAFFOLDING
+     ====================================================================== */
+  section { position: relative; padding: clamp(4rem, 9vw, 8rem) 0; }
+  section + section { border-top: 1px solid var(--rule); }
+
+  .stamp {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--mute);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    margin-bottom: 1.5rem;
+  }
+  .stamp::before { content: ""; width: 18px; height: 1px; background: var(--cyan); }
+  .stamp .t { color: var(--cyan); }
+
+  h1, h2, h3 { font-family: var(--serif); font-weight: 400; letter-spacing: -0.025em; line-height: 1.02; }
+  h1 { font-size: clamp(3rem, 8vw, 6.5rem); font-variation-settings: "opsz" 144, "SOFT" 30, "WONK" 1; }
+  h2 { font-size: clamp(2rem, 5vw, 3.5rem); font-variation-settings: "opsz" 96, "SOFT" 20; margin-bottom: 1.25rem; }
+  h3 { font-size: clamp(1.15rem, 1.8vw, 1.4rem); font-variation-settings: "opsz" 24; font-weight: 500; letter-spacing: -0.015em; }
+
+  .lead {
+    font-size: clamp(1.05rem, 1.4vw, 1.25rem);
+    color: var(--bone-2);
+    max-width: 36em;
+    line-height: 1.5;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--mute);
+  }
+
+  .rule { height: 1px; background: var(--rule); margin: 3rem 0; }
+
+  /* ======================================================================
+     HERO
+     ====================================================================== */
+  .hero { padding-top: clamp(5rem, 11vw, 9rem); padding-bottom: clamp(5rem, 11vw, 9rem); position: relative; }
+  .hero h1 { max-width: 18ch; }
+  .hero h1 em { font-style: italic; color: var(--cyan); font-variation-settings: "opsz" 144, "SOFT" 100, "WONK" 1; }
+  .cursor { display: inline-block; width: 0.6ch; background: var(--cyan); margin-left: 0.05ch; vertical-align: -0.1em; animation: blink 1.06s steps(2) infinite; height: 0.85em; }
+  @keyframes blink { to { opacity: 0; } }
+
+  .hero-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: clamp(2rem, 5vw, 5rem);
+    align-items: end;
+    margin-top: clamp(3rem, 6vw, 5rem);
+  }
+  @media (max-width: 800px) { .hero-grid { grid-template-columns: 1fr; } }
+
+  .hero-cta { display: flex; gap: 1.5rem; align-items: center; margin-top: 2.5rem; flex-wrap: wrap; }
+  .btn {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 1rem 1.6rem;
+    border: 1px solid var(--bone);
+    color: var(--bone);
+    background: transparent;
+    transition: all .25s;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.7rem;
+  }
+  .btn.primary { background: var(--cyan); color: var(--ink); border-color: var(--cyan); }
+  .btn.primary:hover { background: transparent; color: var(--cyan); }
+  .btn.ghost:hover { border-color: var(--cyan); color: var(--cyan); }
+
+  /* Hero visualization: day-1 vs day-30 finding density */
+  .density {
+    border: 1px solid var(--rule);
+    padding: 1.5rem;
+    background: var(--ink-2);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+  }
+  .density-row { display: grid; grid-template-columns: 4.5rem 1fr 4rem; gap: 0.8rem; align-items: center; padding: 0.45rem 0; border-bottom: 1px dashed var(--rule); }
+  .density-row:last-child { border-bottom: none; }
+  .density-row .lbl { color: var(--mute); }
+  .density-row .bar { display: flex; gap: 2px; }
+  .density-row .bar span { width: 6px; height: 14px; background: var(--cyan-dim); opacity: 0; transform: scaleY(0); transform-origin: bottom; }
+  .density-row .bar span.crit { background: var(--ember); }
+  .density-row .bar span.warn { background: var(--amber); }
+  .density-row .bar span.lo   { background: var(--cyan-dim); }
+  .density-row .num { color: var(--bone-2); text-align: right; font-variant-numeric: tabular-nums; }
+  .density-row.live .bar span { animation: ticksIn .5s ease forwards; }
+  @keyframes ticksIn { to { opacity: 0.95; transform: scaleY(1); } }
+
+  .density-cap { color: var(--mute); font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--rule); }
+
+  /* ======================================================================
+     TWO TOOLS SECTION
+     ====================================================================== */
+  .duo {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    border: 1px solid var(--rule);
+    margin-top: 2.5rem;
+  }
+  @media (max-width: 800px) { .duo { grid-template-columns: 1fr; } }
+  .duo > article { padding: clamp(1.5rem, 3vw, 2.5rem); position: relative; }
+  .duo > article + article { border-left: 1px solid var(--rule); }
+  @media (max-width: 800px) { .duo > article + article { border-left: 0; border-top: 1px solid var(--rule); } }
+  .duo .tag { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--cyan); margin-bottom: 1rem; }
+  .duo h3 { margin-bottom: 0.75rem; font-size: 1.6rem; }
+  .duo p { color: var(--bone-2); font-size: 0.98rem; line-height: 1.55; }
+  .duo .meta { margin-top: 1.5rem; font-family: var(--mono); font-size: 0.72rem; color: var(--mute); display: flex; gap: 1rem; flex-wrap: wrap; }
+  .duo .meta span::before { content: "·"; margin-right: 0.4rem; color: var(--cyan); }
+
+  /* ======================================================================
+     QUICKSTART
+     ====================================================================== */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-top: 2.5rem; }
+  @media (max-width: 800px) { .steps { grid-template-columns: 1fr; } }
+  .step { border: 1px solid var(--rule); padding: 1.75rem; position: relative; }
+  .step .n {
+    position: absolute; top: -0.9rem; left: 1.5rem;
+    background: var(--ink); padding: 0 0.6rem;
+    font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.18em;
+    color: var(--cyan); text-transform: uppercase;
+  }
+  .step h3 { margin-bottom: 1rem; font-size: 1.15rem; }
+  .step p { font-size: 0.92rem; color: var(--bone-2); margin-bottom: 1.25rem; }
+
+  pre.shell {
+    background: var(--ink-2);
+    border: 1px solid var(--rule);
+    padding: 0.9rem 1rem;
+    font-size: 0.78rem;
+    color: var(--bone);
+    overflow-x: auto;
+    line-height: 1.5;
+    position: relative;
+  }
+  pre.shell .pr { color: var(--cyan); user-select: none; }
+  pre.shell .c { color: var(--mute); }
+  pre.shell .k { color: var(--amber); }
+  pre.shell .s { color: var(--cyan); }
+  pre.shell .copy {
+    position: absolute; top: 0.5rem; right: 0.5rem;
+    font-size: 0.68rem; padding: 0.15rem 0.5rem;
+    border: 1px solid var(--rule-2); color: var(--mute);
+    background: var(--ink); cursor: pointer;
+    transition: all .2s; opacity: 0;
+  }
+  pre.shell:hover .copy { opacity: 1; }
+  pre.shell .copy:hover { color: var(--cyan); border-color: var(--cyan); }
+  pre.shell .copy.ok { color: var(--cyan); border-color: var(--cyan); }
+
+  /* ======================================================================
+     LOOP DIAGRAM
+     ====================================================================== */
+  .loop {
+    margin-top: 3rem;
+    padding: clamp(2rem, 4vw, 3.5rem);
+    border: 1px solid var(--rule);
+    background: var(--ink-2);
+    position: relative;
+  }
+  .loop svg { width: 100%; height: auto; max-height: 420px; }
+  .loop-cap { font-family: var(--mono); font-size: 0.78rem; color: var(--mute); margin-top: 1.5rem; line-height: 1.7; }
+  .loop-cap b { color: var(--cyan); font-weight: 400; }
+
+  /* ======================================================================
+     COMMAND GRID
+     ====================================================================== */
+  .cmds { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; border: 1px solid var(--rule); margin-top: 2.5rem; }
+  @media (max-width: 900px) { .cmds { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 600px) { .cmds { grid-template-columns: 1fr; } }
+  .cmd {
+    padding: 1.75rem;
+    border-right: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    position: relative;
+    transition: background .2s;
+  }
+  .cmd:hover { background: var(--ink-2); }
+  .cmds > .cmd:nth-child(3n) { border-right: 0; }
+  .cmds > .cmd:nth-last-child(-n+3) { border-bottom: 0; }
+  @media (max-width: 900px) {
+    .cmds > .cmd { border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+    .cmds > .cmd:nth-child(3n) { border-right: 1px solid var(--rule); }
+    .cmds > .cmd:nth-child(2n) { border-right: 0; }
+    .cmds > .cmd:nth-last-child(-n+3) { border-bottom: 1px solid var(--rule); }
+    .cmds > .cmd:nth-last-child(-n+2) { border-bottom: 0; }
+  }
+  @media (max-width: 600px) {
+    .cmds > .cmd { border-right: 0 !important; border-bottom: 1px solid var(--rule) !important; }
+    .cmds > .cmd:last-child { border-bottom: 0 !important; }
+  }
+  .cmd .glyph {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--mute);
+    margin-bottom: 0.6rem;
+  }
+  .cmd .name {
+    font-family: var(--mono);
+    font-size: 1.1rem;
+    color: var(--cyan);
+    margin-bottom: 0.6rem;
+  }
+  .cmd .desc {
+    font-size: 0.95rem;
+    color: var(--bone-2);
+    line-height: 1.5;
+    margin-bottom: 1rem;
+  }
+  .cmd .ex {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--bone);
+    background: var(--ink);
+    border-left: 2px solid var(--cyan-dim);
+    padding: 0.55rem 0.8rem;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .cmd .ex .pr { color: var(--cyan); }
+
+  /* ======================================================================
+     SAMPLE OUTPUT — recurring violations table
+     ====================================================================== */
+  .terminal {
+    background: var(--ink-2);
+    border: 1px solid var(--rule);
+    margin-top: 2.5rem;
+    overflow: hidden;
+  }
+  .terminal .bar {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.7rem 1rem;
+    background: #0d0d10;
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--mute);
+    letter-spacing: 0.1em;
+  }
+  .terminal .bar .dots { display: flex; gap: 0.4rem; }
+  .terminal .bar .dots i {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--rule-2); display: inline-block;
+  }
+  .terminal .bar .ttl { margin-left: 0.5rem; }
+  .terminal pre {
+    padding: 1.3rem 1.5rem;
+    font-size: 0.78rem;
+    line-height: 1.65;
+    color: var(--bone);
+    overflow-x: auto;
+  }
+  .terminal pre .h { color: var(--cyan); }
+  .terminal pre .crit { color: var(--ember); }
+  .terminal pre .warn { color: var(--amber); }
+  .terminal pre .ok { color: var(--cyan); }
+  .terminal pre .mute { color: var(--mute); }
+  .terminal pre .em { color: var(--plum); }
+
+  /* ======================================================================
+     MEMORY COMPOUNDS — the thesis section
+     ====================================================================== */
+  .thesis {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    gap: clamp(2rem, 5vw, 5rem);
+    align-items: center;
+    margin-top: 2.5rem;
+  }
+  @media (max-width: 850px) { .thesis { grid-template-columns: 1fr; } }
+  .thesis blockquote {
+    font-family: var(--serif);
+    font-size: clamp(1.4rem, 2.4vw, 2rem);
+    font-variation-settings: "opsz" 48, "SOFT" 60, "WONK" 1;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    color: var(--bone);
+    border-left: 2px solid var(--cyan);
+    padding-left: 1.5rem;
+  }
+  .thesis blockquote em { color: var(--cyan); font-style: italic; }
+
+  .chart { border: 1px solid var(--rule); padding: 1.25rem; background: var(--ink-2); }
+  .chart svg { display: block; width: 100%; height: auto; }
+  .chart .leg {
+    display: flex; flex-wrap: wrap; gap: 1.25rem;
+    margin-top: 1rem;
+    font-family: var(--mono); font-size: 0.7rem;
+    color: var(--mute); letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .chart .leg span { display: inline-flex; align-items: center; gap: 0.45rem; }
+  .chart .leg i { width: 12px; height: 2px; display: inline-block; }
+
+  /* ======================================================================
+     RESEARCH AGENT
+     ====================================================================== */
+  .ra { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: clamp(2rem, 5vw, 4rem); margin-top: 2.5rem; }
+  @media (max-width: 850px) { .ra { grid-template-columns: 1fr; } }
+  .ra .copy h3 { margin-bottom: 1rem; font-size: 1.5rem; }
+  .ra .copy p { color: var(--bone-2); margin-bottom: 1rem; font-size: 0.98rem; line-height: 1.55; }
+  .ra .copy .step-list { list-style: none; margin-top: 1.5rem; }
+  .ra .copy .step-list li {
+    display: grid;
+    grid-template-columns: 2.5rem 1fr;
+    gap: 0.5rem;
+    padding: 0.65rem 0;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 0.85rem;
+  }
+  .ra .copy .step-list li:last-child { border-bottom: 1px solid var(--rule); }
+  .ra .copy .step-list li b { color: var(--cyan); font-weight: 400; }
+
+  /* ======================================================================
+     DASHBOARD PREVIEW
+     ====================================================================== */
+  .dash { margin-top: 2rem; }
+  .dash-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: 0;
+    border: 1px solid var(--rule);
+    background: var(--ink-2);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    overflow: hidden;
+  }
+  @media (max-width: 800px) { .dash-grid { grid-template-columns: 1fr; } }
+  .dash-grid > div { padding: 1rem 1.25rem; }
+  .dash-grid .dh {
+    color: var(--cyan);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 0.7rem;
+    margin-bottom: 0.8rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--rule);
+  }
+  .dash-grid .left  { border-right: 1px solid var(--rule); }
+  @media (max-width: 800px) { .dash-grid .left { border-right: 0; border-bottom: 1px solid var(--rule); } }
+  .dash-row { display: grid; grid-template-columns: 5.5rem 1fr; padding: 0.25rem 0; color: var(--bone-2); }
+  .dash-row .when { color: var(--mute); }
+  .dash-row .crit { color: var(--ember); }
+  .dash-row .warn { color: var(--amber); }
+  .dash-row .ok { color: var(--cyan); }
+
+  /* ======================================================================
+     CONFIG SECTION
+     ====================================================================== */
+  .cfg { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: clamp(2rem, 5vw, 4rem); margin-top: 2.5rem; align-items: start; }
+  @media (max-width: 850px) { .cfg { grid-template-columns: 1fr; } }
+  .cfg .legend { font-family: var(--mono); font-size: 0.85rem; line-height: 1.7; }
+  .cfg .legend dt { color: var(--cyan); margin-top: 1rem; }
+  .cfg .legend dt:first-child { margin-top: 0; }
+  .cfg .legend dd { color: var(--bone-2); padding-left: 0; font-size: 0.85rem; }
+
+  pre.yaml { background: var(--ink-2); border: 1px solid var(--rule); padding: 1.25rem 1.4rem; font-size: 0.78rem; line-height: 1.7; overflow-x: auto; }
+  pre.yaml .key { color: var(--cyan); }
+  pre.yaml .val { color: var(--bone); }
+  pre.yaml .str { color: var(--amber); }
+  pre.yaml .com { color: var(--mute); font-style: italic; }
+  pre.yaml .num { color: var(--plum); }
+
+  /* ======================================================================
+     FOOTER
+     ====================================================================== */
+  footer { padding: 4rem 0 6rem; border-top: 1px solid var(--rule); }
+  .foot {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 2rem;
+    align-items: start;
+  }
+  @media (max-width: 800px) { .foot { grid-template-columns: 1fr; } }
+  footer h3 { font-size: 1.3rem; margin-bottom: 1rem; }
+  footer ul { list-style: none; font-family: var(--mono); font-size: 0.85rem; line-height: 1.9; color: var(--bone-2); }
+  footer ul li b { color: var(--cyan); font-weight: 400; }
+  footer .signoff {
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--mute);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+  footer .signoff b { color: var(--bone); font-weight: 400; }
+
+  /* Reveal animations on scroll */
+  .reveal { opacity: 0; transform: translateY(14px); transition: opacity .8s ease, transform .8s ease; }
+  .reveal.in { opacity: 1; transform: translateY(0); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reveal, .density-row.live .bar span, .cursor { animation: none !important; transition: none !important; opacity: 1 !important; transform: none !important; }
+  }
+  </style>
+</head>
+<body>
+
+<!-- LEFT TIME RAIL -->
+<aside class="rail" aria-hidden="true">
+  <div class="brand"><b>OLLAMA</b> · SENTINEL</div>
+  <div class="ticks">
+    <a href="#hero"     class="tick" data-i="0"><span class="dot"></span><span>t+0</span></a>
+    <a href="#tools"    class="tick" data-i="1"><span class="dot"></span><span>t+1s</span></a>
+    <a href="#start"    class="tick" data-i="2"><span class="dot"></span><span>t+5s</span></a>
+    <a href="#loop"     class="tick" data-i="3"><span class="dot"></span><span>t+30s</span></a>
+    <a href="#cmds"     class="tick" data-i="4"><span class="dot"></span><span>t+1m</span></a>
+    <a href="#report"   class="tick" data-i="5"><span class="dot"></span><span>t+1d</span></a>
+    <a href="#thesis"   class="tick" data-i="6"><span class="dot"></span><span>t+1w</span></a>
+    <a href="#research" class="tick" data-i="7"><span class="dot"></span><span>t+1mo</span></a>
+    <a href="#dash"     class="tick" data-i="8"><span class="dot"></span><span>live</span></a>
+    <a href="#cfg"      class="tick" data-i="9"><span class="dot"></span><span>cfg</span></a>
+  </div>
+  <div class="meta">v0.1 · MIT · LOCAL</div>
+</aside>
+
+<div class="page">
+
+<!-- ========================================================================
+     HERO
+     ======================================================================== -->
+<section class="hero" id="hero">
+  <div class="wrap">
+    <div class="stamp"><span class="t">t+0</span><span>FIRST CONTACT</span></div>
+    <h1>
+      Most AI review tools<br>
+      forget you.<br>
+      <em>This one remembers.</em><span class="cursor"></span>
+    </h1>
+
+    <div class="hero-grid">
+      <div>
+        <p class="lead" style="margin-top: 2rem;">
+          A local AI development companion that watches every save, learns your blind
+          spots, and produces dependency-aware impact analysis. Two tools, one
+          loop, your machine. Your code never leaves it.
+        </p>
+        <div class="hero-cta">
+          <a href="#start" class="btn primary">Get started <span>↓</span></a>
+          <a href="#loop" class="btn ghost">See the loop</a>
+        </div>
+      </div>
+
+      <div class="density" aria-label="Findings density across time">
+        <div class="density-row" data-day="1">
+          <div class="lbl">DAY 1</div>
+          <div class="bar" data-count="3"></div>
+          <div class="num">3 found</div>
+        </div>
+        <div class="density-row" data-day="3">
+          <div class="lbl">DAY 3</div>
+          <div class="bar" data-count="9"></div>
+          <div class="num">9</div>
+        </div>
+        <div class="density-row" data-day="7">
+          <div class="lbl">DAY 7</div>
+          <div class="bar" data-count="18"></div>
+          <div class="num">18</div>
+        </div>
+        <div class="density-row" data-day="14">
+          <div class="lbl">DAY 14</div>
+          <div class="bar" data-count="31"></div>
+          <div class="num">31</div>
+        </div>
+        <div class="density-row" data-day="30">
+          <div class="lbl">DAY 30</div>
+          <div class="bar" data-count="48"></div>
+          <div class="num">48</div>
+        </div>
+        <div class="density-cap">
+          Findings persisted to a local SQLite DB. Recurring patterns
+          surface in <span style="color: var(--cyan)">/report</span> after a week
+          of normal work.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================================
+     TWO TOOLS
+     ======================================================================== -->
+<section id="tools">
+  <div class="wrap">
+    <div class="stamp"><span class="t">t+1s</span><span>WHAT YOU GET</span></div>
+    <h2>Two tools. One loop.</h2>
+    <p class="lead">A file watcher that gets sharper over time. A research agent that
+      tells you which lines of <em>your</em> code break when a library moves.</p>
+
+    <div class="duo reveal">
+      <article>
+        <div class="tag">█ THE SENTINEL</div>
+        <h3>Watches every save.<br>Remembers every finding.</h3>
+        <p>Edit any file in your project. Within seconds, a local Ollama model
+          reviews it. Findings are upserted to a SQLite database, embedded for
+          semantic recall, and the next review knows what you keep getting wrong.
+          After a week, it knows your team's blind spots better than you do.</p>
+        <div class="meta">
+          <span>local model</span><span>sqlite memory</span><span>semantic recall</span><span>versioned reviews</span>
+        </div>
+      </article>
+      <article>
+        <div class="tag">█ THE RESEARCH AGENT</div>
+        <h3>Migrations as<br>impact analysis.</h3>
+        <p>Ask about a library change. Instead of a generic essay, get a ranked
+          list of every call site in <em>your</em> code that breaks: file, line,
+          severity, suggested fix. AST import graphs, web research, and a
+          LangGraph verify loop, glued together so the answer is grounded in
+          your repo.</p>
+        <div class="meta">
+          <span>langgraph workflow</span><span>ast import graph</span><span>ranked impact</span><span>cached results</span>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================================
+     QUICKSTART
+     ======================================================================== -->
+<section id="start">
+  <div class="wrap">
+    <div class="stamp"><span class="t">t+5s</span><span>QUICK START</span></div>
+    <h2>Three commands. Then save a file.</h2>
+    <p class="lead">Python 3.10+, a running Ollama instance, one config file. That's the boot sequence.</p>
+
+    <div class="steps reveal">
+      <div class="step">
+        <div class="n">01 · INSTALL</div>
+        <h3>Clone &amp; install the package.</h3>
+        <p>Editable install. Add <code>[research]</code> only if you want the impact-analysis agent.</p>
+<pre class="shell"><span class="pr">$</span> git clone github.com/skidudeaa/ollama-sentinel
+<span class="pr">$</span> <span class="k">cd</span> ollama-sentinel
+<span class="pr">$</span> pip install -e .
+<button class="copy" data-c="git clone github.com/skidudeaa/ollama-sentinel
+cd ollama-sentinel
+pip install -e .">copy</button></pre>
+      </div>
+
+      <div class="step">
+        <div class="n">02 · OLLAMA</div>
+        <h3>Pull a model. Start the server.</h3>
+        <p>Defaults work with <code>gemma3:4b</code>. Any local model exposing the Ollama API works.</p>
+<pre class="shell"><span class="pr">$</span> brew install ollama
+<span class="pr">$</span> ollama pull gemma3:4b
+<span class="pr">$</span> ollama serve <span class="c"># :11434</span>
+<button class="copy" data-c="brew install ollama
+ollama pull gemma3:4b
+ollama serve">copy</button></pre>
+      </div>
+
+      <div class="step">
+        <div class="n">03 · RUN</div>
+        <h3>Init config. Watch.</h3>
+        <p>The first <code>run</code> creates <code>ollama-sentinel.yaml</code> if missing. Edit a file. A review appears.</p>
+<pre class="shell"><span class="pr">$</span> ollama-sentinel init
+<span class="pr">$</span> ollama-sentinel run
+<span class="c"># save any file to trigger a review</span>
+<button class="copy" data-c="ollama-sentinel init
+ollama-sentinel run">copy</button></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================================
+     THE LOOP — data flow diagram
+     ======================================================================== -->
+<section id="loop">
+  <div class="wrap">
+    <div class="stamp"><span class="t">t+30s</span><span>UNDER THE HOOD</span></div>
+    <h2>The loop that compounds.</h2>
+    <p class="lead">Every save makes the next save's review smarter. Here is what happens
+      between the keypress and the markdown file in <code>.ollama_reviews/</code>.</p>
+
+    <div class="loop reveal">
+      <svg viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Data flow: file save through debounce, prior-finding recall, Ollama review, finding extraction, persistence, and review save.">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#3ee5d8"/>
+          </marker>
+          <marker id="arrM" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#5a5a60"/>
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e1e22" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="1200" height="360" fill="url(#grid)" opacity="0.6"/>
+
+        <!-- File save -->
+        <g>
+          <rect x="20" y="140" width="150" height="80" fill="#0a0a0c" stroke="#3ee5d8" stroke-width="1.2"/>
+          <text x="95" y="170" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3ee5d8" letter-spacing="2">FILE SAVE</text>
+          <text x="95" y="195" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#c8c2b3">~/proj/auth.py</text>
+        </g>
+
+        <!-- Debounce -->
+        <g>
+          <rect x="200" y="140" width="130" height="80" fill="#0a0a0c" stroke="#5a5a60"/>
+          <text x="265" y="170" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#ece6d8" letter-spacing="2">DEBOUNCE</text>
+          <text x="265" y="195" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">1500ms</text>
+        </g>
+
+        <!-- Prior findings recall -->
+        <g>
+          <rect x="360" y="40" width="190" height="100" fill="#0a0a0c" stroke="#3ee5d8" stroke-width="1.2"/>
+          <text x="455" y="68" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3ee5d8" letter-spacing="2">SEMANTIC RECALL</text>
+          <line x1="380" y1="80" x2="530" y2="80" stroke="#1e1e22"/>
+          <text x="455" y="98" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#c8c2b3">embed_text · cosine</text>
+          <text x="455" y="118" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">k=5 from violation_db</text>
+        </g>
+
+        <!-- Context builder -->
+        <g>
+          <rect x="360" y="220" width="190" height="100" fill="#0a0a0c" stroke="#5a5a60"/>
+          <text x="455" y="248" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#ece6d8" letter-spacing="2">CONTEXT BUILDER</text>
+          <line x1="380" y1="260" x2="530" y2="260" stroke="#1e1e22"/>
+          <text x="455" y="278" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#c8c2b3">recipe + token budget</text>
+          <text x="455" y="298" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">chunk_by_lines</text>
+        </g>
+
+        <!-- Ollama -->
+        <g>
+          <rect x="580" y="140" width="160" height="80" fill="#0a0a0c" stroke="#3ee5d8" stroke-width="1.6"/>
+          <text x="660" y="170" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3ee5d8" letter-spacing="2">OLLAMA</text>
+          <text x="660" y="190" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#c8c2b3">localhost:11434</text>
+          <text x="660" y="208" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">httpx · tenacity retry</text>
+        </g>
+
+        <!-- Extract -->
+        <g>
+          <rect x="770" y="140" width="160" height="80" fill="#0a0a0c" stroke="#5a5a60"/>
+          <text x="850" y="170" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#ece6d8" letter-spacing="2">EXTRACT</text>
+          <text x="850" y="190" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#c8c2b3">LLM JSON</text>
+          <text x="850" y="208" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">+ regex fallback</text>
+        </g>
+
+        <!-- Persist -->
+        <g>
+          <rect x="960" y="40" width="180" height="100" fill="#0a0a0c" stroke="#3ee5d8" stroke-width="1.2"/>
+          <text x="1050" y="68" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3ee5d8" letter-spacing="2">VIOLATION DB</text>
+          <line x1="980" y1="80" x2="1120" y2="80" stroke="#1e1e22"/>
+          <text x="1050" y="98" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#c8c2b3">SQLite · WAL</text>
+          <text x="1050" y="118" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">upsert + embed_text</text>
+        </g>
+
+        <!-- Save review -->
+        <g>
+          <rect x="960" y="220" width="180" height="100" fill="#0a0a0c" stroke="#5a5a60"/>
+          <text x="1050" y="248" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#ece6d8" letter-spacing="2">REVIEW SAVED</text>
+          <line x1="980" y1="260" x2="1120" y2="260" stroke="#1e1e22"/>
+          <text x="1050" y="278" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#c8c2b3">.ollama_reviews/</text>
+          <text x="1050" y="298" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">versioned + history</text>
+        </g>
+
+        <!-- Arrows -->
+        <line x1="170" y1="180" x2="200" y2="180" stroke="#3ee5d8" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="330" y1="180" x2="360" y2="90"  stroke="#5a5a60" stroke-width="1" marker-end="url(#arrM)"/>
+        <line x1="330" y1="180" x2="360" y2="270" stroke="#5a5a60" stroke-width="1" marker-end="url(#arrM)"/>
+        <line x1="550" y1="90"  x2="580" y2="160" stroke="#3ee5d8" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="550" y1="270" x2="580" y2="200" stroke="#3ee5d8" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="740" y1="180" x2="770" y2="180" stroke="#3ee5d8" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="930" y1="180" x2="960" y2="90"  stroke="#3ee5d8" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="930" y1="180" x2="960" y2="270" stroke="#5a5a60" stroke-width="1" marker-end="url(#arrM)"/>
+
+        <!-- Loopback feed-forward arrow: violation_db -> semantic recall -->
+        <path d="M 1050 40 Q 1050 5 700 5 Q 455 5 455 40" fill="none" stroke="#3ee5d8" stroke-width="1" stroke-dasharray="3 4" marker-end="url(#arr)"/>
+        <text x="755" y="22" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#3ee5d8" letter-spacing="2">NEXT REVIEW INHERITS THE MEMORY</text>
+      </svg>
+
+      <p class="loop-cap">
+        The dashed feedback arc is the whole point. Each saved finding becomes
+        retrievable context for the <b>next</b> review of any related file.
+        Embedding-ranked, token-budgeted, and capped so the prompt stays useful
+        instead of overflowing. Best-effort everywhere — extraction failure
+        never blocks the review save.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================================
+     COMMANDS
+     ======================================================================== -->
+<section id="cmds">
+  <div class="wrap">
+    <div class="stamp"><span class="t">t+1m</span><span>SURFACE AREA</span></div>
+    <h2>Six commands. That's the whole CLI.</h2>
+    <p class="lead">Each one fits on one line. Defaults are sensible. Flags exist when you need them.</p>
+
+    <div class="cmds reveal">
+      <div class="cmd">
+        <div class="glyph">·──── 01</div>
+        <div class="name">run</div>
+        <div class="desc">Watch the working directory and review every save. The default mode.</div>
+        <div class="ex"><span class="pr">$</span> ollama-sentinel run -v</div>
+      </div>
+      <div class="cmd">
+        <div class="glyph">·──── 02</div>
+        <div class="name">review</div>
+        <div class="desc">Review a single file on demand. <code>-m</code> picks a model role.</div>
+        <div class="ex"><span class="pr">$</span> ollama-sentinel review src/auth.py -m security</div>
+      </div>
+      <div class="cmd">
+        <div class="glyph">·──── 03</div>
+        <div class="name">report</div>
+        <div class="desc">Show recurring violations ranked by frequency. <code>-f json</code> for tooling.</div>
+        <div class="ex"><span class="pr">$</span> ollama-sentinel report -n 3</div>
+      </div>
+      <div class="cmd">
+        <div class="glyph">·──── 04</div>
+        <div class="name">triage</div>
+        <div class="desc">Pipe tool output (pytest, mypy, traceback). Get a diagnosis with auto-extracted source.</div>
+        <div class="ex"><span class="pr">$</span> pytest 2&gt;&amp;1 | ollama-sentinel triage</div>
+      </div>
+      <div class="cmd">
+        <div class="glyph">·──── 05</div>
+        <div class="name">dashboard</div>
+        <div class="desc">Live Rich TUI — recent reviews + recurring violations, polled read-only.</div>
+        <div class="ex"><span class="pr">$</span> ollama-sentinel dashboard -r 0.5</div>
+      </div>
+      <div class="cmd">
+        <div class="glyph">·──── 06</div>
+        <div class="name">init</div>
+        <div class="desc">Drop a sane <code>ollama-sentinel.yaml</code> in the current directory.</div>
+        <div class="ex"><span class="pr">$</span> ollama-sentinel init</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================================
+     SAMPLE OUTPUT - report
+     ======================================================================== -->
+<section id="report">
+  <div class="wrap">
+    <div class="stamp"><span class="t">t+1d</span><span>WHAT THE REPORT LOOKS LIKE</span></div>
+    <h2>The view you take to a sprint planning meeting.</h2>
+    <p class="lead">After a week of normal saves, <code>ollama-sentinel report</code> shows the patterns
+      your model has flagged repeatedly. Frequency × severity, sorted.</p>
+
+    <div class="terminal reveal">
+      <div class="bar">
+        <span class="dots"><i></i><i></i><i></i></span>
+        <span class="ttl">~/proj  ·  ollama-sentinel report -n 2</span>
+      </div>
+<pre>             <span class="h">Recurring Violations (seen ≥ 2×)</span>
+<span class="mute">┌──────┬───────┬──────────┬──────────┬──────────────┬───────┬──────────────────────┐</span>
+<span class="mute">│</span>  #   <span class="mute">│</span> Count <span class="mute">│</span> Severity <span class="mute">│</span> Category <span class="mute">│</span>     File     <span class="mute">│</span> Lines <span class="mute">│</span>     Description      <span class="mute">│</span>
+<span class="mute">├──────┼───────┼──────────┼──────────┼──────────────┼───────┼──────────────────────┤</span>
+<span class="mute">│</span>  1   <span class="mute">│</span>   <span class="em">7</span>   <span class="mute">│</span>   <span class="warn">high</span>   <span class="mute">│</span>   bug    <span class="mute">│</span>  src/db.py   <span class="mute">│</span> 42-45 <span class="mute">│</span> Connection not closed<span class="mute">│</span>
+<span class="mute">│</span>      <span class="mute">│</span>       <span class="mute">│</span>          <span class="mute">│</span>          <span class="mute">│</span>              <span class="mute">│</span>       <span class="mute">│</span> in finally block     <span class="mute">│</span>
+<span class="mute">├──────┼───────┼──────────┼──────────┼──────────────┼───────┼──────────────────────┤</span>
+<span class="mute">│</span>  2   <span class="mute">│</span>   <span class="em">5</span>   <span class="mute">│</span> <span class="crit">critical</span> <span class="mute">│</span> security <span class="mute">│</span> src/auth.py  <span class="mute">│</span> 88-92 <span class="mute">│</span> SQL injection via    <span class="mute">│</span>
+<span class="mute">│</span>      <span class="mute">│</span>       <span class="mute">│</span>          <span class="mute">│</span>          <span class="mute">│</span>              <span class="mute">│</span>       <span class="mute">│</span> string format        <span class="mute">│</span>
+<span class="mute">├──────┼───────┼──────────┼──────────┼──────────────┼───────┼──────────────────────┤</span>
+<span class="mute">│</span>  3   <span class="mute">│</span>   <span class="em">3</span>   <span class="mute">│</span>  medium  <span class="mute">│</span>  design  <span class="mute">│</span> src/api.py   <span class="mute">│</span> 15-30 <span class="mute">│</span> God function — split <span class="mute">│</span>
+<span class="mute">│</span>      <span class="mute">│</span>       <span class="mute">│</span>          <span class="mute">│</span>          <span class="mute">│</span>              <span class="mute">│</span>       <span class="mute">│</span> into smaller units   <span class="mute">│</span>
+<span class="mute">└──────┴───────┴──────────┴──────────┴──────────────┴───────┴──────────────────────┘</span>
+
+<span class="mute">  → 3 recurring patterns in 7 days · 12 reviews · memory.db: 4.2 KB</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================================
+     MEMORY COMPOUNDS — thesis
+     ======================================================================== -->
+<section id="thesis">
+  <div class="wrap">
+    <div class="stamp"><span class="t">t+1w</span><span>WHY THIS WORKS</span></div>
+    <h2>Memory compounds.</h2>
+
+    <div class="thesis reveal">
+      <blockquote>
+        Every cloud AI tool forgets you the moment the conversation ends.
+        Copilot Review sees your PR once. CodeRabbit sees your PR once.
+        ChatGPT sees whatever you paste.
+        <br><br>
+        Ollama Sentinel <em>accumulates.</em> After three months the violation
+        database knows things about your codebase that don't exist anywhere
+        else. That's the point.
+      </blockquote>
+
+      <div class="chart">
+        <svg viewBox="0 0 600 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Findings remembered over time, comparing cloud review tools (flat at 0) vs Ollama Sentinel (compounding upward).">
+          <defs>
+            <linearGradient id="cyanFade" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="#3ee5d8" stop-opacity="0.45"/>
+              <stop offset="100%" stop-color="#3ee5d8" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+
+          <!-- axes -->
+          <line x1="50" y1="240" x2="580" y2="240" stroke="#2a2a30"/>
+          <line x1="50" y1="20"  x2="50"  y2="240" stroke="#2a2a30"/>
+
+          <!-- Y label -->
+          <text x="20" y="30" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">findings</text>
+          <text x="20" y="44" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">remembered</text>
+
+          <!-- X labels -->
+          <text x="50"  y="260" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">day 0</text>
+          <text x="180" y="260" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">day 7</text>
+          <text x="320" y="260" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">day 30</text>
+          <text x="455" y="260" font-family="JetBrains Mono" font-size="10" fill="#5a5a60">day 90</text>
+
+          <!-- Cloud review tools — flat at 0 -->
+          <line x1="50" y1="238" x2="580" y2="238" stroke="#5a5a60" stroke-width="1.5" stroke-dasharray="2 4"/>
+          <text x="585" y="242" font-family="JetBrains Mono" font-size="9" fill="#5a5a60">cloud</text>
+
+          <!-- Sentinel curve -->
+          <path d="M 50 238 Q 130 230 180 195 Q 240 160 320 110 Q 410 70 580 30"
+                fill="none" stroke="#3ee5d8" stroke-width="2"/>
+          <!-- area fill -->
+          <path d="M 50 238 Q 130 230 180 195 Q 240 160 320 110 Q 410 70 580 30 L 580 240 L 50 240 Z"
+                fill="url(#cyanFade)"/>
+          <!-- markers -->
+          <circle cx="180" cy="195" r="3" fill="#3ee5d8"/>
+          <circle cx="320" cy="110" r="3" fill="#3ee5d8"/>
+          <circle cx="455" cy="62"  r="3" fill="#3ee5d8"/>
+          <circle cx="580" cy="30"  r="4" fill="#3ee5d8"/>
+          <text x="525" y="22" font-family="JetBrains Mono" font-size="10" fill="#3ee5d8">sentinel</text>
+
+          <!-- annotations -->
+          <text x="190" y="190" font-family="JetBrains Mono" font-size="9" fill="#c8c2b3">first patterns</text>
+          <text x="330" y="105" font-family="JetBrains Mono" font-size="9" fill="#c8c2b3">team blind spots</text>
+          <text x="465" y="58"  font-family="JetBrains Mono" font-size="9" fill="#c8c2b3">irreplaceable</text>
+        </svg>
+
+        <div class="leg">
+          <span><i style="background: #3ee5d8"></i>Ollama Sentinel</span>
+          <span><i style="background: #5a5a60"></i>Cloud review (Copilot, CodeRabbit, ChatGPT)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================================
+     RESEARCH AGENT
+     ======================================================================== -->
+<section id="research">
+  <div class="wrap">
+    <div class="stamp"><span class="t">t+1mo</span><span>THE RESEARCH AGENT</span></div>
+    <h2>Migrations, but ranked by where <em>your</em> code breaks.</h2>
+
+    <div class="ra reveal">
+      <div class="copy">
+        <h3>Ask the question, get a punch list.</h3>
+        <p>The research agent runs a multi-step LangGraph workflow that ends in
+          a structured impact analysis — not a generic essay. It scans your
+          repo, resolves imports via AST, matches entities, and ranks every
+          call site by severity.</p>
+        <p>Optional install. Heavier deps (LangChain, Playwright, LlamaIndex)
+          live behind <code>pip install -e ".[research]"</code>.</p>
+        <ol class="step-list">
+          <li><b>analyze</b><span>plan the research approach</span></li>
+          <li><b>search</b><span>web (SerpAPI / DuckDuckGo)</span></li>
+          <li><b>read</b><span>Playwright extracts content</span></li>
+          <li><b>code_search</b><span>LlamaIndex over your repo</span></li>
+          <li><b>impact_scan</b><span>AST graph + entity match</span></li>
+          <li><b>synthesize</b><span>structured impact report</span></li>
+          <li><b>verify</b><span>loop back if grounding is weak</span></li>
+        </ol>
+      </div>
+
+      <div class="terminal">
+        <div class="bar">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="ttl">~/proj  ·  research_agent query "sqlalchemy 2.0"</span>
+        </div>
+<pre><span class="h">IMPACT ANALYSIS</span>: <span class="em">14</span> call sites across <span class="em">6</span> files
+
+<span class="crit">HIGH SEVERITY (breaking)</span>
+  src/db/session.py:47    Session.execute(text_query)
+                          → Use session.execute(text(...))
+  src/db/session.py:83    engine.execute() removed
+                          → Use with engine.connect() as conn
+  src/models/user.py:112  Query.get() removed
+                          → Use Session.get(User, id)
+
+<span class="warn">MEDIUM SEVERITY (deprecated)</span>
+  src/api/handlers.py:201 relationship(lazy="dynamic")
+                          → Use write_only
+
+<span class="ok">SUGGESTED FIRST COMMIT</span>
+  <span class="mute">[ ]</span> src/db/session.py:47   wrap text queries with text()
+  <span class="mute">[ ]</span> src/db/session.py:83   replace engine.execute → connect ctx
+  <span class="mute">[ ]</span> src/models/user.py:112 Query.get → Session.get
+
+<span class="mute">→ verified · cached · 2.4s · 6 files scanned</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================================
+     DASHBOARD PREVIEW
+     ======================================================================== -->
+<section id="dash">
+  <div class="wrap">
+    <div class="stamp"><span class="t">live</span><span>THE DASHBOARD</span></div>
+    <h2>A read-only TUI that watches the watcher.</h2>
+    <p class="lead">Run <code>ollama-sentinel dashboard</code> in a second pane. It polls the reviews
+      directory and the violation DB, refreshes on a tunable interval, and
+      never writes anything.</p>
+
+    <div class="terminal dash reveal">
+      <div class="bar">
+        <span class="dots"><i></i><i></i><i></i></span>
+        <span class="ttl">ollama-sentinel dashboard -r 0.5 -n 3</span>
+      </div>
+      <div class="dash-grid">
+        <div class="left">
+          <div class="dh">RECENT REVIEWS</div>
+          <div class="dash-row"><span class="when">14:22:08</span><span class="ok">·</span> src/auth.py            <span class="crit">2 critical</span></div>
+          <div class="dash-row"><span class="when">14:21:55</span><span>·</span> src/db.py              <span class="warn">1 high</span></div>
+          <div class="dash-row"><span class="when">14:21:14</span><span>·</span> src/api/handlers.py    <span class="ok">clean</span></div>
+          <div class="dash-row"><span class="when">14:20:33</span><span>·</span> src/models/user.py     <span class="warn">2 medium</span></div>
+          <div class="dash-row"><span class="when">14:19:51</span><span>·</span> src/utils/cache.py     <span class="ok">clean</span></div>
+          <div class="dash-row"><span class="when">14:18:42</span><span>·</span> src/cli.py             <span class="warn">1 medium</span></div>
+          <div class="dash-row"><span class="when">14:17:19</span><span>·</span> src/db/session.py      <span class="warn">1 high</span></div>
+        </div>
+        <div>
+          <div class="dh">TOP RECURRING (≥3)</div>
+          <div class="dash-row"><span class="ok">7×</span> Conn not closed (high)</div>
+          <div class="dash-row"><span class="crit">5×</span> SQL injection (crit)</div>
+          <div class="dash-row"><span>3×</span> God function (med)</div>
+          <div class="dash-row"><span>3×</span> Bare except (med)</div>
+          <div class="dh" style="margin-top: 1.5rem;">DB STATUS</div>
+          <div class="dash-row"><span class="when">findings</span><span>· 48</span></div>
+          <div class="dash-row"><span class="when">embedded</span><span>· 48 / 48</span></div>
+          <div class="dash-row"><span class="when">size</span><span>· 12.4 KB</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================================
+     CONFIGURATION
+     ======================================================================== -->
+<section id="cfg">
+  <div class="wrap">
+    <div class="stamp"><span class="t">cfg</span><span>EVERYTHING IS A KNOB</span></div>
+    <h2>One YAML. Sensible defaults. Strict validation.</h2>
+    <p class="lead">Config is loaded through Pydantic v2. Bad URLs, path traversals, and missing
+      <code>default</code> models all fail loud at startup, not at first review.</p>
+
+    <div class="cfg reveal">
+      <dl class="legend">
+        <dt>watch</dt>
+        <dd>Directory, recursion, ignore patterns, debounce. Saves shorter than <code>debounce_ms</code> are coalesced.</dd>
+        <dt>ollama.models</dt>
+        <dd>One per role. <code>default</code> is required. <code>security</code>, <code>perf</code>, anything else is yours to define.</dd>
+        <dt>processing</dt>
+        <dd>Chunking, concurrency, and the <code>git_diff_mode</code> flag — review only what changed instead of the whole file.</dd>
+        <dt>memory</dt>
+        <dd>The violation DB. Toggle off to fall back to no recall. Toggle <code>semantic_recall</code> to use exact-path lookup only.</dd>
+      </dl>
+
+<pre class="yaml"><span class="key">watch</span>:
+  <span class="key">directory</span>: <span class="str">"."</span>
+  <span class="key">recursive</span>: <span class="val">true</span>
+  <span class="key">debounce_ms</span>: <span class="num">1500</span>
+  <span class="key">ignore_patterns</span>:
+    - <span class="str">"**/.git/**"</span>
+    - <span class="str">"**/node_modules/**"</span>
+    - <span class="str">"**/__pycache__/**"</span>
+
+<span class="key">ollama</span>:
+  <span class="key">host</span>: <span class="str">"http://localhost:11434"</span>
+  <span class="key">models</span>:
+    <span class="key">default</span>:        <span class="com"># required</span>
+      <span class="key">name</span>: <span class="str">"gemma3:4b"</span>
+      <span class="key">temperature</span>: <span class="num">0.1</span>
+    <span class="key">security</span>:       <span class="com"># pick with: -m security</span>
+      <span class="key">name</span>: <span class="str">"gemma3:4b"</span>
+      <span class="key">system_prompt</span>: &gt;
+        You are a security auditor. Focus on
+        injection, auth bypass, OWASP Top 10.
+
+<span class="key">processing</span>:
+  <span class="key">max_chars_per_chunk</span>: <span class="num">12000</span>
+  <span class="key">max_concurrent_reviews</span>: <span class="num">3</span>
+  <span class="key">git_diff_mode</span>: <span class="val">false</span>
+
+<span class="key">output</span>:
+  <span class="key">directory</span>: <span class="str">".ollama_reviews"</span>
+  <span class="key">history</span>:
+    <span class="key">enabled</span>: <span class="val">true</span>
+    <span class="key">max_versions</span>: <span class="num">5</span>
+
+<span class="key">memory</span>:
+  <span class="key">enabled</span>: <span class="val">true</span>
+  <span class="key">semantic_recall</span>: <span class="val">true</span>
+  <span class="key">db_path</span>: <span class="str">".ollama_reviews/memory.db"</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================================
+     FOOTER
+     ======================================================================== -->
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <h3>The contract.</h3>
+        <p style="color: var(--bone-2); font-size: 0.95rem; line-height: 1.55;">
+          Local. Persistent. Yours. The violation database knows things about
+          your codebase that don't exist anywhere else after three months of
+          use. That is the moat, and it lives on your disk.
+        </p>
+        <p style="margin-top: 1.5rem;">
+          <a href="https://github.com/skidudeaa/ollama-sentinel" class="btn ghost" style="padding: 0.7rem 1.2rem; font-size: 0.78rem;">→ github.com/skidudeaa/ollama-sentinel</a>
+        </p>
+      </div>
+      <div>
+        <h3 class="eyebrow" style="font-size: 0.78rem; margin-bottom: 1rem;">Requirements</h3>
+        <ul>
+          <li><b>·</b> Python 3.10+</li>
+          <li><b>·</b> Ollama (sentinel)</li>
+          <li><b>·</b> OPENAI_API_KEY (research)</li>
+          <li><b>·</b> ~30 MB RAM, ≪ 1 s reviews</li>
+          <li><b>·</b> 336 tests · ~3 s</li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="eyebrow" style="font-size: 0.78rem; margin-bottom: 1rem;">Read more</h3>
+        <ul>
+          <li><a href="GUIDE.md">→ GUIDE.md</a></li>
+          <li><a href="../README.md">→ README.md</a></li>
+          <li><a href="../CLAUDE.md">→ CLAUDE.md</a></li>
+          <li><a href="superpowers/followups.md">→ open follow-ups</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="signoff">
+      <span><b>OLLAMA · SENTINEL</b> v0.1 — MIT licensed</span>
+      <span>Your code never leaves your machine.</span>
+    </div>
+  </div>
+</footer>
+
+</div><!-- /.page -->
+
+<script>
+  // Hero density bars: emit ticks per row scaled to data-count
+  (function () {
+    const rows = document.querySelectorAll('.density-row');
+    rows.forEach((row, i) => {
+      const bar = row.querySelector('.bar');
+      const n = parseInt(bar.dataset.count, 10);
+      bar.innerHTML = '';
+      for (let k = 0; k < n; k++) {
+        const s = document.createElement('span');
+        // Distribute severities deterministically: ~10% crit, ~25% warn, rest lo
+        if (k % 10 === 0) s.className = 'crit';
+        else if (k % 4 === 0) s.className = 'warn';
+        else s.className = 'lo';
+        s.style.animationDelay = (i * 220 + k * 30) + 'ms';
+        bar.appendChild(s);
+      }
+      // Reveal on mount
+      requestAnimationFrame(() => row.classList.add('live'));
+    });
+  })();
+
+  // Reveal-on-scroll
+  (function () {
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+    }, { threshold: 0.12 });
+    document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+  })();
+
+  // Active rail tick on scroll
+  (function () {
+    const sections = ['hero','tools','start','loop','cmds','report','thesis','research','dash','cfg']
+      .map(id => document.getElementById(id))
+      .filter(Boolean);
+    const ticks = document.querySelectorAll('.rail .tick');
+    const setActive = (i) => ticks.forEach((t, k) => t.classList.toggle('active', k === i));
+    const onScroll = () => {
+      const y = window.scrollY + window.innerHeight * 0.35;
+      let active = 0;
+      sections.forEach((s, i) => { if (s.offsetTop <= y) active = i; });
+      setActive(active);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  })();
+
+  // Copy buttons
+  (function () {
+    document.querySelectorAll('pre.shell .copy').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(btn.dataset.c || '');
+          const prev = btn.textContent;
+          btn.textContent = 'copied';
+          btn.classList.add('ok');
+          setTimeout(() => { btn.textContent = prev; btn.classList.remove('ok'); }, 1200);
+        } catch (e) { /* clipboard blocked under file://, no-op */ }
+      });
+    });
+  })();
+</script>
+
+</body>
+</html>
