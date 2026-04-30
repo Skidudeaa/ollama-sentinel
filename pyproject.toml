@@ -48,9 +48,8 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-httpx>=0.28.0",
     # Needed to collect research_agent tests without installing the full [research]
-    # stack. tests/test_research_agent.py imports Cache (diskcache) and Config (toml)
-    # unconditionally as "Tier 1 always importable" modules.
-    "diskcache>=5.6.0",
+    # stack. tests/test_research_agent.py imports Config (toml) unconditionally as a
+    # "Tier 1 always importable" module. (diskcache is already in core deps above.)
     "toml>=0.10.2",
 ]
 
