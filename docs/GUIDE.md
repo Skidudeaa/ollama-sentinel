@@ -17,7 +17,7 @@ Both tools are local. Your code never leaves your machine. The memory they build
 ### 1. Install
 
 ```bash
-git clone https://github.com/skidudeaa/ollama-sentinel.git
+git clone https://github.com/Skidudeaa/ollama-sentinel.git
 cd ollama-sentinel
 pip install -e .
 ```
