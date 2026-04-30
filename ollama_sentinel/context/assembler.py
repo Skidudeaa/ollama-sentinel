@@ -53,6 +53,10 @@ def chunk_by_lines(
     """Split content into chunks that each fit within max_tokens, preferring
     line boundaries. Adjacent chunks share `overlap_tokens` worth of trailing
     lines from the previous chunk.
+
+    Caveat: a single line longer than ``max_tokens`` is emitted as one
+    oversized chunk rather than being split mid-line. Downstream
+    ``_render_section`` truncation handles the overflow.
     """
     if counter.count(content) <= max_tokens:
         return [content]
