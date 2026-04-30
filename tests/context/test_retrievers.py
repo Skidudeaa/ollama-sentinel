@@ -50,11 +50,13 @@ class TestSemanticRetriever:
             raise_on_keys={"b"},
         )
         retriever = SemanticRetriever(embedder=embedder)
+        # Use reversed order so identity preservation is distinguishable from a
+        # stable sort by key — both would produce ["a", "b"] from input ["a", "b"].
         items = [
-            ContextItem(text="A-text", embed_key="a"),
             ContextItem(text="B-text", embed_key="b"),
+            ContextItem(text="A-text", embed_key="a"),
         ]
         with caplog.at_level("WARNING"):
             ranked = await retriever.rank(items, query="query_key")
-        assert [i.embed_key for i in ranked] == ["a", "b"]  # original order
+        assert [i.embed_key for i in ranked] == ["b", "a"]  # original order preserved
         assert "embedding" in caplog.text.lower()
