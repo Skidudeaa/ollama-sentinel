@@ -1,5 +1,9 @@
 # Ollama Sentinel -- User Guide
 
+> **▶ Prefer the visual walkthrough?** Open [`index.html`](index.html) in a browser
+> for the same content as a single-page infographic — hero, architecture diagram,
+> command grid, sample outputs, dashboard sketch, annotated config.
+
 ## What This Is
 
 Most AI code review tools see your code once -- when you open a PR. Then they forget everything.
