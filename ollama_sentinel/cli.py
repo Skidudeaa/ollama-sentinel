@@ -22,6 +22,10 @@ app = typer.Typer()
 console = Console()
 
 
+def _is_stdin_tty() -> bool:
+    return sys.stdin.isatty()
+
+
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"ollama-sentinel {__version__}")
@@ -303,7 +307,7 @@ def triage(
             log.error(f"Cannot read {input_path}: {e}")
             raise typer.Exit(code=1)
     else:
-        if sys.stdin.isatty():
+        if _is_stdin_tty():
             log.error("No input — pipe tool output or pass a path.")
             raise typer.Exit(code=1)
         input_text = sys.stdin.read()
