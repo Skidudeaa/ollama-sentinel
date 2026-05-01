@@ -149,7 +149,7 @@ class TestResearchSession:
 # 2. SearchResult.__post_init__ domain extraction
 # ===================================================================
 
-@pytest.mark.skipif(not HAS_SEARCH, reason="langchain_core not installed")
+@pytest.mark.skipif(not HAS_SEARCH, reason="research search dependencies unavailable")
 class TestSearchResultDomainExtraction:
     """Tests for SearchResult automatic domain extraction from URL."""
 
@@ -211,7 +211,7 @@ class TestSearchResultDomainExtraction:
 #     stdlib urllib.parse, so we replicate it locally.
 # ===================================================================
 
-@pytest.mark.skipif(HAS_SEARCH, reason="Only runs when langchain_core is NOT installed")
+@pytest.mark.skipif(HAS_SEARCH, reason="Fallback test — only runs when research search dependencies are unavailable")
 class TestSearchResultDomainExtractionFallback:
     """Inline replica of SearchResult so the domain-extraction logic
     is tested even without langchain_core."""
@@ -367,7 +367,7 @@ class TestCache:
 # 4. BrowserTool._validate_url
 # ===================================================================
 
-@pytest.mark.skipif(not HAS_BROWSER, reason="playwright not installed")
+@pytest.mark.skipif(not HAS_BROWSER, reason="research browser dependencies unavailable")
 class TestBrowserToolValidateUrl:
     """Tests for BrowserTool._validate_url SSRF protection."""
 
@@ -414,7 +414,7 @@ class TestBrowserToolValidateUrl:
 # 4b. _validate_url — fallback when browser.py can't be imported
 # ===================================================================
 
-@pytest.mark.skipif(HAS_BROWSER, reason="Only runs when playwright is NOT installed")
+@pytest.mark.skipif(HAS_BROWSER, reason="Fallback test — only runs when research browser dependencies are unavailable")
 class TestValidateUrlFallback:
     """Re-implement _validate_url inline so we can still test the
     SSRF-protection logic even when playwright is not installed."""

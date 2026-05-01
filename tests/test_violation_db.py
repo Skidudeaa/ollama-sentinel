@@ -346,3 +346,69 @@ class TestGetNeighborsBySimilarity:
         )
         assert rows == []
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Thread safety
+# ---------------------------------------------------------------------------
+
+class TestThreadSafety:
+    """ViolationDB must be usable from multiple threads (asyncio.to_thread pattern)."""
+
+    def test_concurrent_persist_from_threads(self, tmp_path):
+        """Two threads can persist findings concurrently without raising."""
+        import threading
+
+        db = ViolationDB(str(tmp_path / "threads.db"))
+        errors: list[Exception] = []
+
+        def worker(start: int) -> None:
+            try:
+                for i in range(50):
+                    db.persist_findings(
+                        "a.py",
+                        [_make_finding(line_start=start + i, line_end=start + i)],
+                    )
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(s,)) for s in (0, 100)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"Thread errors: {errors}"
+        rows = db.get_all_unresolved()
+        assert len(rows) == 100
+        db.close()
+
+    def test_read_from_different_thread(self, tmp_path):
+        """get_unresolved can be called from a thread other than the one that created the DB."""
+        import threading
+
+        db = ViolationDB(str(tmp_path / "xthread.db"))
+        db.persist_findings("b.py", [_make_finding(file_path="b.py")])
+
+        result: list = []
+        errors: list[Exception] = []
+
+        def reader() -> None:
+            try:
+                result.extend(db.get_unresolved("b.py"))
+            except Exception as exc:
+                errors.append(exc)
+
+        t = threading.Thread(target=reader)
+        t.start()
+        t.join()
+
+        assert errors == [], f"Thread errors: {errors}"
+        assert len(result) == 1
+        db.close()
+
+    def test_close_is_idempotent(self, tmp_path):
+        """Calling close() twice must not raise."""
+        db = ViolationDB(str(tmp_path / "close.db"))
+        db.close()
+        db.close()

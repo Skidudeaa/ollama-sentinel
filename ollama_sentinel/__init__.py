@@ -2,7 +2,7 @@
 Ollama Sentinel - Continuous code review with Ollama.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .config import load_config
 from .models import SentinelConfig

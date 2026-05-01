@@ -72,6 +72,8 @@ class WatchConfig(BaseModel):
     recursive: bool = True
     ignore_patterns: List[str] = []
     debounce_ms: int = 1500
+    max_file_size_kb: int = 512
+    disable_builtin_ignores: bool = False
 
 
 class ProcessingConfig(BaseModel):
@@ -146,6 +148,10 @@ class MemoryConfig(BaseModel):
     db_path: str = ".ollama_reviews/memory.db"
     neighbor_k: int = 10
     semantic_recall: bool = True
+    # Augment recall with 1-hop import-graph neighbors so a finding on a
+    # frequently-imported util surfaces when editing its callers (and vice
+    # versa). Python-only; degrades silently to single-file recall otherwise.
+    structural_recall: bool = True
 
 
 class SentinelConfig(BaseModel):

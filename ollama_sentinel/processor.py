@@ -204,6 +204,20 @@ class FileProcessor:
                 self.embedder = None
                 self.retriever = NullRetriever()
 
+        # Structural recall: lazy AST-based import resolver to surface findings
+        # from a file's 1-hop import neighbors. The resolver lives in
+        # research_agent.tools but only depends on stdlib + research_agent.core.logging,
+        # so importing it does not pull in the [research] extras.
+        self._import_resolver = None
+        if config.memory.structural_recall:
+            try:
+                from research_agent.tools.import_resolver import ImportResolver
+                self._import_resolver = ImportResolver(str(self.watch_dir))
+            except Exception as e:
+                log.warning(
+                    "Structural recall unavailable (%s); falling back without it.", e,
+                )
+
         # Token budget for review prompts.
         default_model = config.ollama.models["default"]
         self.total_budget = max(
@@ -300,27 +314,107 @@ class FileProcessor:
     async def _get_ranked_prior_violations(
         self, file_path: pathlib.Path, *, file_content: Optional[str]
     ) -> Optional[List[dict]]:
-        """Fetch prior violations, ranked semantically when possible."""
+        """Fetch prior violations through three layered recall strategies.
+
+        Tries each in order and returns the first non-empty result:
+          1. Semantic recall — cosine similarity of file content against all
+             unresolved findings, top-k.
+          2. Structural recall — findings from this file's 1-hop import
+             neighbors (callers and callees), Python-only.
+          3. Single-file recall — unresolved findings for this file alone.
+
+        Each layer is independently gated by config and degrades silently on
+        failure so review generation is never blocked by a recall error.
+        """
         if not self.violation_db:
             return None
-        try:
-            if (self.config.memory.semantic_recall
-                    and self.embedder is not None
-                    and file_content):
+
+        rel = str(file_path.relative_to(self.watch_dir))
+
+        # Layer 1: semantic recall.
+        if (self.config.memory.semantic_recall
+                and self.embedder is not None
+                and file_content):
+            try:
                 violations = await self.violation_db.get_neighbors_by_similarity(
                     query_text=file_content,
                     embedder=self.embedder,
                     k=self.config.memory.neighbor_k,
                 )
-            else:
-                rel = str(file_path.relative_to(self.watch_dir))
-                violations = await asyncio.to_thread(
-                    self.violation_db.get_unresolved, rel,
-                )
+                if violations:
+                    return violations
+            except Exception as e:
+                log.warning("Semantic recall failed (%s); falling through.", e)
+
+        # Layer 2: structural recall via 1-hop import graph.
+        if self._import_resolver is not None:
+            try:
+                neighbors = await self._resolve_import_neighbors(file_path)
+                if neighbors:
+                    violations = await asyncio.to_thread(
+                        self.violation_db.get_neighbors_unresolved, neighbors,
+                    )
+                    if violations:
+                        return violations
+            except Exception as e:
+                log.warning("Structural recall failed (%s); falling through.", e)
+
+        # Layer 3: single-file recall (always tried last).
+        try:
+            violations = await asyncio.to_thread(
+                self.violation_db.get_unresolved, rel,
+            )
             return violations if violations else None
         except Exception as e:
-            log.warning("Failed to query prior violations (%s); continuing without them.", e)
+            log.warning(
+                "Single-file recall failed (%s); continuing without prior violations.", e,
+            )
             return None
+
+    async def _resolve_import_neighbors(
+        self, file_path: pathlib.Path,
+    ) -> List[str]:
+        """Return relative paths for *file_path* and its 1-hop import neighbors.
+
+        Resolves both directions:
+          - Files imported by *file_path* (callees).
+          - Files in the repo that import *file_path* (callers).
+
+        Paths are returned relative to ``self.watch_dir`` to match
+        ``ViolationDB``'s storage convention. Files outside ``watch_dir`` are
+        silently dropped. Returns ``[]`` if the resolver is unavailable or
+        *file_path* is not Python — letting Layer 3 take over for those cases.
+        """
+        # Resolver is Python-only; non-Python files skip Layer 2 entirely.
+        if self._import_resolver is None or file_path.suffix != ".py":
+            return []
+
+        rel = str(file_path.relative_to(self.watch_dir))
+
+        def _scan() -> List[str]:
+            try:
+                imports = self._import_resolver.resolve_imports(str(file_path))
+                dependents = self._import_resolver.resolve_dependents(str(file_path))
+            except Exception:
+                # Any resolver error — return self only so Layer 2 still gives
+                # us at least the file's own findings.
+                return [rel]
+
+            all_abs = {str(file_path)}
+            all_abs.update(imports)
+            all_abs.update(dependents)
+
+            result: List[str] = []
+            for p in all_abs:
+                try:
+                    r = str(pathlib.Path(p).relative_to(self.watch_dir))
+                    result.append(r)
+                except ValueError:
+                    # Path lives outside watch_dir; ViolationDB won't have rows for it.
+                    pass
+            return result
+
+        return await asyncio.to_thread(_scan)
 
     async def generate_review(self, file_change: FileChange, model_role: str = "default") -> str:
         """

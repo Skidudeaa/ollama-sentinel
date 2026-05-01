@@ -21,6 +21,30 @@ from watchfiles import Change
 app = typer.Typer()
 console = Console()
 
+
+def _is_stdin_tty() -> bool:
+    return sys.stdin.isatty()
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"ollama-sentinel {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
+    ),
+) -> None:
+    pass
+
 # Configure rich console and logging
 logging.basicConfig(
     level=logging.INFO,
@@ -283,7 +307,7 @@ def triage(
             log.error(f"Cannot read {input_path}: {e}")
             raise typer.Exit(code=1)
     else:
-        if sys.stdin.isatty():
+        if _is_stdin_tty():
             log.error("No input — pipe tool output or pass a path.")
             raise typer.Exit(code=1)
         input_text = sys.stdin.read()

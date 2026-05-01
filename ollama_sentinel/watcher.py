@@ -18,6 +18,84 @@ from .violation_db import ViolationDB
 
 log = logging.getLogger("ollama-sentinel")
 
+# Always-on noise filters applied regardless of user config.
+# Covers dotdirs, build artifacts, lock files, binaries, and media.
+# Set watch.disable_builtin_ignores: true in config to opt out.
+_BUILTIN_IGNORE_PATTERNS: list[str] = [
+    # VCS / IDE dotdirs
+    "**/.git/**",
+    "**/.claude/**",
+    "**/.planning/**",
+    "**/.build/**",
+    "**/.idea/**",
+    "**/.vscode/**",
+    "**/.pytest_cache/**",
+    "**/.mypy_cache/**",
+    "**/.ruff_cache/**",
+    "**/.tox/**",
+    "**/.venv/**",
+    "**/venv/**",
+    "**/.next/**",
+    "**/.nuxt/**",
+    "**/.cache/**",
+    # Build output dirs
+    "**/node_modules/**",
+    "**/__pycache__/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/target/**",
+    "**/.gradle/**",
+    "**/DerivedData/**",
+    "**/.ollama_reviews/**",
+    # Lock / DB / binary extensions
+    "**/*.mdb",
+    "**/*.lock",
+    "**/*.lockb",
+    "**/*.db",
+    "**/*.sqlite",
+    "**/*.sqlite3",
+    "**/*.so",
+    "**/*.dylib",
+    "**/*.dll",
+    "**/*.exe",
+    "**/*.o",
+    "**/*.a",
+    "**/*.class",
+    "**/*.jar",
+    "**/*.pyc",
+    "**/*.pyo",
+    "**/*.pyd",
+    "**/*.zip",
+    "**/*.tar",
+    "**/*.gz",
+    "**/*.bz2",
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.gif",
+    "**/*.ico",
+    "**/*.pdf",
+    "**/*.woff",
+    "**/*.woff2",
+    "**/*.ttf",
+    "**/*.eot",
+    "**/*.mp4",
+    "**/*.mp3",
+    "**/*.mov",
+    # Hidden heartbeat / meta files
+    "**/.DS_Store",
+    "**/.watcher_heartbeat",
+]
+
+
+def _is_likely_binary(path: pathlib.Path, peek_bytes: int = 8192) -> bool:
+    """Return True if the file appears to be binary (contains a null byte in the first peek_bytes)."""
+    try:
+        with open(path, "rb") as fh:
+            return b"\x00" in fh.read(peek_bytes)
+    except OSError:
+        return False
+
 
 class FileSentinel:
     """Main sentinel class that watches for file changes and coordinates processing."""
@@ -54,37 +132,59 @@ class FileSentinel:
     
     def _initialize_ignore_spec(self):
         """Initialize PathSpec for proper gitignore-style pattern matching."""
-        patterns = self.config.watch.ignore_patterns.copy()
-        
+        patterns: list[str] = []
+
+        # Prepend built-in noise filters unless explicitly disabled
+        if not self.config.watch.disable_builtin_ignores:
+            patterns.extend(_BUILTIN_IGNORE_PATTERNS)
+            log.info(
+                "%d built-in ignore patterns active; "
+                "set watch.disable_builtin_ignores: true to opt out",
+                len(_BUILTIN_IGNORE_PATTERNS),
+            )
+
         # Add patterns from .gitignore if git repository is available
         if hasattr(self.processor, 'repo') and self.processor.repo:
             try:
                 gitignore_path = pathlib.Path(self.processor.repo.working_dir) / '.gitignore'
                 if gitignore_path.exists():
                     with open(gitignore_path, 'r') as f:
-                        gitignore_patterns = [line.strip() for line in f 
+                        gitignore_patterns = [line.strip() for line in f
                                              if line.strip() and not line.startswith('#')]
                     patterns.extend(gitignore_patterns)
             except Exception as e:
                 log.warning(f"Failed to load .gitignore: {e}")
-        
+
+        # Append user-configured patterns last so they can override/extend
+        patterns.extend(self.config.watch.ignore_patterns)
+
         # Create PathSpec object
         self._ignore_spec = pathspec.PathSpec.from_lines('gitwildmatch', patterns)
     
     def _should_ignore(self, path: pathlib.Path) -> bool:
         """
         Check if a file should be ignored.
-        
+
         Args:
             path: Path to check
-            
+
         Returns:
             True if the file should be ignored, False otherwise
         """
         # Always ignore the output directory
         if self.config.output.directory in path.parts:
             return True
-        
+
+        # Enforce size limit (protect Ollama context window and skip large binaries).
+        # OSError means the file vanished — skip the size check and let the
+        # is_file() guard in the caller handle it.
+        max_bytes = self.config.watch.max_file_size_kb * 1024
+        try:
+            if path.stat().st_size > max_bytes:
+                return True
+        except OSError:
+            pass
+
         # Use PathSpec for matching
         try:
             rel_path = str(path.relative_to(self.processor.watch_dir))
@@ -105,6 +205,10 @@ class FileSentinel:
         rel_path = path.relative_to(self.processor.watch_dir)
 
         if not path.is_file() or self._should_ignore(path):
+            return
+
+        if _is_likely_binary(path):
+            log.debug("Skipping binary file %s", rel_path)
             return
 
         log.info(f"Processing {rel_path}")
@@ -172,7 +276,11 @@ class FileSentinel:
         # Debounce parameters
         debounce_base = self.config.watch.debounce_ms / 1000
         
-        async for changes in awatch(watch_dir, recursive=self.config.watch.recursive):
+        async for changes in awatch(
+            watch_dir,
+            recursive=self.config.watch.recursive,
+            watch_filter=lambda _, path_str: not self._should_ignore(pathlib.Path(path_str)),
+        ):
             now = time.monotonic()
             
             # Process new events

@@ -13,6 +13,7 @@ from watchfiles import Change
 from ollama_sentinel.config import create_default_config, load_config
 from ollama_sentinel.models import (
     HistoryConfig,
+    MemoryConfig,
     OllamaConfig,
     OllamaModelConfig,
     OutputConfig,
@@ -529,11 +530,15 @@ class TestConfigLoading:
 
     def test_create_default_config_uses_safe_local_ollama_defaults(self):
         """Generated configs avoid local Ollama overload and generated artifacts."""
+        from ollama_sentinel.watcher import _BUILTIN_IGNORE_PATTERNS
         result = create_default_config("/some/dir")
         assert result["ollama"]["request_timeout"] == 180
         assert result["processing"]["max_concurrent_reviews"] == 1
         assert result["processing"]["max_concurrent_chunks_per_file"] == 1
-        assert "**/*.mdb" in result["watch"]["ignore_patterns"]
+        # .mdb and other binary extensions are covered by built-in patterns,
+        # not by the init template — verify built-ins include them instead.
+        assert "**/*.mdb" in _BUILTIN_IGNORE_PATTERNS
+        assert result["watch"]["disable_builtin_ignores"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -623,3 +628,202 @@ class TestGenerateWithModel:
         body = _json.loads(httpx_mock.get_requests()[0].content)
         assert body["model"] == "obj-model"
         assert body["messages"][0]["content"] == "obj prompt"
+
+
+# ---------------------------------------------------------------------------
+# Structural recall (import-graph neighbor recall) tests
+# ---------------------------------------------------------------------------
+
+
+class TestStructuralRecall:
+    """Tests for the import-graph fallback layer in _get_ranked_prior_violations."""
+
+    @staticmethod
+    def _config(tmp_path, *, structural_recall=True):
+        """Config with semantic recall disabled to deterministically exercise
+        the structural / single-file paths without an Ollama dependency."""
+        return SentinelConfig(
+            watch=WatchConfig(directory=str(tmp_path)),
+            ollama=OllamaConfig(
+                host="http://localhost:11434",
+                models={
+                    "default": OllamaModelConfig(
+                        name="test-model", system_prompt="Review code."
+                    ),
+                },
+            ),
+            memory=MemoryConfig(
+                enabled=True,
+                db_path=".ollama_reviews/memory.db",
+                semantic_recall=False,
+                structural_recall=structural_recall,
+            ),
+        )
+
+    @staticmethod
+    def _make_db(tmp_path):
+        """Create a ViolationDB rooted in tmp_path."""
+        from ollama_sentinel.violation_db import ViolationDB
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return ViolationDB(str(db_path))
+
+    async def test_resolves_findings_from_imported_file(self, tmp_path):
+        """A finding on `utils.py` surfaces when reviewing `app.py` (which imports it)."""
+        from ollama_sentinel.violation_db import Finding
+
+        (tmp_path / "utils.py").write_text("def helper():\n    return 1\n")
+        app = tmp_path / "app.py"
+        app.write_text("from utils import helper\nprint(helper())\n")
+
+        db = self._make_db(tmp_path)
+        try:
+            db.persist_findings("utils.py", [Finding(
+                file_path="utils.py", line_start=1, line_end=2,
+                category="bug", severity="high",
+                description="helper returns wrong type",
+            )])
+
+            fp = FileProcessor(self._config(tmp_path), violation_db=db)
+            try:
+                violations = await fp._get_ranked_prior_violations(
+                    app, file_content=app.read_text(),
+                )
+            finally:
+                await fp.close()
+
+            assert violations is not None
+            paths = {v["file_path"] for v in violations}
+            assert "utils.py" in paths
+        finally:
+            db.close()
+
+    async def test_resolves_findings_from_dependent_file(self, tmp_path):
+        """A finding on `app.py` surfaces when reviewing `utils.py` (which it imports)."""
+        from ollama_sentinel.violation_db import Finding
+
+        utils = tmp_path / "utils.py"
+        utils.write_text("def helper():\n    return 1\n")
+        (tmp_path / "app.py").write_text(
+            "from utils import helper\nprint(helper())\n"
+        )
+
+        db = self._make_db(tmp_path)
+        try:
+            db.persist_findings("app.py", [Finding(
+                file_path="app.py", line_start=1, line_end=1,
+                category="security", severity="high",
+                description="unvalidated input",
+            )])
+
+            fp = FileProcessor(self._config(tmp_path), violation_db=db)
+            try:
+                violations = await fp._get_ranked_prior_violations(
+                    utils, file_content=utils.read_text(),
+                )
+            finally:
+                await fp.close()
+
+            assert violations is not None
+            paths = {v["file_path"] for v in violations}
+            assert "app.py" in paths
+        finally:
+            db.close()
+
+    async def test_falls_back_to_single_file_for_non_python(self, tmp_path):
+        """Non-Python files bypass Layer 2 — the resolver is Python-only."""
+        from ollama_sentinel.violation_db import Finding
+
+        target = tmp_path / "page.html"
+        target.write_text("<html></html>\n")
+        # Unrelated Python file with a finding to verify it does NOT leak in.
+        (tmp_path / "other.py").write_text("x = 1\n")
+
+        db = self._make_db(tmp_path)
+        try:
+            db.persist_findings("page.html", [Finding(
+                file_path="page.html", line_start=1, line_end=1,
+                category="style", severity="low",
+                description="missing doctype",
+            )])
+            db.persist_findings("other.py", [Finding(
+                file_path="other.py", line_start=1, line_end=1,
+                category="bug", severity="high",
+                description="should not surface for an HTML file",
+            )])
+
+            fp = FileProcessor(self._config(tmp_path), violation_db=db)
+            try:
+                violations = await fp._get_ranked_prior_violations(
+                    target, file_content=target.read_text(),
+                )
+            finally:
+                await fp.close()
+
+            assert violations is not None
+            paths = {v["file_path"] for v in violations}
+            assert paths == {"page.html"}
+        finally:
+            db.close()
+
+    async def test_handles_syntax_error_gracefully(self, tmp_path):
+        """A file with a SyntaxError still gets its own findings via Layer 2/3."""
+        from ollama_sentinel.violation_db import Finding
+
+        broken = tmp_path / "broken.py"
+        broken.write_text("def f(:\n  pass\n")  # intentional syntax error
+
+        db = self._make_db(tmp_path)
+        try:
+            db.persist_findings("broken.py", [Finding(
+                file_path="broken.py", line_start=1, line_end=1,
+                category="bug", severity="high",
+                description="prior finding from earlier review",
+            )])
+
+            fp = FileProcessor(self._config(tmp_path), violation_db=db)
+            try:
+                violations = await fp._get_ranked_prior_violations(
+                    broken, file_content=broken.read_text(),
+                )
+            finally:
+                await fp.close()
+
+            assert violations is not None
+            paths = {v["file_path"] for v in violations}
+            assert "broken.py" in paths
+        finally:
+            db.close()
+
+    async def test_disabled_via_config_skips_neighbor_lookup(self, tmp_path):
+        """structural_recall: false suppresses Layer 2 entirely."""
+        from ollama_sentinel.violation_db import Finding
+
+        (tmp_path / "utils.py").write_text("def helper():\n    return 1\n")
+        app = tmp_path / "app.py"
+        app.write_text("from utils import helper\nprint(helper())\n")
+
+        db = self._make_db(tmp_path)
+        try:
+            # Finding only on utils.py — only structural recall would surface
+            # it when reviewing app.py. With structural disabled and no
+            # findings on app.py itself, the result must be None.
+            db.persist_findings("utils.py", [Finding(
+                file_path="utils.py", line_start=1, line_end=2,
+                category="bug", severity="high",
+                description="never surfaces",
+            )])
+
+            fp = FileProcessor(
+                self._config(tmp_path, structural_recall=False), violation_db=db,
+            )
+            try:
+                violations = await fp._get_ranked_prior_violations(
+                    app, file_content=app.read_text(),
+                )
+            finally:
+                await fp.close()
+
+            assert violations is None
+        finally:
+            db.close()

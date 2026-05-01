@@ -7,7 +7,8 @@ from pytest_httpx import HTTPXMock
 from ollama_sentinel.models import (
     OllamaConfig, OllamaModelConfig, SentinelConfig, WatchConfig,
 )
-from ollama_sentinel.triage.runner import TRIAGE_SYSTEM_PROMPT, run_triage
+from ollama_sentinel.triage.prompts import TRIAGE_SYSTEM_PROMPT
+from ollama_sentinel.triage.runner import run_triage
 
 
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
