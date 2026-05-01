@@ -30,19 +30,14 @@ before reaching the recipe), so harmless today.
 **Trigger:** any PR that makes `build_research_context` a reachable path
 for impact data.
 
-### CB-2. SemanticRetriever integration test
+### CB-2. SemanticRetriever integration test — DONE (commit 566eb67)
 
 **Files:** `tests/context/test_recipes.py`.
 
-**Issue:** recipes are tested with `NullRetriever`; `SemanticRetriever` is
-tested in isolation. No test exercises the full chain
-`ContextItem → SemanticRetriever.rank → assemble → build_review_context`.
-
-**Fix:** add one parametric test using the `_FakeEmbedder` pattern from
-`tests/context/test_retrievers.py`.
-
-**Trigger:** add before the next change to `SemanticRetriever` or the
-recipe signature.
+Added `test_semantic_retriever_ranks_violations_by_similarity` using a
+`_FakeEmbedder` that drives two violations to opposite cosine scores.
+Verifies the full chain from violations → ContextItem → SemanticRetriever
+→ assemble → build_review_context.
 
 ### CB-3. `EnhancedMemoryStore` semantic ranking (Phase 9)
 
@@ -100,21 +95,14 @@ truncation handles the overflow.
 Plan: `docs/superpowers/plans/2026-04-16-triage.md`.
 Spec: `docs/superpowers/specs/2026-04-16-triage-design.md`.
 
-### TR-1. `TRIAGE_SYSTEM_PROMPT` relocation (latent cycle)
+### TR-1. `TRIAGE_SYSTEM_PROMPT` relocation (latent cycle) — DONE (commit 9ecee0a)
 
-**Files:** `ollama_sentinel/config.py:11`,
-`ollama_sentinel/triage/runner.py`.
+**Files:** `ollama_sentinel/triage/prompts.py` (new), `triage/runner.py`,
+`tests/triage/test_runner.py`.
 
-**Issue:** `config.py` imports `TRIAGE_SYSTEM_PROMPT` from `triage.runner`,
-which drags `runner → context → recipes` into every config load
-(~220ms). Any future code in `triage/` needing a config constant would
-create a circular import.
-
-**Fix:** move `TRIAGE_SYSTEM_PROMPT` to a leaf
-`ollama_sentinel/triage/prompts.py`; import from there in both `config.py`
-and `runner.py`.
-
-**Trigger:** if `triage/` ever needs to import from `config`.
+Moved `TRIAGE_SYSTEM_PROMPT` to `prompts.py` (no intra-package imports).
+`runner.py` and the test now import from there. Removes the
+runner→context→recipes chain from callers that only need the constant.
 
 ### TR-2. TTY-error test message assertion — DONE (commit 350929e)
 

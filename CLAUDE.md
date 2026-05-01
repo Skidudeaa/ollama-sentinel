@@ -108,7 +108,8 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 | `ollama_sentinel/context/retrievers.py` | `NullRetriever`, `SemanticRetriever` (cosine, pure Python) |
 | `ollama_sentinel/context/recipes.py` | `build_review_context`, `build_research_context`, `build_triage_context` — named recipes consumed by sentinel and research agent |
 | `ollama_sentinel/triage/extractor.py` | Pure regex-driven extraction of file+line references from tool output (traceback/pytest/mypy/ruff/generic) |
-| `ollama_sentinel/triage/runner.py` | `run_triage()` + `TRIAGE_SYSTEM_PROMPT` — orchestrates extract → recipe → model with hybrid role fallback |
+| `ollama_sentinel/triage/prompts.py` | `TRIAGE_SYSTEM_PROMPT` — leaf module, no intra-package imports |
+| `ollama_sentinel/triage/runner.py` | `run_triage()` — orchestrates extract → recipe → model with hybrid role fallback |
 | `research_agent/core/workflow.py` | LangGraph StateGraph with all nodes including impact_scan |
 | `research_agent/tools/import_resolver.py` | AST-based Python import graph resolver |
 | `research_agent/tools/synthesis.py` | Answer synthesis with structured impact report output |
@@ -146,45 +147,35 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 ## Known Issues / Next Session Breadcrumbs
 
-### Repo state as of 2026-04-30 (last session)
+### Repo state as of 2026-05-01 (last session)
 
-- **v0.1.0 shipped.** Tagged, GitHub Release published with notes,
-  pushed to `origin/master`. Repo is public at
-  <https://github.com/Skidudeaa/ollama-sentinel>. Don't re-cut v0.1.0 —
-  bump to v0.1.1 / v0.2.0 as appropriate.
-- **Test suite:** 321 passed, 15 skipped, ~1.7s on `pytest tests/ -q`.
-  All last-session changes are green and pushed.
+- **v0.1.1 shipped** on `harden-ollama-sentinel-processing` (merged to master this session).
+  Repo is public at <https://github.com/Skidudeaa/ollama-sentinel>.
+- **Test suite:** 355 passed, 15 skipped, ~2.4s on `pytest tests/ -q`.
 - **Working tree should be clean.** If it isn't, `git status` first.
 - **The visual guide (`docs/index.html`) is the canonical pitch surface.**
-  Linked from README, GUIDE.md, and the v0.1.0 release notes. Don't
-  let it drift — if you add a CLI command, update the HTML's command
-  grid + structure block to match.
+  Linked from README, GUIDE.md, and the v0.1.0 release notes.
 
 ### Resume here next time
 
-The user paused mid-stream and went to bed without testing this batch.
-Picking up:
+All open backlog items from the last two sessions are closed. Remaining
+deferred work is low-priority and not blocking anything:
 
-1. **Sanity check first.** `pytest tests/ -q` should still report 321 / 15 skip
-   in <2s. If anything's red, suspect environment drift (Pydantic version,
-   tiktoken model availability) before assuming a regression.
-2. **Then triage what's open.** GitHub issue #1 ("TTY-true branch in
-   cli.triage not exercised") and the open follow-ups in
-   `docs/superpowers/followups.md` are the natural next moves —
-   ranked recommendation in the "Pickable next moves" section below.
+1. **Sanity check first.** `pytest tests/ -q` should report 355 / 15 skip.
+2. **Remaining open items** (from `docs/superpowers/followups.md`):
+   - CB-1 — dedupe impact-report formatters (harmless until `build_research_context` is reachable for impact data)
+   - CB-3 — `EnhancedMemoryStore` semantic ranking (half-day, medium risk)
+   - Pydantic v2 deprecation warning in `research_agent` (`validate_default`, ~10 min)
 
 ### Pickable next moves (ordered by leverage)
 
 | # | Item | Effort | Risk | Notes |
 |---|---|---|---|---|
-| 1 | Issue [#1](https://github.com/Skidudeaa/ollama-sentinel/issues/1) — make `cli.triage` stdin TTY-check injectable, then add a real test for the "No input" branch | ~30 min | low | Recommended approach is the helper-function refactor, not the direct-call shape. Keeps CliRunner intact. |
-| 2 | TR-1 — relocate `TRIAGE_SYSTEM_PROMPT` to a leaf `ollama_sentinel/triage/prompts.py` | ~15 min | very low | Prevents latent circular-import; drops the ~220ms config-load tax that the runner→context→recipes chain currently imposes on every config load. |
-| 3 | CB-2 — add a `SemanticRetriever` integration test in `tests/context/test_recipes.py` using the `_FakeEmbedder` pattern from `tests/context/test_retrievers.py` | ~20 min | very low | Closes the gap where recipes are only tested with `NullRetriever`. |
-| 4 | CB-1 — dedupe the impact-report formatter between `ollama_sentinel/context/recipes.py:_format_impact_report` and `research_agent/tools/synthesis.py:format_impact_report` | ~30-45 min | low | Currently mutually exclusive paths so it's harmless today; only matters if `build_research_context` ever becomes reachable for impact data. Fix by lifting to a shared module. |
-| 5 | CB-3 — extend semantic recall to `EnhancedMemoryStore` (`research_agent/tools/memory.py`) | ~half day | medium | Phase 9 of the original ContextBuilder plan. `find_similar_webpages` / `find_similar_queries` still token-overlap. Needs care around the `asyncio.new_event_loop` boundary in `workflow.py`'s `analyze` node. |
-| 6 | Pydantic v2 deprecation warning in `research_agent` import path (`validate_default`) | ~10 min | very low | Surfaces on every research-agent import. Not currently tracked in `followups.md` — file an issue or fix inline. |
+| 1 | CB-1 — dedupe impact-report formatter between `recipes.py:_format_impact_report` and `synthesis.py:format_impact_report` | ~30-45 min | low | Harmless today (mutually exclusive paths); only triggers if `build_research_context` ever gets impact data. |
+| 2 | Pydantic v2 `validate_default` deprecation warning in `research_agent` | ~10 min | very low | Surfaces on every research-agent import. |
+| 3 | CB-3 — extend semantic recall to `EnhancedMemoryStore` (`research_agent/tools/memory.py`) | ~half day | medium | `find_similar_webpages` / `find_similar_queries` still use token-overlap. |
 
-Skip TR-3 — already documented as a deliberate spec deviation.
+Skip TR-3 — deliberate spec deviation, documented in followups.md.
 
 ### Persistent gotchas (not session-specific)
 
@@ -206,6 +197,9 @@ Skip TR-3 — already documented as a deliberate spec deviation.
 
 ### Recent landings
 
+- 2026-05-01: Closed Issue #1 (TTY injectable), TR-1 (prompts.py leaf module),
+  CB-2 (SemanticRetriever integration test). Merged `harden-ollama-sentinel-processing`
+  to master. 355 tests passing.
 - 2026-04-30: v0.1.0 cut + GitHub Release published. Repo made public.
   Casing fix `skidudeaa` → `Skidudeaa`. Four cheap follow-ups closed
   (CB-4, CB-6, CB-7, TR-2). Filed issue #1 for the TTY-branch test gap
