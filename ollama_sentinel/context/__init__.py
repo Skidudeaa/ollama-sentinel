@@ -12,6 +12,7 @@ from ollama_sentinel.context.recipes import (
     build_research_context,
     build_review_context,
     build_triage_context,
+    format_impact_report,
 )
 from ollama_sentinel.context.retrievers import NullRetriever, SemanticRetriever
 from ollama_sentinel.context.tokens import TokenCounter
@@ -31,4 +32,5 @@ __all__ = [
     "build_review_context",
     "build_triage_context",
     "chunk_by_lines",
+    "format_impact_report",
 ]

@@ -820,52 +820,15 @@ class TestImpactScanLogic:
 class TestImpactSynthesisFormat:
     """Tests for the structured impact report formatting.
 
-    Re-implements the format_impact_report logic from SynthesisTool so
-    the tests do not require langchain or an API key.
+    Uses the shared formatter from ollama_sentinel.context directly — no
+    langchain or API key required.
     """
 
     @staticmethod
     def _format_impact_report(impact_analysis: ImpactAnalysis) -> str:
-        """Mirror of SynthesisTool.format_impact_report."""
-        items = impact_analysis.items
-        affected_files = impact_analysis.affected_files
-
-        high = [it for it in items if it.severity == "HIGH"]
-        medium = [it for it in items if it.severity == "MEDIUM"]
-        low = [it for it in items if it.severity == "LOW"]
-
-        lines: List[str] = [
-            f"IMPACT ANALYSIS: {len(items)} call sites across {len(affected_files)} files",
-            "",
-        ]
-
-        if high:
-            lines.append("HIGH SEVERITY (breaking):")
-            for it in high:
-                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {it.action}")
-            lines.append("")
-
-        if medium:
-            lines.append("MEDIUM SEVERITY (deprecated):")
-            for it in medium:
-                action = it.action if it.action else "Review usage"
-                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
-            lines.append("")
-
-        if low:
-            lines.append("LOW SEVERITY (changed):")
-            for it in low:
-                action = it.action if it.action else "Monitor for changes"
-                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
-            lines.append("")
-
-        if high:
-            lines.append("SUGGESTED FIRST COMMIT:")
-            for it in high:
-                lines.append(f"  [ ] {it.file_path}:{it.line_number} - {it.action}")
-            lines.append("")
-
-        return "\n".join(lines)
+        """Mirrors SynthesisTool.format_impact_report: shared body + standalone header."""
+        from ollama_sentinel.context import format_impact_report
+        return f"IMPACT ANALYSIS: {format_impact_report(impact_analysis)}"
 
     def test_structured_output_with_all_severities(self):
         items = [
@@ -1088,3 +1051,85 @@ class TestImpactMemory:
                 files_unchanged = False
                 break
         assert files_unchanged is False
+
+
+# ===================================================================
+# 11. EnhancedMemoryStore semantic recall (CB-3)
+# ===================================================================
+
+from research_agent.tools.memory import EnhancedMemoryStore, WebPage, SearchQuery
+
+
+class _FakeEmbedder:
+    """Returns pre-mapped vectors keyed by cache_key or text."""
+    def __init__(self, vectors: dict):
+        self._vectors = vectors
+
+    async def embed(self, text, *, cache_key=None):
+        key = cache_key if cache_key in self._vectors else text
+        return self._vectors[key]
+
+
+class TestEnhancedMemoryStoreSemanticRecall:
+    def _store(self, tmp_path, embedder=None):
+        return EnhancedMemoryStore(
+            cache=Cache(cache_dir=str(tmp_path / "cache"), ttl_hours=1),
+            embedder=embedder,
+        )
+
+    async def test_find_similar_queries_semantic_ranks_by_cosine(self, tmp_path):
+        from ollama_sentinel.context.assembler import ContextItem
+        import hashlib
+
+        q_text = "python async testing"
+        query_key = f"query:{hashlib.sha256(q_text.encode()).hexdigest()}"
+
+        embedder = _FakeEmbedder({
+            query_key: [1.0, 0.0],
+            "python async testing": [1.0, 0.0],   # high sim
+            "javascript callbacks": [0.0, 1.0],   # low sim
+        })
+
+        store = self._store(tmp_path, embedder=embedder)
+        store.add_search_query(SearchQuery(text="javascript callbacks"))
+        store.add_search_query(SearchQuery(text="python async testing"))
+
+        results = await store.find_similar_queries_semantic(q_text)
+        assert len(results) >= 1
+        assert results[0].text == "python async testing"
+
+    async def test_find_similar_webpages_semantic_ranks_by_cosine(self, tmp_path):
+        import hashlib
+        q_text = "async python"
+        query_key = f"query:{hashlib.sha256(q_text.encode()).hexdigest()}"
+
+        # text built as f"{title} {summary} {url}" — empty summary → two spaces before url
+        embedder = _FakeEmbedder({
+            query_key: [1.0, 0.0],
+            "async python  https://py.example": [1.0, 0.0],
+            "javascript  https://js.example": [0.0, 1.0],
+        })
+
+        store = self._store(tmp_path, embedder=embedder)
+        store.add_webpage(WebPage(url="https://js.example", title="javascript", summary=""))
+        store.add_webpage(WebPage(url="https://py.example", title="async python", summary=""))
+
+        results = await store.find_similar_webpages_semantic(q_text)
+        assert len(results) >= 1
+        assert results[0].url == "https://py.example"
+
+    def test_find_similar_queries_sync_fallback_without_embedder(self, tmp_path):
+        store = self._store(tmp_path)
+        store.add_search_query(SearchQuery(text="python async testing"))
+        store.add_search_query(SearchQuery(text="javascript callbacks"))
+        results = store.find_similar_queries_sync("python async")
+        assert len(results) >= 1
+        assert results[0].text == "python async testing"
+
+    def test_find_similar_webpages_sync_fallback_without_embedder(self, tmp_path):
+        store = self._store(tmp_path)
+        store.add_webpage(WebPage(url="https://py.example", title="python async", summary=""))
+        store.add_webpage(WebPage(url="https://js.example", title="javascript", summary=""))
+        results = store.find_similar_webpages_sync("python async")
+        assert len(results) >= 1
+        assert results[0].url == "https://py.example"

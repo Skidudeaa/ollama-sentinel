@@ -15,6 +15,7 @@ from ollama_sentinel.context import (
     SemanticRetriever,
     TokenCounter,
     build_research_context,
+    format_impact_report as _shared_format_impact_report,
 )
 
 logger = get_logger(__name__)
@@ -114,48 +115,11 @@ Assess your confidence in the final answer on a scale of 0-1.
     def format_impact_report(impact_analysis: ImpactAnalysis) -> str:
         """Build a structured impact report from an ImpactAnalysis object.
 
-        The report is returned as a plain-text string suitable for use as
-        the synthesized answer when impact data is available.
+        Delegates to the shared formatter in ollama_sentinel.context; prepends
+        the standalone "IMPACT ANALYSIS:" header for use as a complete answer.
         """
-        items = impact_analysis.items
-        affected_files = impact_analysis.affected_files
-
-        high = [it for it in items if it.severity == "HIGH"]
-        medium = [it for it in items if it.severity == "MEDIUM"]
-        low = [it for it in items if it.severity == "LOW"]
-
-        lines: List[str] = [
-            f"IMPACT ANALYSIS: {len(items)} call sites across {len(affected_files)} files",
-            "",
-        ]
-
-        if high:
-            lines.append("HIGH SEVERITY (breaking):")
-            for it in high:
-                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {it.action}")
-            lines.append("")
-
-        if medium:
-            lines.append("MEDIUM SEVERITY (deprecated):")
-            for it in medium:
-                action = it.action if it.action else "Review usage"
-                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
-            lines.append("")
-
-        if low:
-            lines.append("LOW SEVERITY (changed):")
-            for it in low:
-                action = it.action if it.action else "Monitor for changes"
-                lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
-            lines.append("")
-
-        if high:
-            lines.append("SUGGESTED FIRST COMMIT:")
-            for it in high:
-                lines.append(f"  [ ] {it.file_path}:{it.line_number} - {it.action}")
-            lines.append("")
-
-        return "\n".join(lines)
+        body = _shared_format_impact_report(impact_analysis)
+        return f"IMPACT ANALYSIS: {body}"
 
     def synthesize(
         self,

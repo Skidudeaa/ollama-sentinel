@@ -91,12 +91,14 @@ async def build_review_context(
     )
 
 
-def _format_impact_report(impact) -> str:
-    """Inline impact report formatter (duplicated from research_agent.tools.synthesis
-    to keep the context package independent of the research_agent package).
+def format_impact_report(impact) -> str:
+    """Canonical impact report formatter shared by recipes and synthesis.
 
     `impact` is duck-typed: it must have .items (iterable of objects with
     .file_path, .line_number, .pattern, .severity, .action) and .affected_files.
+
+    Returns a plain-text block WITHOUT a leading section header — callers that
+    need a standalone header (e.g. synthesis) should prepend it themselves.
     """
     items = getattr(impact, "items", []) or []
     affected = getattr(impact, "affected_files", []) or []
@@ -116,14 +118,19 @@ def _format_impact_report(impact) -> str:
     if medium:
         lines.append("MEDIUM SEVERITY (deprecated):")
         for it in medium:
-            action = it.action or "Review usage"
+            action = getattr(it, "action", None) or "Review usage"
             lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
         lines.append("")
     if low:
         lines.append("LOW SEVERITY (changed):")
         for it in low:
-            action = it.action or "Monitor for changes"
+            action = getattr(it, "action", None) or "Monitor for changes"
             lines.append(f"  {it.file_path}:{it.line_number}  {it.pattern} -> {action}")
+        lines.append("")
+    if high:
+        lines.append("SUGGESTED FIRST COMMIT:")
+        for it in high:
+            lines.append(f"  [ ] {it.file_path}:{it.line_number} - {it.action}")
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -157,7 +164,7 @@ async def build_research_context(
     if impact is not None and getattr(impact, "items", None):
         sections.append(Section(
             name="IMPACT ANALYSIS",
-            items=[_format_impact_report(impact)],
+            items=[format_impact_report(impact)],
             priority=Priority.MUST_FIT,
             soft_budget=int(total_budget * 0.30),
             truncate="tail",
