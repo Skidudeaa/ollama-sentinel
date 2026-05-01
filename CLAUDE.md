@@ -165,15 +165,12 @@ deferred work is low-priority and not blocking anything:
 2. **Remaining open items** (from `docs/superpowers/followups.md`):
    - CB-1 — dedupe impact-report formatters (harmless until `build_research_context` is reachable for impact data)
    - CB-3 — `EnhancedMemoryStore` semantic ranking (half-day, medium risk)
-   - Pydantic v2 deprecation warning in `research_agent` (`validate_default`, ~10 min)
-
 ### Pickable next moves (ordered by leverage)
 
 | # | Item | Effort | Risk | Notes |
 |---|---|---|---|---|
 | 1 | CB-1 — dedupe impact-report formatter between `recipes.py:_format_impact_report` and `synthesis.py:format_impact_report` | ~30-45 min | low | Harmless today (mutually exclusive paths); only triggers if `build_research_context` ever gets impact data. |
-| 2 | Pydantic v2 `validate_default` deprecation warning in `research_agent` | ~10 min | very low | Surfaces on every research-agent import. |
-| 3 | CB-3 — extend semantic recall to `EnhancedMemoryStore` (`research_agent/tools/memory.py`) | ~half day | medium | `find_similar_webpages` / `find_similar_queries` still use token-overlap. |
+| 2 | CB-3 — extend semantic recall to `EnhancedMemoryStore` (`research_agent/tools/memory.py`) | ~half day | medium | `find_similar_webpages` / `find_similar_queries` still use token-overlap. |
 
 Skip TR-3 — deliberate spec deviation, documented in followups.md.
 
