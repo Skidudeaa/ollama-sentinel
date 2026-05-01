@@ -21,6 +21,26 @@ from watchfiles import Change
 app = typer.Typer()
 console = Console()
 
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"ollama-sentinel {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
+    ),
+) -> None:
+    pass
+
 # Configure rich console and logging
 logging.basicConfig(
     level=logging.INFO,
