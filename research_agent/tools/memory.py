@@ -1,5 +1,6 @@
 # research_agent/tools/memory.py
 from __future__ import annotations
+import asyncio
 import datetime
 import uuid
 from typing import List, Dict, Optional, Set
@@ -51,10 +52,12 @@ class EnhancedMemoryStore:
         openai_api_key: Optional[str] = None,
         db_path: str = "./.weaviate",
         cache: Optional[Cache] = None,
+        embedder=None,  # Optional[OllamaEmbedder] — duck-typed to avoid circular import
     ):
         self.openai_api_key = openai_api_key
         self.db_path = db_path
         self.cache = cache or Cache()
+        self._embedder = embedder
         self._seen_urls: Set[str] = set()
 
         # Load persisted state from cache
@@ -182,6 +185,67 @@ class EnhancedMemoryStore:
         except Exception as e:
             logger.error("Error finding similar queries: %s", e)
             return []
+
+    async def find_similar_webpages_semantic(self, text: str, limit: int = 5) -> List[WebPage]:
+        """Rank webpages by cosine similarity. Falls back to token-overlap if no embedder."""
+        if self._embedder is None:
+            return self.find_similar_webpages(text, limit)
+        from ollama_sentinel.context.assembler import ContextItem
+        from ollama_sentinel.context.retrievers import SemanticRetriever
+        items = [
+            ContextItem(text=f"{wp.title or ''} {wp.summary or ''} {wp.url or ''}", embed_key=f"wp:{pid}")
+            for pid, wp in self._webpages.items()
+        ]
+        if not items:
+            return []
+        ranked = await SemanticRetriever(self._embedder).rank(items, query=text)
+        return [
+            self._webpages[item.embed_key[3:]]
+            for item in ranked[:limit]
+            if item.embed_key[3:] in self._webpages
+        ]
+
+    async def find_similar_queries_semantic(self, text: str, limit: int = 3) -> List[SearchQuery]:
+        """Rank past queries by cosine similarity. Falls back to token-overlap if no embedder."""
+        if self._embedder is None:
+            return self.find_similar_queries(text, limit)
+        from ollama_sentinel.context.assembler import ContextItem
+        from ollama_sentinel.context.retrievers import SemanticRetriever
+        items = [
+            ContextItem(text=q.text or "", embed_key=f"q:{qid}")
+            for qid, q in self._queries.items()
+            if q.text
+        ]
+        if not items:
+            return []
+        ranked = await SemanticRetriever(self._embedder).rank(items, query=text)
+        return [
+            self._queries[item.embed_key[2:]]
+            for item in ranked[:limit]
+            if item.embed_key[2:] in self._queries
+        ]
+
+    def find_similar_webpages_sync(self, text: str, limit: int = 5) -> List[WebPage]:
+        """Sync wrapper: uses semantic ranking if embedder is set, else token-overlap."""
+        if self._embedder is None:
+            return self.find_similar_webpages(text, limit)
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(self.find_similar_webpages_semantic(text, limit))
+        finally:
+            loop.close()
+
+    def find_similar_queries_sync(self, text: str, limit: int = 3) -> List[SearchQuery]:
+        """Sync wrapper: uses semantic ranking if embedder is set, else token-overlap."""
+        if self._embedder is None:
+            return self.find_similar_queries(text, limit)
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(self.find_similar_queries_semantic(text, limit))
+        finally:
+            loop.close()
 
     def get_webpage_by_url(self, url: str) -> Optional[WebPage]:
         """Get a webpage by URL."""

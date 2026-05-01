@@ -59,37 +59,7 @@ def build_workflow(
         ttl_hours=config["memory"]["cache_ttl_hours"]
     )
     
-    # Initialize components
-    memory = EnhancedMemoryStore(
-        openai_api_key=openai_api_key,
-        db_path=config["memory"]["db_path"],
-        cache=cache
-    )
-    
-    search_tool = SearchTool(
-        serpapi_api_key=serpapi_api_key,
-        default_engine=SearchEngine(config["search"]["primary_engine"]),
-        cache=cache,
-        results_per_query=config["search"]["results_per_query"]
-    )
-    
-    browser_tool = BrowserTool(
-        headless=config["browser"]["headless"],
-        user_agent=config["browser"]["user_agent"],
-        cache=cache,
-        extraction_methods=config["browser"]["extraction_methods"],
-        max_content_per_page=config["browser"]["max_content_per_page"],
-        enable_javascript=config["browser"]["enable_javascript"],
-        page_load_timeout=config["browser"]["page_load_timeout"]
-    )
-    
-    code_tool = CodeSearchTool(
-        repo_path=repo_path,
-        embedding_model_name=config["api"]["local_embedding_model"] if config["api"]["use_local_embeddings"] else None,
-        cache=cache
-    )
-    
-    # Optional: build a shared embedder for semantic ranking of web sources.
+    # Optional: build a shared embedder for semantic ranking (memory + synthesis).
     _embedder = None
     embed_cfg = config.get("embedding", {})
     if embed_cfg.get("enabled", False):
@@ -101,8 +71,39 @@ def build_workflow(
                 cache=cache,
             )
         except Exception as e:
-            logger.warning("Failed to initialize embedder (%s); synthesis will use identity ranking.", e)
+            logger.warning("Failed to initialize embedder (%s); falling back to token-overlap.", e)
             _embedder = None
+
+    # Initialize components
+    memory = EnhancedMemoryStore(
+        openai_api_key=openai_api_key,
+        db_path=config["memory"]["db_path"],
+        cache=cache,
+        embedder=_embedder,
+    )
+
+    search_tool = SearchTool(
+        serpapi_api_key=serpapi_api_key,
+        default_engine=SearchEngine(config["search"]["primary_engine"]),
+        cache=cache,
+        results_per_query=config["search"]["results_per_query"]
+    )
+
+    browser_tool = BrowserTool(
+        headless=config["browser"]["headless"],
+        user_agent=config["browser"]["user_agent"],
+        cache=cache,
+        extraction_methods=config["browser"]["extraction_methods"],
+        max_content_per_page=config["browser"]["max_content_per_page"],
+        enable_javascript=config["browser"]["enable_javascript"],
+        page_load_timeout=config["browser"]["page_load_timeout"]
+    )
+
+    code_tool = CodeSearchTool(
+        repo_path=repo_path,
+        embedding_model_name=config["api"]["local_embedding_model"] if config["api"]["use_local_embeddings"] else None,
+        cache=cache
+    )
 
     synthesis_tool = SynthesisTool(
         openai_api_key=openai_api_key,
@@ -133,8 +134,8 @@ def build_workflow(
         step = session.start_step("analyze")
         
         try:
-            # Check for similar questions in memory
-            similar_queries = memory.find_similar_queries(session.query)
+            # Check for similar questions in memory (semantic when embedder available)
+            similar_queries = memory.find_similar_queries_sync(session.query)
             
             similar_queries_text = ""
             if similar_queries:
