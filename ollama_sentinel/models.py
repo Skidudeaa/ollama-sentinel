@@ -72,6 +72,8 @@ class WatchConfig(BaseModel):
     recursive: bool = True
     ignore_patterns: List[str] = []
     debounce_ms: int = 1500
+    max_file_size_kb: int = 512
+    disable_builtin_ignores: bool = False
 
 
 class ProcessingConfig(BaseModel):

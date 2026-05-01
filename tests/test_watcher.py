@@ -7,7 +7,7 @@ import textwrap
 import pytest
 import yaml
 
-from ollama_sentinel.watcher import FileSentinel
+from ollama_sentinel.watcher import FileSentinel, _BUILTIN_IGNORE_PATTERNS, _is_likely_binary
 
 
 # ---------------------------------------------------------------------------
@@ -171,3 +171,180 @@ class TestShouldIgnore:
         # __pycache__/*.log matches both patterns
         path = tmp_path / "__pycache__" / "trace.log"
         assert sentinel._should_ignore(path) is True
+
+
+# ---------------------------------------------------------------------------
+# Built-in ignore patterns (always-on regardless of user config)
+# ---------------------------------------------------------------------------
+
+MINIMAL_YAML_NO_PATTERNS = textwrap.dedent("""\
+    watch:
+      directory: "{watch_dir}"
+      ignore_patterns: []
+    ollama:
+      host: "http://localhost:11434"
+      models:
+        default:
+          name: "gemma3:4b"
+          system_prompt: "Review this code."
+    output:
+      directory: ".ollama_reviews"
+""")
+
+
+def _sentinel_no_patterns(tmp_path: pathlib.Path) -> FileSentinel:
+    config_path = tmp_path / "ollama-sentinel.yaml"
+    config_path.write_text(MINIMAL_YAML_NO_PATTERNS.format(watch_dir=str(tmp_path)))
+    return FileSentinel(config_path)
+
+
+class TestBuiltinIgnores:
+    """Built-in patterns catch noise files even when user ignore_patterns is empty."""
+
+    def test_claude_dotdir_ignored(self, tmp_path):
+        s = _sentinel_no_patterns(tmp_path)
+        assert s._should_ignore(tmp_path / ".claude" / "x.py") is True
+
+    def test_planning_dotdir_ignored(self, tmp_path):
+        s = _sentinel_no_patterns(tmp_path)
+        assert s._should_ignore(tmp_path / ".planning" / "intel" / ".watcher_heartbeat") is True
+
+    def test_build_dotdir_ignored(self, tmp_path):
+        s = _sentinel_no_patterns(tmp_path)
+        assert s._should_ignore(
+            tmp_path / ".build" / "index-build" / "arm64-apple-macosx" / "debug" / "lock.mdb"
+        ) is True
+
+    def test_node_modules_ignored(self, tmp_path):
+        s = _sentinel_no_patterns(tmp_path)
+        assert s._should_ignore(tmp_path / "node_modules" / "lodash" / "index.js") is True
+
+    def test_mdb_extension_ignored(self, tmp_path):
+        s = _sentinel_no_patterns(tmp_path)
+        assert s._should_ignore(tmp_path / "data" / "store.mdb") is True
+
+    def test_lock_extension_ignored(self, tmp_path):
+        s = _sentinel_no_patterns(tmp_path)
+        assert s._should_ignore(tmp_path / "poetry.lock") is True
+
+    def test_watcher_heartbeat_ignored(self, tmp_path):
+        s = _sentinel_no_patterns(tmp_path)
+        assert s._should_ignore(tmp_path / ".watcher_heartbeat") is True
+
+    def test_python_file_not_ignored(self, tmp_path):
+        """A regular .py file must still pass through with empty user patterns."""
+        s = _sentinel_no_patterns(tmp_path)
+        assert s._should_ignore(tmp_path / "main.py") is False
+
+    def test_builtin_patterns_list_not_empty(self):
+        assert len(_BUILTIN_IGNORE_PATTERNS) > 0
+
+
+# ---------------------------------------------------------------------------
+# Size limit
+# ---------------------------------------------------------------------------
+
+class TestSizeLimit:
+    """Files exceeding max_file_size_kb are ignored."""
+
+    def _make_sentinel(self, tmp_path: pathlib.Path, max_kb: int) -> FileSentinel:
+        config_path = tmp_path / "ollama-sentinel.yaml"
+        cfg = yaml.safe_load(MINIMAL_YAML_NO_PATTERNS.format(watch_dir=str(tmp_path)))
+        cfg["watch"]["max_file_size_kb"] = max_kb
+        config_path.write_text(yaml.dump(cfg))
+        return FileSentinel(config_path)
+
+    def test_oversized_file_ignored(self, tmp_path):
+        s = self._make_sentinel(tmp_path, max_kb=1)
+        big = tmp_path / "big.py"
+        big.write_bytes(b"x" * 2048)  # 2 KB > 1 KB limit
+        assert s._should_ignore(big) is True
+
+    def test_undersized_file_not_ignored(self, tmp_path):
+        s = self._make_sentinel(tmp_path, max_kb=10)
+        small = tmp_path / "small.py"
+        small.write_bytes(b"x" * 100)
+        assert s._should_ignore(small) is False
+
+    def test_nonexistent_file_skips_size_check(self, tmp_path):
+        """_should_ignore should not raise on a non-existent path (size check skips)."""
+        s = self._make_sentinel(tmp_path, max_kb=1)
+        missing = tmp_path / "ghost.py"
+        # Should not raise; falls through to pattern matching
+        result = s._should_ignore(missing)
+        assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# Binary content sniff
+# ---------------------------------------------------------------------------
+
+class TestBinarySniff:
+    """_is_likely_binary detects null bytes in first 8 KB."""
+
+    def test_text_file_not_binary(self, tmp_path):
+        f = tmp_path / "source.py"
+        f.write_text("def hello(): pass\n")
+        assert _is_likely_binary(f) is False
+
+    def test_file_with_null_byte_is_binary(self, tmp_path):
+        f = tmp_path / "data.bin"
+        f.write_bytes(b"some data\x00more data")
+        assert _is_likely_binary(f) is True
+
+    def test_null_byte_beyond_peek_ignored(self, tmp_path):
+        """Null byte beyond peek_bytes window is not detected."""
+        f = tmp_path / "almost_text.dat"
+        f.write_bytes(b"a" * 8192 + b"\x00")
+        assert _is_likely_binary(f) is False
+
+    def test_missing_file_returns_false(self, tmp_path):
+        assert _is_likely_binary(tmp_path / "nonexistent.bin") is False
+
+
+# ---------------------------------------------------------------------------
+# disable_builtin_ignores opt-out
+# ---------------------------------------------------------------------------
+
+class TestDisableBuiltins:
+    """Setting disable_builtin_ignores: true suppresses the built-in list."""
+
+    def _sentinel_no_builtins(self, tmp_path: pathlib.Path) -> FileSentinel:
+        config_path = tmp_path / "ollama-sentinel.yaml"
+        cfg = yaml.safe_load(MINIMAL_YAML_NO_PATTERNS.format(watch_dir=str(tmp_path)))
+        cfg["watch"]["disable_builtin_ignores"] = True
+        cfg["watch"]["ignore_patterns"] = []
+        config_path.write_text(yaml.dump(cfg))
+        return FileSentinel(config_path)
+
+    def test_claude_dotdir_not_ignored_when_disabled(self, tmp_path):
+        s = self._sentinel_no_builtins(tmp_path)
+        # .claude/x.py is only blocked by builtins; with them off it passes
+        assert s._should_ignore(tmp_path / ".claude" / "x.py") is False
+
+    def test_mdb_not_ignored_when_disabled(self, tmp_path):
+        s = self._sentinel_no_builtins(tmp_path)
+        assert s._should_ignore(tmp_path / "store.mdb") is False
+
+
+# ---------------------------------------------------------------------------
+# watch_filter callable
+# ---------------------------------------------------------------------------
+
+class TestWatchFilterCallable:
+    """The watch_filter passed to awatch correctly gates on _should_ignore."""
+
+    def test_filter_rejects_builtin_noise(self, tmp_path):
+        """Paths that _should_ignore catches also fail the watch_filter."""
+        s = _sentinel_no_patterns(tmp_path)
+        from watchfiles import Change
+        # Simulate the lambda watchfiles will call
+        filter_fn = lambda _, p: not s._should_ignore(pathlib.Path(p))
+        assert filter_fn(Change.modified, str(tmp_path / ".planning" / ".watcher_heartbeat")) is False
+        assert filter_fn(Change.modified, str(tmp_path / "data" / "store.mdb")) is False
+
+    def test_filter_passes_source_file(self, tmp_path):
+        s = _sentinel_no_patterns(tmp_path)
+        from watchfiles import Change
+        filter_fn = lambda _, p: not s._should_ignore(pathlib.Path(p))
+        assert filter_fn(Change.modified, str(tmp_path / "app.py")) is True

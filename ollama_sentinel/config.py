@@ -55,21 +55,16 @@ def create_default_config(directory: str, output_dir: str = ".ollama_reviews") -
         "watch": {
             "directory": directory,
             "recursive": True,
+            # Built-in patterns (dotdirs, binaries, lock files) are always active.
+            # List only project-specific extras here.
             "ignore_patterns": [
                 "*.md",
                 "*.log",
-                "**/.git/**",
-                "**/node_modules/**",
-                "**/__pycache__/**",
-                "**/.planning/intel/.watcher_heartbeat",
-                "**/*.db",
-                "**/*.sqlite",
-                "**/*.sqlite3",
-                "**/*.mdb",
-                "**/*.lock",
-                f"**/{output_dir}/**"
+                f"**/{output_dir}/**",
             ],
-            "debounce_ms": 1500
+            "debounce_ms": 1500,
+            "max_file_size_kb": 512,
+            "disable_builtin_ignores": False,
         },
         "ollama": {
             "host": "http://localhost:11434",

@@ -529,11 +529,15 @@ class TestConfigLoading:
 
     def test_create_default_config_uses_safe_local_ollama_defaults(self):
         """Generated configs avoid local Ollama overload and generated artifacts."""
+        from ollama_sentinel.watcher import _BUILTIN_IGNORE_PATTERNS
         result = create_default_config("/some/dir")
         assert result["ollama"]["request_timeout"] == 180
         assert result["processing"]["max_concurrent_reviews"] == 1
         assert result["processing"]["max_concurrent_chunks_per_file"] == 1
-        assert "**/*.mdb" in result["watch"]["ignore_patterns"]
+        # .mdb and other binary extensions are covered by built-in patterns,
+        # not by the init template — verify built-ins include them instead.
+        assert "**/*.mdb" in _BUILTIN_IGNORE_PATTERNS
+        assert result["watch"]["disable_builtin_ignores"] is False
 
 
 # ---------------------------------------------------------------------------
