@@ -1,7 +1,19 @@
 """Integration tests for the two recipes."""
+import hashlib
+
 from ollama_sentinel.context.recipes import build_review_context
-from ollama_sentinel.context.retrievers import NullRetriever
+from ollama_sentinel.context.retrievers import NullRetriever, SemanticRetriever
 from ollama_sentinel.context.tokens import TokenCounter
+
+
+class _FakeEmbedder:
+    """Returns pre-mapped vectors from a dict keyed by cache_key or text."""
+    def __init__(self, vectors: dict):
+        self._vectors = vectors
+
+    async def embed(self, text, *, cache_key=None):
+        key = cache_key if cache_key in self._vectors else text
+        return self._vectors[key]
 
 
 class TestBuildReviewContext:
@@ -72,6 +84,48 @@ class TestBuildReviewContext:
         assert "PRIOR UNRESOLVED ISSUES" in out
         assert "[high]" in out and "hardcoded password" in out
         assert "seen 3x since 2026-01-01" in out
+
+    async def test_semantic_retriever_ranks_violations_by_similarity(self):
+        content = "x = 1\n"
+        query_key = f"query:{hashlib.sha256(content.encode()).hexdigest()}"
+        # finding:1 → cosine 1.0 (high similarity); finding:2 → cosine 0.0
+        embedder = _FakeEmbedder({
+            query_key: [1.0, 0.0],
+            "finding:1": [1.0, 0.0],
+            "finding:2": [0.0, 1.0],
+        })
+        retriever = SemanticRetriever(embedder=embedder)
+        # violations listed in reverse id order so NullRetriever would put id:2 first
+        violations = [
+            {
+                "id": 2, "severity": "medium", "category": "perf",
+                "line_start": 20, "description": "O(n^2) loop",
+                "file_path": "src/a.py", "occurrence_count": 1,
+                "first_seen": "2026-01-01T00:00:00",
+            },
+            {
+                "id": 1, "severity": "high", "category": "security",
+                "line_start": 10, "description": "hardcoded password",
+                "file_path": "src/a.py", "occurrence_count": 3,
+                "first_seen": "2026-01-01T00:00:00",
+            },
+        ]
+        counter = TokenCounter()
+        out = await build_review_context(
+            file_rel_path="src/a.py",
+            file_type="py",
+            content=content,
+            diff=None,
+            chunk_info="",
+            prior_violations=violations,
+            counter=counter,
+            total_budget=1000,
+            retriever=retriever,
+        )
+        assert "PRIOR UNRESOLVED" in out
+        pos_1 = out.index("hardcoded password")
+        pos_2 = out.index("O(n^2)")
+        assert pos_1 < pos_2
 
 
 from dataclasses import dataclass, field
