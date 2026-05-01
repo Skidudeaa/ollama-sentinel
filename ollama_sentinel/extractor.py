@@ -37,6 +37,41 @@ def _strip_code_fences(text: str) -> str:
     return text
 
 
+def _loads_findings_json(text: str):
+    """Parse finding JSON from model output.
+
+    Accepts either a raw array or an object containing a ``findings`` array.
+    If the model emits prose around JSON, tries to recover the first JSON-ish
+    array/object before falling back.
+    """
+    cleaned = _strip_code_fences(text)
+    candidates = [cleaned]
+
+    array_start = cleaned.find("[")
+    array_end = cleaned.rfind("]")
+    if array_start != -1 and array_end > array_start:
+        candidates.append(cleaned[array_start:array_end + 1])
+
+    object_start = cleaned.find("{")
+    object_end = cleaned.rfind("}")
+    if object_start != -1 and object_end > object_start:
+        candidates.append(cleaned[object_start:object_end + 1])
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError) as e:
+            last_error = e
+            continue
+        if isinstance(parsed, dict) and isinstance(parsed.get("findings"), list):
+            return parsed["findings"]
+        return parsed
+    if last_error:
+        raise last_error
+    raise json.JSONDecodeError("No JSON object or array found", cleaned, 0)
+
+
 def _parse_finding(raw: dict, file_path: str) -> Finding | None:
     """Validate a raw dict and return a Finding, or None if malformed."""
     if not isinstance(raw, dict):
@@ -159,15 +194,18 @@ async def extract_findings(
     prompt = _EXTRACTION_PROMPT.format(review_text=review_text)
 
     try:
-        response = await ollama_client.generate_review(model_role, prompt)
+        response = await ollama_client.generate_review(
+            model_role,
+            prompt,
+            response_format="json",
+        )
     except Exception:
         log.warning("Ollama API error during finding extraction; trying regex fallback")
         return _extract_from_markdown(review_text, file_path)
 
-    cleaned = _strip_code_fences(response)
 
     try:
-        parsed = json.loads(cleaned)
+        parsed = _loads_findings_json(response)
     except (json.JSONDecodeError, TypeError):
         log.warning("Malformed JSON from extraction model; trying regex fallback")
         return _extract_from_markdown(review_text, file_path)

@@ -61,12 +61,19 @@ def create_default_config(directory: str, output_dir: str = ".ollama_reviews") -
                 "**/.git/**",
                 "**/node_modules/**",
                 "**/__pycache__/**",
+                "**/.planning/intel/.watcher_heartbeat",
+                "**/*.db",
+                "**/*.sqlite",
+                "**/*.sqlite3",
+                "**/*.mdb",
+                "**/*.lock",
                 f"**/{output_dir}/**"
             ],
             "debounce_ms": 1500
         },
         "ollama": {
             "host": "http://localhost:11434",
+            "request_timeout": 180,
             "models": {
                 "default": {
                     "name": "gemma3:4b",
@@ -89,8 +96,8 @@ def create_default_config(directory: str, output_dir: str = ".ollama_reviews") -
             }
         },
         "processing": {
-            "max_concurrent_reviews": 3,
-            "max_concurrent_chunks_per_file": 2,
+            "max_concurrent_reviews": 1,
+            "max_concurrent_chunks_per_file": 1,
             "git_diff_mode": False,
         },
         "output": {

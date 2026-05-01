@@ -2,6 +2,7 @@
 SQLite persistence layer for tracking code review findings.
 """
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List
@@ -39,29 +40,33 @@ class ViolationDB:
     """
 
     def __init__(self, db_path: str) -> None:
-        self._conn = sqlite3.connect(db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute(self._CREATE_TABLE)
-        self._conn.commit()
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        with self._lock:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self._conn.execute(self._CREATE_TABLE)
+            self._conn.commit()
         self._migrate()
 
     def _migrate(self) -> None:
         """Idempotent migration: add the embed_text column and backfill values."""
         try:
-            cur = self._conn.execute("PRAGMA table_info(findings)")
-            cols = {row[1] for row in cur.fetchall()}
-            if "embed_text" not in cols:
-                self._conn.execute("ALTER TABLE findings ADD COLUMN embed_text TEXT")
-                self._conn.execute(
-                    """
-                    UPDATE findings
-                    SET embed_text =
-                        '[' || severity || '] ' || category || ' at ' ||
-                        file_path || ':' || line_start || ': ' || description
-                    WHERE embed_text IS NULL
-                    """
-                )
-                self._conn.commit()
+            with self._lock:
+                cur = self._conn.execute("PRAGMA table_info(findings)")
+                cols = {row[1] for row in cur.fetchall()}
+                if "embed_text" not in cols:
+                    self._conn.execute("ALTER TABLE findings ADD COLUMN embed_text TEXT")
+                    self._conn.execute(
+                        """
+                        UPDATE findings
+                        SET embed_text =
+                            '[' || severity || '] ' || category || ' at ' ||
+                            file_path || ':' || line_start || ': ' || description
+                        WHERE embed_text IS NULL
+                        """
+                    )
+                    self._conn.commit()
         except sqlite3.DatabaseError as e:
             import logging
             logging.getLogger("ollama-sentinel").error("ViolationDB migration failed: %s", e)
@@ -81,66 +86,68 @@ class ViolationDB:
             return
 
         now = datetime.now(timezone.utc).isoformat()
-        cur = self._conn.cursor()
-        try:
-            for f in findings:
-                cur.execute(
-                    """
-                    SELECT id FROM findings
-                    WHERE file_path  = ?
-                      AND line_start = ?
-                      AND line_end   = ?
-                      AND category   = ?
-                      AND resolved   = 0
-                    """,
-                    (f.file_path, f.line_start, f.line_end, f.category),
-                )
-                row = cur.fetchone()
-                if row:
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                for f in findings:
                     cur.execute(
                         """
-                        UPDATE findings
-                        SET occurrence_count = occurrence_count + 1,
-                            last_seen       = ?
-                        WHERE id = ?
+                        SELECT id FROM findings
+                        WHERE file_path  = ?
+                          AND line_start = ?
+                          AND line_end   = ?
+                          AND category   = ?
+                          AND resolved   = 0
                         """,
-                        (now, row[0]),
+                        (f.file_path, f.line_start, f.line_end, f.category),
                     )
-                else:
-                    embed_text = (
-                        f"[{f.severity}] {f.category} at {f.file_path}:{f.line_start}: {f.description}"
-                    )
-                    cur.execute(
-                        """
-                        INSERT INTO findings
-                            (file_path, line_start, line_end, category,
-                             severity, description, first_seen, last_seen, embed_text)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            f.file_path,
-                            f.line_start,
-                            f.line_end,
-                            f.category,
-                            f.severity,
-                            f.description,
-                            now,
-                            now,
-                            embed_text,
-                        ),
-                    )
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
+                    row = cur.fetchone()
+                    if row:
+                        cur.execute(
+                            """
+                            UPDATE findings
+                            SET occurrence_count = occurrence_count + 1,
+                                last_seen       = ?
+                            WHERE id = ?
+                            """,
+                            (now, row[0]),
+                        )
+                    else:
+                        embed_text = (
+                            f"[{f.severity}] {f.category} at {f.file_path}:{f.line_start}: {f.description}"
+                        )
+                        cur.execute(
+                            """
+                            INSERT INTO findings
+                                (file_path, line_start, line_end, category,
+                                 severity, description, first_seen, last_seen, embed_text)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                f.file_path,
+                                f.line_start,
+                                f.line_end,
+                                f.category,
+                                f.severity,
+                                f.description,
+                                now,
+                                now,
+                                embed_text,
+                            ),
+                        )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def mark_resolved(self, finding_id: int) -> None:
         """Set *resolved=1* for the given finding."""
-        self._conn.execute(
-            "UPDATE findings SET resolved = 1 WHERE id = ?",
-            (finding_id,),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE findings SET resolved = 1 WHERE id = ?",
+                (finding_id,),
+            )
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # Read operations
@@ -148,40 +155,44 @@ class ViolationDB:
 
     def get_unresolved(self, file_path: str) -> List[dict]:
         """Return all unresolved findings for *file_path*."""
-        cur = self._conn.execute(
-            "SELECT * FROM findings WHERE file_path = ? AND resolved = 0",
-            (file_path,),
-        )
-        return self._rows_to_dicts(cur)
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM findings WHERE file_path = ? AND resolved = 0",
+                (file_path,),
+            )
+            return self._rows_to_dicts(cur)
 
     def get_all_unresolved(self) -> List[dict]:
         """Return every unresolved finding across all files."""
-        cur = self._conn.execute("SELECT * FROM findings WHERE resolved = 0")
-        return self._rows_to_dicts(cur)
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM findings WHERE resolved = 0")
+            return self._rows_to_dicts(cur)
 
     def get_neighbors_unresolved(self, file_paths: List[str]) -> List[dict]:
         """Return all unresolved findings for multiple *file_paths*."""
         if not file_paths:
             return []
         placeholders = ", ".join("?" * len(file_paths))
-        cur = self._conn.execute(
-            f"SELECT * FROM findings WHERE file_path IN ({placeholders}) AND resolved = 0",
-            file_paths,
-        )
-        return self._rows_to_dicts(cur)
+        with self._lock:
+            cur = self._conn.execute(
+                f"SELECT * FROM findings WHERE file_path IN ({placeholders}) AND resolved = 0",
+                file_paths,
+            )
+            return self._rows_to_dicts(cur)
 
     def get_recurring(self, min_count: int = 2, limit: int = 20) -> List[dict]:
         """Return findings with occurrence_count >= *min_count*, ordered desc."""
-        cur = self._conn.execute(
-            """
-            SELECT * FROM findings
-            WHERE occurrence_count >= ?
-            ORDER BY occurrence_count DESC
-            LIMIT ?
-            """,
-            (min_count, limit),
-        )
-        return self._rows_to_dicts(cur)
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM findings
+                WHERE occurrence_count >= ?
+                ORDER BY occurrence_count DESC
+                LIMIT ?
+                """,
+                (min_count, limit),
+            )
+            return self._rows_to_dicts(cur)
 
     async def get_neighbors_by_similarity(
         self,
@@ -241,7 +252,8 @@ class ViolationDB:
 
     def close(self) -> None:
         """Close the underlying database connection."""
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     # ------------------------------------------------------------------
     # Helpers

@@ -57,7 +57,13 @@ class OllamaClient:
         stop=stop_after_attempt(5),
         reraise=True,
     )
-    async def generate_with_model(self, model_config, prompt: str) -> str:
+    async def generate_with_model(
+        self,
+        model_config,
+        prompt: str,
+        *,
+        response_format: Optional[str] = None,
+    ) -> str:
         """Send `prompt` to Ollama using an explicit model config.
 
         `model_config` is either an OllamaModelConfig-compatible dict
@@ -78,6 +84,13 @@ class OllamaClient:
         max_tokens = _get("max_tokens", None)
 
         url = f"{self.config['host']}/api/chat"
+        options = {
+            "temperature": temperature,
+            "top_p": top_p,
+        }
+        if max_tokens is not None:
+            options["num_predict"] = max_tokens
+
         payload = {
             "model": name,
             "messages": [
@@ -85,11 +98,10 @@ class OllamaClient:
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
-            "temperature": temperature,
-            "top_p": top_p,
+            "options": options,
         }
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+        if response_format is not None:
+            payload["format"] = response_format
 
         headers = {"Content-Type": "application/json"}
         try:
@@ -97,15 +109,30 @@ class OllamaClient:
             response.raise_for_status()
             return response.json()["message"]["content"]
         except httpx.HTTPError as e:
-            log.error(f"Ollama API error: {str(e)}")
+            log.error(
+                "Ollama API error (%s): %s",
+                type(e).__name__,
+                str(e) or "(no message)",
+                exc_info=True,
+            )
             raise
 
-    async def generate_review(self, model_role: str, prompt: str) -> str:
+    async def generate_review(
+        self,
+        model_role: str,
+        prompt: str,
+        *,
+        response_format: Optional[str] = None,
+    ) -> str:
         """Send `prompt` to Ollama using a role name looked up in config."""
         if model_role not in self.config["models"]:
             log.warning(f"Model role '{model_role}' not found, falling back to default")
             model_role = "default"
-        return await self.generate_with_model(self.config["models"][model_role], prompt)
+        return await self.generate_with_model(
+            self.config["models"][model_role],
+            prompt,
+            response_format=response_format,
+        )
 
 
 class _DiskcacheAdapter:

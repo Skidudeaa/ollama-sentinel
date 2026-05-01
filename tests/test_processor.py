@@ -527,6 +527,14 @@ class TestConfigLoading:
         default_model = result["ollama"]["models"]["default"]["name"]
         assert default_model == "gemma3:4b"
 
+    def test_create_default_config_uses_safe_local_ollama_defaults(self):
+        """Generated configs avoid local Ollama overload and generated artifacts."""
+        result = create_default_config("/some/dir")
+        assert result["ollama"]["request_timeout"] == 180
+        assert result["processing"]["max_concurrent_reviews"] == 1
+        assert result["processing"]["max_concurrent_chunks_per_file"] == 1
+        assert "**/*.mdb" in result["watch"]["ignore_patterns"]
+
 
 # ---------------------------------------------------------------------------
 # OllamaClient.generate_with_model tests
@@ -575,6 +583,27 @@ class TestGenerateWithModel:
         finally:
             await client.close()
         assert out == "default output"
+
+    async def test_generate_review_can_request_json_format(self, ollama_config, httpx_mock):
+        """Passing response_format sends Ollama's structured-output format flag."""
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "[]"}},
+        )
+        client = OllamaClient(ollama_config)
+        try:
+            out = await client.generate_review(
+                "default",
+                "extract findings",
+                response_format="json",
+            )
+        finally:
+            await client.close()
+        assert out == "[]"
+        import json as _json
+        body = _json.loads(httpx_mock.get_requests()[0].content)
+        assert body["format"] == "json"
+        assert body["options"]["temperature"] == 0.1
 
     async def test_generate_with_model_config_object(self, ollama_config, httpx_mock):
         """Passing an OllamaModelConfig object (not dict) also works."""

@@ -148,6 +148,42 @@ class TestExtractFindingsHappyPath:
         assert len(results) == 1
         assert results[0].description == "Trailing whitespace"
 
+    async def test_object_wrapped_findings_array(
+        self, ollama_config, httpx_mock: HTTPXMock
+    ):
+        """Model returning {"findings": [...]} is accepted."""
+        response_json = json.dumps({
+            "findings": [
+                {
+                    "line_start": 7,
+                    "line_end": 9,
+                    "category": "bug",
+                    "severity": "medium",
+                    "description": "Bounds check is missing",
+                },
+            ],
+        })
+
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": response_json}},
+        )
+
+        client = OllamaClient(ollama_config)
+        try:
+            results = await extract_findings(
+                review_text="review text",
+                file_path="src/bounds.py",
+                ollama_client=client,
+            )
+        finally:
+            await client.close()
+
+        assert len(results) == 1
+        assert results[0].line_start == 7
+        request_body = json.loads(httpx_mock.get_requests()[0].content)
+        assert request_body["format"] == "json"
+
 
 # ---------------------------------------------------------------------------
 # Edge-case tests

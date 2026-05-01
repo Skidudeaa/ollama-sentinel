@@ -1,6 +1,7 @@
 """Tests for ollama_sentinel.violation_db persistence layer."""
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -37,6 +38,24 @@ class TestDBCreation:
         db = ViolationDB(str(db_path))
         try:
             assert db_path.exists()
+        finally:
+            db.close()
+
+    def test_duplicate_finding_can_persist_from_worker_threads(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "memory.db"))
+        finding = _make_finding()
+        try:
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futures = [
+                    pool.submit(db.persist_findings, "src/app.py", [finding])
+                    for _ in range(8)
+                ]
+                for future in futures:
+                    future.result()
+
+            rows = db.get_unresolved("src/app.py")
+            assert len(rows) == 1
+            assert rows[0]["occurrence_count"] == 8
         finally:
             db.close()
 
