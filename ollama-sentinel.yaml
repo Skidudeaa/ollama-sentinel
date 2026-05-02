@@ -50,7 +50,7 @@ memory:
   enabled: true
   db_path: .ollama_reviews/memory.db
   neighbor_k: 10
-  semantic_recall: true
+  semantic_recall: false
 embedding:
   enabled: true
   models:
