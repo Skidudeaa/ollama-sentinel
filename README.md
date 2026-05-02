@@ -14,11 +14,15 @@ Both tools are local. Your code never leaves your machine.
 
 ```bash
 pip install -e .
-ollama pull gemma3:4b && ollama serve   # need a running Ollama instance
+ollama serve                              # in a separate terminal, leave running
+ollama pull gemma3:4b                     # the reviewer model (~3 GB)
+ollama pull qwen3-embedding:4b            # the semantic recall embedder (~2.5 GB)
 ollama-sentinel init && ollama-sentinel run
 ```
 
-Edit a file. A review appears in seconds. Run `ollama-sentinel report` after a few reviews to see your recurring violations ranked by frequency.
+Edit a file. A review appears in `.ollama_reviews/` within seconds. Run `ollama-sentinel report` after a few reviews to see your recurring violations ranked by frequency.
+
+If you skip the `qwen3-embedding:4b` pull, the watcher still works — it logs `EmbeddingUnavailable` and falls back to exact-path recall. Set `memory.semantic_recall: false` in `ollama-sentinel.yaml` to silence the warning.
 
 ## Documentation
 
@@ -29,20 +33,34 @@ See **[docs/GUIDE.md](docs/GUIDE.md)** for the full user guide covering:
 - Impact analysis output format
 - Project philosophy and architecture
 
-## Commands
+## Cheat sheet
 
-```bash
-ollama-sentinel run                      # watch + auto-review
-ollama-sentinel review file.py -m security   # manual review with model role
-ollama-sentinel report                   # show recurring violations
-ollama-sentinel report -f json           # machine-readable output
-ollama-sentinel triage < pytest.log      # diagnose tool output via local model
-ollama-sentinel dashboard                # live TUI of reviews + recurring violations
-ollama-sentinel init                     # create config file
+The "I always forget what to run" table.
 
-python -m research_agent.main query "question" --context src/ --output result.md
-python -m research_agent.main interactive
-```
+| I want to... | Run | What success looks like |
+|---|---|---|
+| Start the watcher | `ollama-sentinel init && ollama-sentinel run` | "Watching `<dir>` for changes". Edit a file → review lands in `.ollama_reviews/<name>.md` within seconds |
+| Review one file | `ollama-sentinel review src/foo.py` | Markdown review prints to stdout AND lands in `.ollama_reviews/foo.py.md` |
+| Use a model role | `ollama-sentinel review src/foo.py -m security` | Review references security concerns specifically (vs the default reviewer's broader feedback) |
+| See recurring violations | `ollama-sentinel report` | Rich table ranked by occurrence count |
+| Same, machine-readable | `ollama-sentinel report -f json` | JSON array on stdout |
+| Live two-pane TUI | `ollama-sentinel dashboard` | Recent reviews on top, recurring violations below; polls the DB read-only |
+| Diagnose a failing log | `ollama-sentinel triage < pytest.log`<br>or `ollama-sentinel triage some.log -o out.md` | Markdown diagnosis with file:line references |
+| Create a config file | `ollama-sentinel init` | Writes `ollama-sentinel.yaml` in the current dir |
+| Run dependency impact analysis | `python -m research_agent.main query "is this safe to upgrade?" --context src/ --output result.md` | Ranked impact report at `result.md` with HIGH / MEDIUM / LOW severity per call site |
+| Interactive research | `python -m research_agent.main interactive` | REPL prompt — ask follow-up questions in the same session |
+| Run all tests | `pytest tests/ -q` | `378 passed, 15 skipped` (the 15 skips are intentional — fallback paths covered by the other CI runner) |
+
+## When something looks wrong
+
+| Symptom | Fix |
+|---|---|
+| Watcher stalls, no reviews appear | Ollama isn't running. `ollama serve` in another terminal |
+| `EmbeddingUnavailable` in logs | `ollama pull qwen3-embedding:4b` (or set `memory.semantic_recall: false` in the YAML) |
+| `ValidationError: extra fields not permitted` on config load | YAML typo — error names the offending field; fix the spelling. Applies to top-level fields AND role names inside `embedding.models` |
+| `ValidationError: ... must include a 'hot' role` | YAML's `embedding:` block is missing `models.hot`. Add `embedding: { models: { hot: qwen3-embedding:4b } }` |
+| Deprecation warning about `embedding.model` on every load | Legacy v0.1.x flat shape. Migrate `embedding.model: foo` → `embedding.models.hot: foo`. The legacy field hard-errors in v0.3 |
+| Research agent ImportError | `pip install -e ".[research]"` (the `[research]` extras are not installed by default) |
 
 ## Requirements
 
@@ -55,8 +73,10 @@ python -m research_agent.main interactive
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v   # 336 tests, ~3 seconds
+pytest tests/ -q   # 378 passed, 15 skipped, ~2-3 seconds
 ```
+
+CI runs both `[dev]` and `[dev,research]` matrix runners on every push and PR — the second one exercises the 15 tests skipped on `[dev]`-only.
 
 ## License
 
