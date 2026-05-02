@@ -161,7 +161,7 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 All open backlog items from the last two sessions are closed. Remaining
 deferred work is low-priority and not blocking anything:
 
-1. **Sanity check first.** `pytest tests/ -q` should report 365 / 15 skip.
+1. **Sanity check first.** `pytest tests/ -q` should report 378 / 15 skip.
 2. **Remaining open items** (from `docs/superpowers/followups.md`):
    - CB-1 — dedupe impact-report formatters (harmless until `build_research_context` is reachable for impact data)
 ### Pickable next moves (ordered by leverage)
@@ -178,9 +178,13 @@ Skip TR-3 — deliberate spec deviation, documented in followups.md.
   langchain, playwright, llama-index). Not installed by default.
 - `impact_scan` node tested with mocked logic only — needs integration
   test against real LangGraph compile with `OPENAI_API_KEY`.
-- `ollama-sentinel run` requires `ollama pull nomic-embed-text` once on
-  first use, or set `memory.semantic_recall: false` to fall back to the
-  legacy exact-path recall.
+- `ollama-sentinel run` requires `ollama pull qwen3-embedding:4b` once on
+  first use (~2.5 GB), or set `memory.semantic_recall: false` to fall back
+  to the legacy exact-path recall.
+- `embedding.models.consolidation` and `embedding.models.rerank` are
+  pre-registered in the schema but UNWIRED. Do NOT pull `qwen3-embedding:8b`
+  or any reranker model unless you're picking up Phase B or C — they sit
+  in the YAML so future phases don't need another config migration.
 - `_archive/` holds superseded snapshots
   (`ollama_sentinel_pre_memory_snapshot/`, `research_agent_orphans/`).
   Do not import from it. See `_archive/README.md` for provenance.
@@ -192,6 +196,15 @@ Skip TR-3 — deliberate spec deviation, documented in followups.md.
 
 ### Recent landings
 
+- 2026-05-01: Phase A landed. Hot-path embedder swapped from
+  nomic-embed-text to qwen3-embedding:4b. EmbeddingConfig refactored to a
+  named-role dict with extra='forbid'; consolidation and rerank roles
+  pre-registered (schema-property pre-registration via merge-in-validator)
+  but unwired. Legacy `embedding.model: foo` YAML auto-migrates with a
+  one-shot deprecation warning that threatens hard-error in v0.3. Plan:
+  `~/.claude/plans/yes-putting-both-moonlit-galaxy.md`. Spec:
+  `docs/superpowers/plans/2026-05-01-phase-a-qwen3-hot-path-swap.md`.
+  Phases B and C remain parked pending v0.2 Incident schema.
 - 2026-05-01: CB-3 closed (commit 821b6b0). `research_agent`'s analyze
   node now consults prior webpage neighbors via `find_similar_webpages_sync`,
   alongside the existing `find_similar_queries_sync` call. New leaf module

@@ -7,7 +7,7 @@ import json
 import logging
 import pathlib
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, cast
 
 import git
 import httpx
@@ -196,7 +196,7 @@ class FileProcessor:
             try:
                 self.embedder = OllamaEmbedder(
                     host=config.ollama.host,
-                    model=config.embedding.model,
+                    model=cast(str, config.embedding.models["hot"]),
                     cache=self._cache,
                 )
                 self.retriever = SemanticRetriever(embedder=self.embedder)

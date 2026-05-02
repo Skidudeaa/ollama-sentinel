@@ -114,6 +114,10 @@ def create_default_config(directory: str, output_dir: str = ".ollama_reviews") -
         },
         "embedding": {
             "enabled": True,
-            "model": "nomic-embed-text",
+            "models": {
+                "hot": "qwen3-embedding:4b",
+                "consolidation": "qwen3-embedding:8b",
+                "rerank": None,
+            },
         },
     }

@@ -31,7 +31,7 @@ class OllamaEmbedder:
     def __init__(
         self,
         host: str,
-        model: str = "nomic-embed-text",
+        model: str = "qwen3-embedding:4b",
         cache: Optional[_CacheLike] = None,
         client: Optional[httpx.AsyncClient] = None,
         timeout_seconds: float = 30.0,

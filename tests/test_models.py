@@ -258,7 +258,99 @@ class TestEmbeddingConfig:
     def test_defaults(self):
         cfg = EmbeddingConfig()
         assert cfg.enabled is True
-        assert cfg.model == "nomic-embed-text"
+        # See TestEmbeddingConfigMigration for full models-shape coverage.
+        assert cfg.models["hot"] == "qwen3-embedding:4b"
+
+
+class TestEmbeddingConfigMigration:
+    """Phase A: EmbeddingConfig is a named-role dict with legacy migration."""
+
+    def test_default_models_shape(self):
+        cfg = EmbeddingConfig()
+        assert set(cfg.models.keys()) == {"hot", "consolidation", "rerank"}
+        assert cfg.models["hot"] == "qwen3-embedding:4b"
+        assert cfg.models["consolidation"] == "qwen3-embedding:8b"
+        assert cfg.models["rerank"] is None
+
+    def test_partial_models_dict_fills_defaults(self):
+        """Spec deviation §1: pre-registration is a schema property, not an
+        input property. Supplying only `hot` must still populate the other
+        two roles from defaults so future Phase B/C consumers don't see None
+        where they expect a model name."""
+        cfg = EmbeddingConfig(models={"hot": "my-custom-hot"})
+        assert cfg.models["hot"] == "my-custom-hot"
+        assert cfg.models["consolidation"] == "qwen3-embedding:8b"
+        assert cfg.models["rerank"] is None
+
+    def test_models_must_include_hot_role(self):
+        with pytest.raises(ValidationError, match="hot"):
+            EmbeddingConfig(models={"consolidation": "x"})
+
+    def test_hot_role_must_be_non_empty_string(self):
+        with pytest.raises(ValidationError, match="non-empty"):
+            EmbeddingConfig(models={"hot": "  "})
+
+    def test_other_roles_may_be_none(self):
+        cfg = EmbeddingConfig(models={"hot": "h", "rerank": None})
+        assert cfg.models["rerank"] is None
+
+    def test_other_roles_must_be_non_empty_string_when_set(self):
+        with pytest.raises(ValidationError, match="non-empty"):
+            EmbeddingConfig(models={"hot": "h", "consolidation": "  "})
+
+    def test_extra_top_level_field_is_forbidden(self):
+        # Phase A locks the schema with extra="forbid" so typos in YAML
+        # surface loudly rather than silently being ignored.
+        with pytest.raises(ValidationError):
+            EmbeddingConfig(enabled=True, models={"hot": "h"}, oops=True)
+
+    def test_unknown_role_name_is_rejected(self):
+        """Spec deviation §5: role names inside `models` are a closed set
+        (hot, consolidation, rerank). Typos like `consolitation` would
+        otherwise silently get added as a custom role while the merge-in-
+        validator quietly fills the intended key with the default,
+        delivering the wrong model to Phase B/C consumers. Reject typos
+        loudly at config load time."""
+        with pytest.raises(ValidationError, match="unrecognized role"):
+            EmbeddingConfig(models={"hot": "h", "consolitation": "x"})
+
+    def test_legacy_model_field_migrates_to_models_hot(self, caplog):
+        import ollama_sentinel.models as models_module
+        models_module._EMBEDDING_DEPRECATION_LOGGED = False
+        with caplog.at_level("WARNING"):
+            cfg = EmbeddingConfig(model="legacy-embed-name")
+        assert cfg.models["hot"] == "legacy-embed-name"
+        assert cfg.models["consolidation"] == "qwen3-embedding:8b"
+        assert cfg.models["rerank"] is None
+        assert "v0.3" in caplog.text or "0.3" in caplog.text
+        assert "deprecated" in caplog.text.lower()
+
+    def test_legacy_model_with_extra_field_still_rejects(self):
+        """Spec deviation §1 corollary: legacy migrator strips the recognized
+        `model` key; any unrecognized siblings still trigger extra='forbid'."""
+        with pytest.raises(ValidationError):
+            EmbeddingConfig(model="legacy-embed-name", oops="typo")
+
+    def test_both_model_and_models_rejected(self):
+        with pytest.raises(ValidationError, match="mutually exclusive"):
+            EmbeddingConfig(model="x", models={"hot": "y"})
+
+    def test_deprecation_warning_logs_only_once(self, caplog):
+        """Spec deviation §2 + §4: mirror ProcessingConfig's one-shot guard
+        so repeat config loads don't spam stderr. The first call must log;
+        the second must not. The positive assertion on the first call is
+        what makes this test fail correctly when the guard is missing — a
+        negative-only assertion would pass vacuously when no warning fires
+        at all."""
+        import ollama_sentinel.models as models_module
+        models_module._EMBEDDING_DEPRECATION_LOGGED = False
+        with caplog.at_level("WARNING"):
+            EmbeddingConfig(model="legacy-1")
+        assert "deprecated" in caplog.text.lower()  # first call must log
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            EmbeddingConfig(model="legacy-2")
+        assert "deprecated" not in caplog.text.lower()  # second call must not log
 
 
 class TestOllamaModelConfigTokenFields:
