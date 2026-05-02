@@ -34,11 +34,11 @@ class TestOllamaEmbedder:
         finally:
             await emb.close()
         assert vec == [0.1, 0.2, 0.3]
-        assert cache.store["embed:nomic-embed-text:k1"] == [0.1, 0.2, 0.3]
+        assert cache.store["embed:qwen3-embedding:4b:k1"] == [0.1, 0.2, 0.3]
 
     async def test_cache_hit_skips_http(self, httpx_mock: HTTPXMock):
         cache = _FakeCache()
-        cache.store["embed:nomic-embed-text:k1"] = [0.9, 0.9, 0.9]
+        cache.store["embed:qwen3-embedding:4b:k1"] = [0.9, 0.9, 0.9]
         emb = OllamaEmbedder(host="http://localhost:11434", cache=cache)
         try:
             vec = await emb.embed("hello", cache_key="k1")
@@ -53,7 +53,7 @@ class TestOllamaEmbedder:
         cache = _FakeCache()
         # Pre-seed a value for a different model — must not be returned.
         cache.store["embed:other-model:k1"] = [0.0]
-        emb = OllamaEmbedder(host="http://localhost:11434", model="nomic-embed-text", cache=cache)
+        emb = OllamaEmbedder(host="http://localhost:11434", model="qwen3-embedding:4b", cache=cache)
         try:
             vec = await emb.embed("hello", cache_key="k1")
         finally:
