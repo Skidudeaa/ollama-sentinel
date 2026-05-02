@@ -37,3 +37,14 @@ output:
 memory:
   enabled: true
   db_path: .ollama_reviews/memory.db
+embedding:
+  enabled: true
+  models:
+    hot: qwen3-embedding:4b
+    # The next two roles are pre-registered in the schema but UNWIRED.
+    # No consumer reads them today. They're here so future phases (Phase B
+    # consolidation, Phase C reranker) don't need another config migration.
+    # Leaving them at these defaults is fine; rerank: null means "role
+    # exists, no model assigned yet."
+    consolidation: qwen3-embedding:8b
+    rerank: null
