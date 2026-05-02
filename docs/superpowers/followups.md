@@ -5,6 +5,7 @@ Not blockers — each entry has enough context to pick up in a fresh session.
 
 - [ContextBuilder](#contextbuilder-landed-2026-04-16) (2026-04-16)
 - [Triage](#triage-landed-2026-04-16) (2026-04-16)
+- [Operational DX](#operational-dx-filed-2026-05-02) (2026-05-02)
 
 ---
 
@@ -133,3 +134,35 @@ adherence.
 
 **Fix:** no action required unless the interpretation changes. Documented
 here for traceability.
+
+---
+
+## Operational DX (filed 2026-05-02)
+
+### OP-1. `ollama-sentinel run` doesn't hot-reload `ollama-sentinel.yaml`
+
+**Files:** `ollama_sentinel/watcher.py:103-126` (FileSentinel.__init__),
+`ollama_sentinel/processor.py:36-58` (OllamaClient.__init__ — bakes
+`request_timeout` into `httpx.AsyncClient`), `ollama_sentinel/cli.py:run`.
+
+**Issue:** YAML is loaded once at process start. Editing the file while
+`ollama-sentinel run` is in flight has no effect — the user must Ctrl-C
+and re-run. Discovered while bumping `request_timeout: 180 → 600` to
+accommodate `deepseek-v4-pro:cloud` round-trips on chunked Swift files;
+the running watcher kept timing out at 180s until restarted. Cost the
+user a confused round-trip.
+
+**Fix:** install a `SIGHUP` handler in `cli.py:run` that calls
+`load_config(self.config_path)` and rebuilds `FileProcessor`'s
+`OllamaClient` (and any other config-derived clients) in place. The
+watcher loop itself should keep running — only the per-request config
+needs rebuilding. Alternative (heavier, more robust): use `awatch` on
+the YAML path and trigger the same reload on file modification.
+
+**Trigger:** any time someone tweaks the YAML on a long-running watcher
+and is surprised that nothing changed.
+
+**Out of scope:** reloading `watch.directory` (would require restarting
+the `awatch` loop, not just rebuilding clients) — first pass should
+explicitly warn-and-skip directory changes and only honor model/timeout
+updates.

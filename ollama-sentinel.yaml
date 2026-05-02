@@ -10,7 +10,7 @@ watch:
   disable_builtin_ignores: false
 ollama:
   host: http://localhost:11434
-  request_timeout: 180
+  request_timeout: 600
   models:
     default:
       name: deepseek-v4-pro:cloud
