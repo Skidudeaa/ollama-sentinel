@@ -1133,3 +1133,95 @@ class TestEnhancedMemoryStoreSemanticRecall:
         results = store.find_similar_webpages_sync("python async")
         assert len(results) >= 1
         assert results[0].url == "https://py.example"
+
+
+# ===================================================================
+# 12. CB-3 wiring: analyze node consults find_similar_webpages_sync
+#     (workflow.py — _format_similar_pages_block helper + wiring guard)
+# ===================================================================
+#
+# The analyze node is a closure inside build_workflow() and cannot be
+# constructed cheaply (heavy ChatOpenAI + langgraph + tool deps). Mirroring
+# the convention of TestVerifyRouterLogic and TestImpactScanLogic, we test
+# the formatting logic in isolation via a module-level helper, plus a
+# source-level guard confirming the call is wired into the analyze closure.
+
+class TestFormatSimilarPagesBlock:
+    """Tests for _format_similar_pages_block from research_agent.core.workflow."""
+
+    def _imp(self):
+        from research_agent.core.workflow import _format_similar_pages_block
+        return _format_similar_pages_block
+
+    def _wp(self, **kw):
+        return WebPage(**kw)
+
+    def test_empty_list_returns_empty_string(self):
+        """CB-3 regression: empty memory must produce an empty block (no header)."""
+        assert self._imp()([]) == ""
+
+    def test_typical_pages_render_with_labeled_section(self):
+        """CB-3: recalled pages must appear in a labeled 'Relevant pages...' block."""
+        f = self._imp()
+        pages = [
+            self._wp(url="https://example.com/x", title="Example One", summary=""),
+            self._wp(url="https://example.com/y", title="Example Two", summary=""),
+        ]
+        out = f(pages)
+        assert out.startswith("Relevant pages from prior research:\n")
+        assert "- Example One (https://example.com/x)" in out
+        assert "- Example Two (https://example.com/y)" in out
+
+    def test_long_title_truncated_at_120_chars(self):
+        f = self._imp()
+        long_title = "x" * 200
+        pages = [self._wp(url="https://e.com/y", title=long_title, summary="")]
+        out = f(pages)
+        truncated = "x" * 117 + "..."
+        assert f"- {truncated} (https://e.com/y)" in out
+        assert "x" * 200 not in out  # original full title must not appear
+
+    def test_missing_title_falls_back_to_url(self):
+        """When title is None, the url itself becomes the label — no duplicate '(url)'."""
+        f = self._imp()
+        pages = [self._wp(url="https://no-title.example.com/", title=None, summary="")]
+        out = f(pages)
+        assert "- https://no-title.example.com/" in out
+        # When label == url, the suffix '(url)' must not duplicate the line.
+        assert "https://no-title.example.com/ (https://no-title.example.com/)" not in out
+
+    def test_missing_both_title_and_url_uses_placeholder(self):
+        f = self._imp()
+        pages = [self._wp(url=None, title=None, summary="")]
+        out = f(pages)
+        assert "- (untitled)" in out
+
+
+def test_workflow_analyze_node_calls_find_similar_webpages_sync():
+    """CB-3 wiring guard: the analyze closure must call find_similar_webpages_sync.
+
+    Source-level check, following the TestVerifyRouterLogic / TestImpactScanLogic
+    convention of treating workflow closures as unreachable for construction-based
+    integration testing. Testing the helper directly (TestFormatSimilarPagesBlock)
+    verifies the formatting; this test verifies the wiring is in place.
+    """
+    from pathlib import Path
+
+    workflow_src = (
+        Path(__file__).parent.parent
+        / "research_agent" / "core" / "workflow.py"
+    )
+    text = workflow_src.read_text()
+
+    start = text.index("def analyze(")
+    rest = text[start:]
+    # Next sibling closure starts with "    def " (4-space indent inside build_workflow).
+    end = rest.index("\n    def ", 1)
+    analyze_body = rest[:end]
+
+    assert "find_similar_webpages_sync" in analyze_body, (
+        "analyze closure must call memory.find_similar_webpages_sync (CB-3)"
+    )
+    assert "_format_similar_pages_block" in analyze_body, (
+        "analyze closure must use _format_similar_pages_block to render the recall"
+    )
