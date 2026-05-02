@@ -87,8 +87,35 @@ class TestCreateDefaultConfig:
     def test_emits_embedding_section(self):
         config = create_default_config(".")
         assert "embedding" in config
-        assert config["embedding"]["model"] == "nomic-embed-text"
         assert config["embedding"]["enabled"] is True
+        assert config["embedding"]["models"]["hot"] == "qwen3-embedding:4b"
+        assert config["embedding"]["models"]["consolidation"] == "qwen3-embedding:8b"
+        assert config["embedding"]["models"]["rerank"] is None
+
+    def test_legacy_yaml_model_migrates_on_load(self, tmp_path):
+        """A user YAML with the legacy embedding.model field loads and lifts to
+        models.hot, with consolidation/rerank filled from schema defaults."""
+        import yaml as _yaml
+        import ollama_sentinel.models as models_module
+        models_module._EMBEDDING_DEPRECATION_LOGGED = False
+        config_dict = {
+            "watch": {"directory": str(tmp_path)},
+            "ollama": {
+                "host": "http://localhost:11434",
+                "models": {"default": {"name": "m", "system_prompt": "p"}},
+            },
+            "embedding": {
+                "enabled": True,
+                "model": "legacy-embed-name",
+            },
+        }
+        cfg_path = tmp_path / "ollama-sentinel.yaml"
+        cfg_path.write_text(_yaml.dump(config_dict))
+        cfg = load_config(cfg_path)
+        assert cfg is not None
+        assert cfg.embedding.models["hot"] == "legacy-embed-name"
+        assert cfg.embedding.models["consolidation"] == "qwen3-embedding:8b"
+        assert cfg.embedding.models["rerank"] is None
 
     def test_default_model_has_context_window(self):
         config = create_default_config(".")
