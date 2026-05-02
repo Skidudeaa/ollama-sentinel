@@ -29,6 +29,8 @@ from research_agent.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+from research_agent.core.prompts import _format_similar_pages_block
+
 # Define the state structure for the graph
 class AgentState(TypedDict):
     session: ResearchSession
@@ -134,15 +136,21 @@ def build_workflow(
         step = session.start_step("analyze")
         
         try:
-            # Check for similar questions in memory (semantic when embedder available)
+            # Check for similar questions AND prior webpages in memory.
+            # Both sync wrappers route to the semantic path when an embedder
+            # is configured and degrade to token-overlap otherwise — see
+            # research_agent/tools/memory.py:228-248 for the fallback.
             similar_queries = memory.find_similar_queries_sync(session.query)
-            
+            similar_pages = memory.find_similar_webpages_sync(session.query, limit=5)
+
             similar_queries_text = ""
             if similar_queries:
                 similar_queries_text = "Similar past queries:\n" + "\n".join([
                     f"- {q.text}" for q in similar_queries
                 ])
-            
+
+            similar_pages_text = _format_similar_pages_block(similar_pages)
+
             # Generate analysis
             prompt = f"""
 Analyze this research query and create a plan:
@@ -150,6 +158,8 @@ Analyze this research query and create a plan:
 QUERY: {session.query}
 
 {similar_queries_text}
+
+{similar_pages_text}
 
 {f'CODE CONTEXT: {session.code_context}' if session.code_context else ''}
 

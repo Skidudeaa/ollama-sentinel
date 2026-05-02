@@ -1150,7 +1150,7 @@ class TestFormatSimilarPagesBlock:
     """Tests for _format_similar_pages_block from research_agent.core.workflow."""
 
     def _imp(self):
-        from research_agent.core.workflow import _format_similar_pages_block
+        from research_agent.core.prompts import _format_similar_pages_block
         return _format_similar_pages_block
 
     def _wp(self, **kw):
