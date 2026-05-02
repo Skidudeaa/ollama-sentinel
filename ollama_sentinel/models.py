@@ -7,11 +7,21 @@ from typing import Dict, List, Optional
 
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 log = logging.getLogger("ollama-sentinel")
 
 _PROCESSING_DEPRECATION_LOGGED = False
+
+_EMBEDDING_DEPRECATION_LOGGED = False
+
+# Single source of truth for non-hot embedding role defaults. Used by the
+# field default, the legacy migrator, and the validator's merge step. If
+# Phase B/C ever change these, update only here.
+_NON_HOT_DEFAULTS = {
+    "consolidation": "qwen3-embedding:8b",
+    "rerank": None,
+}
 
 
 class ModelRole(str, Enum):
@@ -137,9 +147,74 @@ class NotificationsConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
-    """Configuration for the Ollama embedding backend."""
+    """Configuration for the Ollama embedding backend.
+
+    `models` is a name->model-id map. The `hot` role is required and is
+    used on every file save. `consolidation` and `rerank` are pre-registered
+    in the schema but UNWIRED today — they exist so Phases B and C don't
+    need a second config migration. `rerank` defaults to None because the
+    canonical reranker model is not yet chosen.
+
+    Pre-registration is a property of the *schema*: a user YAML supplying
+    only `hot` still gets the other two roles populated from defaults.
+
+    The legacy flat-`model` field auto-migrates with a one-shot deprecation
+    warning. The legacy field WILL HARD-ERROR in v0.3 — fix configs now.
+    """
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = True
-    model: str = "nomic-embed-text"
+    models: Dict[str, Optional[str]] = {
+        "hot": "qwen3-embedding:4b",
+        **_NON_HOT_DEFAULTS,
+    }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_model_field(cls, data):
+        if not isinstance(data, dict):
+            return data
+        has_legacy = "model" in data
+        has_new = "models" in data
+        if has_legacy and has_new:
+            raise ValueError(
+                "embedding.model and embedding.models are mutually exclusive; "
+                "remove the legacy 'model' field."
+            )
+        if has_legacy:
+            global _EMBEDDING_DEPRECATION_LOGGED
+            if not _EMBEDDING_DEPRECATION_LOGGED:
+                log.warning(
+                    "embedding.model is deprecated and will hard-error in v0.3; "
+                    "auto-migrating to embedding.models.hot for now."
+                )
+                _EMBEDDING_DEPRECATION_LOGGED = True
+            migrated = {"hot": data["model"], **_NON_HOT_DEFAULTS}
+            data = {k: v for k, v in data.items() if k != "model"}
+            data["models"] = migrated
+        return data
+
+    @field_validator("models")
+    @classmethod
+    def _validate_models(cls, v: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
+        if "hot" not in v:
+            raise ValueError("embedding.models must include a 'hot' role")
+        hot = v["hot"]
+        if not isinstance(hot, str) or not hot.strip():
+            raise ValueError("embedding.models['hot'] must be a non-empty string")
+        for role, name in v.items():
+            if name is None:
+                continue
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(
+                    f"embedding.models[{role!r}] must be a non-empty string or None"
+                )
+        # Spec deviation §1: pre-registration is a schema property. Merge
+        # the defaults in so user-supplied keys win but missing keys are
+        # filled. Without this, a partial dict like {"hot": "x"} leaves
+        # consolidation/rerank absent and future B/C consumers see KeyError
+        # where they expect a model name.
+        return {**_NON_HOT_DEFAULTS, **v}
 
 
 class MemoryConfig(BaseModel):
