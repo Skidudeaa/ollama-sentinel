@@ -326,15 +326,21 @@ class TestEmbeddingConfigMigration:
             EmbeddingConfig(model="x", models={"hot": "y"})
 
     def test_deprecation_warning_logs_only_once(self, caplog):
-        """Spec deviation §2: mirror ProcessingConfig's one-shot guard so
-        repeat config loads don't spam stderr."""
+        """Spec deviation §2 + §4: mirror ProcessingConfig's one-shot guard
+        so repeat config loads don't spam stderr. The first call must log;
+        the second must not. The positive assertion on the first call is
+        what makes this test fail correctly when the guard is missing — a
+        negative-only assertion would pass vacuously when no warning fires
+        at all."""
         import ollama_sentinel.models as models_module
         models_module._EMBEDDING_DEPRECATION_LOGGED = False
         with caplog.at_level("WARNING"):
             EmbeddingConfig(model="legacy-1")
-            caplog.clear()
+        assert "deprecated" in caplog.text.lower()  # first call must log
+        caplog.clear()
+        with caplog.at_level("WARNING"):
             EmbeddingConfig(model="legacy-2")
-        assert "deprecated" not in caplog.text.lower()
+        assert "deprecated" not in caplog.text.lower()  # second call must not log
 
 
 class TestOllamaModelConfigTokenFields:
