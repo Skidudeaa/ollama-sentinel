@@ -54,21 +54,24 @@ if not entries:
     print("NO_MODELS", file=sys.stderr)
     sys.exit(1)
 
-print("Available reviewer models:\n")
+sys.stderr.write("Available reviewer models:\n\n")
 for i, (name, tag) in enumerate(entries, 1):
-    print(f"  {i}) {name}{tag}")
-print()
+    sys.stderr.write(f"  {i}) {name}{tag}\n")
+sys.stderr.write("\n")
 
-while True:
-    try:
-        choice = input("Pick a reviewer model (number): ").strip()
-        idx = int(choice) - 1
-        if 0 <= idx < len(entries):
-            print(entries[idx][0])
-            break
-        print(f"  Enter a number between 1 and {len(entries)}")
-    except (ValueError, EOFError):
-        print(f"  Enter a number between 1 and {len(entries)}")
+with open("/dev/tty") as tty:
+    while True:
+        sys.stderr.write("Pick a reviewer model (number): ")
+        sys.stderr.flush()
+        choice = tty.readline().strip()
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(entries):
+                print(entries[idx][0])
+                break
+        except ValueError:
+            pass
+        sys.stderr.write(f"  Enter a number between 1 and {len(entries)}\n")
 PYEOF
 )
 
