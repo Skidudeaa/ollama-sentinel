@@ -161,7 +161,7 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 All open backlog items from the last two sessions are closed. Remaining
 deferred work is low-priority and not blocking anything:
 
-1. **Sanity check first.** `pytest tests/ -q` should report 365 / 15 skip.
+1. **Sanity check first.** `pytest tests/ -q` should report 378 / 15 skip.
 2. **Remaining open items** (from `docs/superpowers/followups.md`):
    - CB-1 — dedupe impact-report formatters (harmless until `build_research_context` is reachable for impact data)
 ### Pickable next moves (ordered by leverage)
