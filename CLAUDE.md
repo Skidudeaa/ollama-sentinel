@@ -161,16 +161,14 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 All open backlog items from the last two sessions are closed. Remaining
 deferred work is low-priority and not blocking anything:
 
-1. **Sanity check first.** `pytest tests/ -q` should report 355 / 15 skip.
+1. **Sanity check first.** `pytest tests/ -q` should report 365 / 15 skip.
 2. **Remaining open items** (from `docs/superpowers/followups.md`):
    - CB-1 — dedupe impact-report formatters (harmless until `build_research_context` is reachable for impact data)
-   - CB-3 — `EnhancedMemoryStore` semantic ranking (half-day, medium risk)
 ### Pickable next moves (ordered by leverage)
 
 | # | Item | Effort | Risk | Notes |
 |---|---|---|---|---|
 | 1 | CB-1 — dedupe impact-report formatter between `recipes.py:_format_impact_report` and `synthesis.py:format_impact_report` | ~30-45 min | low | Harmless today (mutually exclusive paths); only triggers if `build_research_context` ever gets impact data. |
-| 2 | CB-3 — extend semantic recall to `EnhancedMemoryStore` (`research_agent/tools/memory.py`) | ~half day | medium | `find_similar_webpages` / `find_similar_queries` still use token-overlap. |
 
 Skip TR-3 — deliberate spec deviation, documented in followups.md.
 
@@ -194,6 +192,16 @@ Skip TR-3 — deliberate spec deviation, documented in followups.md.
 
 ### Recent landings
 
+- 2026-05-01: CB-3 closed (commit 821b6b0). `research_agent`'s analyze
+  node now consults prior webpage neighbors via `find_similar_webpages_sync`,
+  alongside the existing `find_similar_queries_sync` call. New leaf module
+  `research_agent/core/prompts.py` holds the pure formatter so it stays
+  testable without the `[research]` extras. No new dependencies; sync
+  wrapper degrades to token-overlap when no embedder is configured.
+  Spec: `docs/superpowers/plans/2026-05-01-cb3-wire-find-similar-webpages.md`.
+  Phases A/B/C of the broader Qwen3 embedding plan
+  (`~/.claude/plans/yes-putting-both-moonlit-galaxy.md`) remain parked
+  pending v0.2 Incident schema.
 - 2026-05-01: Closed Issue #1 (TTY injectable), TR-1 (prompts.py leaf module),
   CB-2 (SemanticRetriever integration test). Merged `harden-ollama-sentinel-processing`
   to master. 355 tests passing.

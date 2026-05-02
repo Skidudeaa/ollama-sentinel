@@ -39,22 +39,25 @@ Added `test_semantic_retriever_ranks_violations_by_similarity` using a
 Verifies the full chain from violations → ContextItem → SemanticRetriever
 → assemble → build_review_context.
 
-### CB-3. `EnhancedMemoryStore` semantic ranking (Phase 9)
+### CB-3. `EnhancedMemoryStore` semantic ranking (Phase 9) — DONE (commit 821b6b0)
 
-**Files:** `research_agent/tools/memory.py`,
-`research_agent/core/workflow.py`.
+**Files:** `research_agent/core/prompts.py` (new), `research_agent/core/workflow.py`,
+`tests/test_research_agent.py`.
 
-**Issue:** `find_similar_webpages` / `find_similar_queries` still use
-token-overlap scoring. `ViolationDB` got semantic recall; this is the
-remaining token-overlap caller.
+The async `find_similar_*_semantic` methods and the `find_similar_*_sync`
+wrappers in `research_agent/tools/memory.py:189-248` were built earlier;
+this ticket closed the remaining gap by wiring `find_similar_webpages_sync`
+from `workflow.py`'s `analyze` node alongside the existing
+`find_similar_queries_sync` call. The recalled pages render into a
+"Relevant pages from prior research:" block in the analyze prompt via
+the new pure `_format_similar_pages_block` helper in `prompts.py`. The
+helper sits in a leaf module so the formatter stays testable in
+environments without the `[research]` extras.
 
-**Fix:** add async `find_similar_*_semantic` methods backed by
-`SemanticRetriever`; wire them from `workflow.py`'s `analyze` node using
-the existing `asyncio.new_event_loop` pattern. Keep sync methods as
-fallback.
-
-**Trigger:** when research-agent output quality traces back to the
-`analyze` node's similar-query recall.
+Spec: `docs/superpowers/plans/2026-05-01-cb3-wire-find-similar-webpages.md`.
+Phases A/B/C of the broader Qwen3 embedding plan
+(`~/.claude/plans/yes-putting-both-moonlit-galaxy.md`) remain parked
+pending v0.2 Incident schema.
 
 ### CB-4. Retriever identity-fallback test doesn't prove identity — DONE (commit aa28795)
 
