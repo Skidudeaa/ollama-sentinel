@@ -10,19 +10,26 @@ A local AI development companion that remembers.
 
 Both tools are local. Your code never leaves your machine.
 
-## Quick Start
+## Quick start
+
+Five lines, copy-paste in order. First three are one-time setup; last two start it watching.
 
 ```bash
-pip install -e .
-ollama serve                              # in a separate terminal, leave running
-ollama pull gemma3:4b                     # the reviewer model (~3 GB)
-ollama pull qwen3-embedding:4b            # the semantic recall embedder (~2.5 GB)
-ollama-sentinel init && ollama-sentinel run
+pip install -e .                        # install the sentinel
+ollama serve                            # leave running in a separate terminal
+ollama pull gemma3:4b                   # the reviewer model (~3 GB, one time)
+ollama pull qwen3-embedding:4b          # the semantic-recall embedder (~2.5 GB, one time)
+ollama-sentinel init && ollama-sentinel run   # creates ollama-sentinel.yaml and starts watching
 ```
 
-Edit a file. A review appears in `.ollama_reviews/` within seconds. Run `ollama-sentinel report` after a few reviews to see your recurring violations ranked by frequency.
+After that's running, edit any file in the directory. A markdown review appears in `.ollama_reviews/<filename>.md` within a few seconds.
 
-If you skip the `qwen3-embedding:4b` pull, the watcher still works — it logs `EmbeddingUnavailable` and falls back to exact-path recall. Set `memory.semantic_recall: false` in `ollama-sentinel.yaml` to silence the warning.
+**Two things to look for so you know it's working:**
+
+- The terminal where `ollama-sentinel run` is running prints `Watching <dir> for changes` on startup
+- After you save a file, that same terminal prints `Persisted N findings for <filename>` and `Saved review to .ollama_reviews/<filename>_<timestamp>.md`
+
+To stop: `Ctrl+C` in the watcher terminal. To peek at what it's learned over time: `ollama-sentinel report` (table of recurring violations) or `ollama-sentinel dashboard` (live two-pane TUI).
 
 ## Documentation
 
