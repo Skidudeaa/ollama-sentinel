@@ -304,6 +304,16 @@ class TestEmbeddingConfigMigration:
         with pytest.raises(ValidationError):
             EmbeddingConfig(enabled=True, models={"hot": "h"}, oops=True)
 
+    def test_unknown_role_name_is_rejected(self):
+        """Spec deviation §5: role names inside `models` are a closed set
+        (hot, consolidation, rerank). Typos like `consolitation` would
+        otherwise silently get added as a custom role while the merge-in-
+        validator quietly fills the intended key with the default,
+        delivering the wrong model to Phase B/C consumers. Reject typos
+        loudly at config load time."""
+        with pytest.raises(ValidationError, match="unrecognized role"):
+            EmbeddingConfig(models={"hot": "h", "consolitation": "x"})
+
     def test_legacy_model_field_migrates_to_models_hot(self, caplog):
         import ollama_sentinel.models as models_module
         models_module._EMBEDDING_DEPRECATION_LOGGED = False

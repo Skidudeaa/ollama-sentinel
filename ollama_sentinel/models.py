@@ -23,6 +23,14 @@ _NON_HOT_DEFAULTS = {
     "rerank": None,
 }
 
+# Closed set of role names recognized by the embedding schema. Mirrors the
+# top-level `extra="forbid"` policy at the role-dict level: typos in role
+# names like `consolitation` would otherwise silently get added as a new
+# custom role, with the merge-in-validator (Spec deviation §1) supplying
+# the default for the *intended* key — silently delivering the wrong model
+# to Phase B/C consumers. Spec deviation §5: enforce the closed set.
+_KNOWN_EMBEDDING_ROLES = {"hot", "consolidation", "rerank"}
+
 
 class ModelRole(str, Enum):
     """Roles for different Ollama models."""
@@ -155,6 +163,11 @@ class EmbeddingConfig(BaseModel):
     need a second config migration. `rerank` defaults to None because the
     canonical reranker model is not yet chosen.
 
+    Top-level unknown fields are rejected (`extra="forbid"`) and unknown
+    role names inside `models` are also rejected: typos in your YAML surface
+    immediately rather than being silently ignored or worse, masked by the
+    default-merge below.
+
     Pre-registration is a property of the *schema*: a user YAML supplying
     only `hot` still gets the other two roles populated from defaults.
 
@@ -197,6 +210,12 @@ class EmbeddingConfig(BaseModel):
     @field_validator("models")
     @classmethod
     def _validate_models(cls, v: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
+        unknown = set(v) - _KNOWN_EMBEDDING_ROLES
+        if unknown:
+            raise ValueError(
+                f"embedding.models contains unrecognized role(s): {sorted(unknown)}. "
+                f"Known roles: {sorted(_KNOWN_EMBEDDING_ROLES)}"
+            )
         if "hot" not in v:
             raise ValueError("embedding.models must include a 'hot' role")
         hot = v["hot"]
