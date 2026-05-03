@@ -198,6 +198,7 @@ class FileProcessor:
                     host=config.ollama.host,
                     model=cast(str, config.embedding.models["hot"]),
                     cache=self._cache,
+                    timeout_seconds=float(config.embedding.timeout_seconds),
                 )
                 self.retriever = SemanticRetriever(embedder=self.embedder)
             except Exception:

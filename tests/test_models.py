@@ -335,6 +335,20 @@ class TestEmbeddingConfigMigration:
         with pytest.raises(ValidationError, match="mutually exclusive"):
             EmbeddingConfig(model="x", models={"hot": "y"})
 
+    def test_timeout_seconds_default(self):
+        cfg = EmbeddingConfig()
+        assert cfg.timeout_seconds == 120
+
+    def test_timeout_seconds_user_override(self):
+        cfg = EmbeddingConfig(timeout_seconds=300)
+        assert cfg.timeout_seconds == 300
+
+    def test_timeout_seconds_must_be_positive(self):
+        with pytest.raises(ValidationError, match="positive"):
+            EmbeddingConfig(timeout_seconds=0)
+        with pytest.raises(ValidationError, match="positive"):
+            EmbeddingConfig(timeout_seconds=-5)
+
     def test_deprecation_warning_logs_only_once(self, caplog):
         """Spec deviation §2 + §4: mirror ProcessingConfig's one-shot guard
         so repeat config loads don't spam stderr. The first call must log;

@@ -181,6 +181,18 @@ class EmbeddingConfig(BaseModel):
         "hot": "qwen3-embedding:4b",
         **_NON_HOT_DEFAULTS,
     }
+    timeout_seconds: int = 120
+    """HTTP timeout for /api/embeddings calls. Default 120s covers cold-load
+    of qwen3-embedding:4b (~2.5 GB, 30-60s on M-series Macs, longer on
+    older hardware). Bump higher if EmbeddingUnavailable shows up in logs
+    on slower machines."""
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _validate_timeout_seconds(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("embedding.timeout_seconds must be a positive integer")
+        return v
 
     @model_validator(mode="before")
     @classmethod

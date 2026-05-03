@@ -85,6 +85,7 @@ The "I always forget what to run" table.
 | `404 Not Found` from `/api/chat` or `/api/embeddings` | The model name in your YAML isn't pulled (or for `:cloud` models, you're not signed in). Check `ollama list` against `ollama.models.default.name` and `embedding.models.hot` in the loaded YAML. Pull the missing model or run `ollama signin` |
 | Sentinel uses the wrong model / config | You have multiple `ollama-sentinel.yaml` files. The one in cwd wins. Either `cd` to the right directory or pass `--config <abs-path-to-ollama-sentinel.yaml>` |
 | `EmbeddingUnavailable` in logs | `ollama pull qwen3-embedding:4b` (or set `memory.semantic_recall: false` in the YAML) |
+| `EmbeddingUnavailable` only on the first review after Ollama restart | Cold-load timeout. Bump `embedding.timeout_seconds` in the YAML (default 120s) |
 | `ValidationError: extra fields not permitted` on config load | YAML typo — error names the offending field; fix the spelling. Applies to top-level fields AND role names inside `embedding.models` |
 | `ValidationError: ... must include a 'hot' role` | YAML's `embedding:` block is missing `models.hot`. Add `embedding: { models: { hot: qwen3-embedding:4b } }` |
 | Deprecation warning about `embedding.model` on every load | Legacy v0.1.x flat shape. Migrate `embedding.model: foo` → `embedding.models.hot: foo`. The legacy field hard-errors in v0.3 |
