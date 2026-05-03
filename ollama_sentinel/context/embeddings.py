@@ -34,8 +34,13 @@ class OllamaEmbedder:
         model: str = "qwen3-embedding:4b",
         cache: Optional[_CacheLike] = None,
         client: Optional[httpx.AsyncClient] = None,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 120.0,
     ):
+        # Cold-loading qwen3-embedding:4b (~2.5 GB) into RAM after Ollama
+        # restart or KEEP_ALIVE eviction routinely takes 30-60s. The old
+        # 30s default (sized for nomic-embed-text) timed out before the
+        # model finished loading, surfacing as silent EmbeddingUnavailable
+        # on the first review after every Ollama restart.
         self._host = host.rstrip("/")
         self._model = model
         self._cache = cache
