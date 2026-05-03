@@ -34,13 +34,15 @@ class OllamaEmbedder:
         model: str = "qwen3-embedding:4b",
         cache: Optional[_CacheLike] = None,
         client: Optional[httpx.AsyncClient] = None,
-        timeout_seconds: float = 15.0,
+        timeout_seconds: float = 30.0,
     ):
-        # Measured cold-load of qwen3-embedding:4b on M2 Max: ~2.2s (status
-        # 200, no warm cache). 15s gives ~7x margin for slower hardware and
-        # still surfaces genuine network hangs quickly. Bump via the
-        # embedding.timeout_seconds YAML knob if EmbeddingUnavailable shows
-        # up on the first review on slower disks.
+        # Measured cold-loads of qwen3-embedding:4b on M2 Max:
+        #   ~2s   page-cache-warm + manually-purged
+        #   ~6.4s natural idle (~12 min, model evicted from VRAM and OS
+        #         evicted file pages, system memory pressure 25.4→22.5 GiB)
+        # 30s gives ~4.7x margin against the realistic worst case while
+        # still surfacing genuine network hangs in reasonable time. Bump
+        # via the embedding.timeout_seconds YAML knob on slower hardware.
         self._host = host.rstrip("/")
         self._model = model
         self._cache = cache
