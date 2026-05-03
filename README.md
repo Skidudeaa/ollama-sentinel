@@ -12,24 +12,43 @@ Both tools are local. Your code never leaves your machine.
 
 ## Quick start
 
-Five lines, copy-paste in order. First three are one-time setup; last two start it watching.
+### First-time setup (do this once)
 
 ```bash
 pip install -e .                        # install the sentinel
-ollama serve                            # leave running in a separate terminal
-ollama pull gemma3:4b                   # the reviewer model (~3 GB, one time)
-ollama pull qwen3-embedding:4b          # the semantic-recall embedder (~2.5 GB, one time)
-ollama-sentinel init && ollama-sentinel run   # creates ollama-sentinel.yaml and starts watching
+ollama pull gemma3:4b                   # the reviewer model (~3 GB)
+ollama pull qwen3-embedding:4b          # the semantic-recall embedder (~2.5 GB)
+cd <your-project-dir>
+ollama-sentinel init                    # writes ollama-sentinel.yaml in cwd
 ```
 
-After that's running, edit any file in the directory. A markdown review appears in `.ollama_reviews/<filename>.md` within a few seconds.
+If you'd rather use a cloud model (e.g. `deepseek-v4-pro:cloud`) instead of `gemma3:4b`, skip the first `ollama pull`, run `ollama signin` once, and edit `ollama-sentinel.yaml` so `ollama.models.default.name` is your cloud model.
+
+### Each time you want to use it
+
+You need **two terminals**:
+
+```bash
+# Terminal 1 — directory doesn't matter
+ollama serve
+
+# Terminal 2 — cwd MUST be the directory containing ollama-sentinel.yaml
+cd <your-project-dir>
+ollama-sentinel run
+```
+
+That's it. You do **not** need `ollama run <model>` — the sentinel hits Ollama's HTTP API directly and the model lazy-loads on first request.
+
+Edit any file in the watched directory and a markdown review lands in `.ollama_reviews/<filename>.md` within a few seconds.
 
 **Two things to look for so you know it's working:**
 
-- The terminal where `ollama-sentinel run` is running prints `Watching <dir> for changes` on startup
-- After you save a file, that same terminal prints `Persisted N findings for <filename>` and `Saved review to .ollama_reviews/<filename>_<timestamp>.md`
+- The watcher terminal prints `Watching <dir> for changes` on startup
+- After you save a file, it prints `Persisted N findings for <filename>` and `Saved review to .ollama_reviews/<filename>_<timestamp>.md`
 
 To stop: `Ctrl+C` in the watcher terminal. To peek at what it's learned over time: `ollama-sentinel report` (table of recurring violations) or `ollama-sentinel dashboard` (live two-pane TUI).
+
+> **Heads up — directory matters.** `ollama-sentinel run` reads `ollama-sentinel.yaml` from the **current working directory**. If you have stale YAMLs in multiple project folders, the cwd one wins. Run from anywhere with `ollama-sentinel run --config <abs-path-to-ollama-sentinel.yaml>` if that's a problem.
 
 ## Documentation
 
@@ -63,6 +82,8 @@ The "I always forget what to run" table.
 | Symptom | Fix |
 |---|---|
 | Watcher stalls, no reviews appear | Ollama isn't running. `ollama serve` in another terminal |
+| `404 Not Found` from `/api/chat` or `/api/embeddings` | The model name in your YAML isn't pulled (or for `:cloud` models, you're not signed in). Check `ollama list` against `ollama.models.default.name` and `embedding.models.hot` in the loaded YAML. Pull the missing model or run `ollama signin` |
+| Sentinel uses the wrong model / config | You have multiple `ollama-sentinel.yaml` files. The one in cwd wins. Either `cd` to the right directory or pass `--config <abs-path-to-ollama-sentinel.yaml>` |
 | `EmbeddingUnavailable` in logs | `ollama pull qwen3-embedding:4b` (or set `memory.semantic_recall: false` in the YAML) |
 | `ValidationError: extra fields not permitted` on config load | YAML typo — error names the offending field; fix the spelling. Applies to top-level fields AND role names inside `embedding.models` |
 | `ValidationError: ... must include a 'hot' role` | YAML's `embedding:` block is missing `models.hot`. Add `embedding: { models: { hot: qwen3-embedding:4b } }` |
