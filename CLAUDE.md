@@ -204,6 +204,15 @@ Skip TR-3 — deliberate spec deviation, documented in followups.md.
   param for graceful external shutdown via cancellable sleep. 4 new tests
   added; all 13 dashboard tests pass. **Not yet tested live against a
   running sentinel by the user** — smoke-tested only (3s timeout run, exit 124).
+- 2026-05-03: Config-load + embedding-timeout debugging session against
+  a real watched project. Diagnosed cwd-shadowed stale YAML loading the
+  wrong models; fixed README to make the two-terminal flow + cwd
+  dependency explicit; added `embedding.timeout_seconds` YAML knob;
+  right-sized embedder default 30s → 120s → 30s after measuring three
+  cold-load regimes (warm-page-cache 2.2s, purged 2.0s, natural-idle
+  6.4s). Open issue: sentinel review output is pattern-matched AI slop
+  rather than grounded in file content — flagged, not fixed. Full
+  retro: `docs/retros/2026-05-03-config-and-timeout-debugging.md`.
 - 2026-05-01: Phase A landed. Hot-path embedder swapped from
   nomic-embed-text to qwen3-embedding:4b. EmbeddingConfig refactored to a
   named-role dict with extra='forbid'; consolidation and rerank roles
