@@ -181,11 +181,11 @@ class EmbeddingConfig(BaseModel):
         "hot": "qwen3-embedding:4b",
         **_NON_HOT_DEFAULTS,
     }
-    timeout_seconds: int = 120
-    """HTTP timeout for /api/embeddings calls. Default 120s covers cold-load
-    of qwen3-embedding:4b (~2.5 GB, 30-60s on M-series Macs, longer on
-    older hardware). Bump higher if EmbeddingUnavailable shows up in logs
-    on slower machines."""
+    timeout_seconds: int = 15
+    """HTTP timeout for /api/embeddings calls. Default 15s covers cold-load
+    of qwen3-embedding:4b on M-series hardware with ~7x margin (measured
+    cold-load on M2 Max: ~2.2s). Bump higher if EmbeddingUnavailable shows
+    up on the first review on slower disks."""
 
     @field_validator("timeout_seconds")
     @classmethod

@@ -337,7 +337,7 @@ class TestEmbeddingConfigMigration:
 
     def test_timeout_seconds_default(self):
         cfg = EmbeddingConfig()
-        assert cfg.timeout_seconds == 120
+        assert cfg.timeout_seconds == 15
 
     def test_timeout_seconds_user_override(self):
         cfg = EmbeddingConfig(timeout_seconds=300)
