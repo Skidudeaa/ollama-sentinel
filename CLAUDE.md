@@ -196,6 +196,14 @@ Skip TR-3 — deliberate spec deviation, documented in followups.md.
 
 ### Recent landings
 
+- 2026-05-03: `run_dashboard` main loop hardened. Three bugs fixed: DB
+  connection churn (open/close every tick → single persistent connection,
+  reset on failure), blocking event loop (`_snapshot` now runs via
+  `asyncio.to_thread`), no per-tick exception isolation (each data source
+  now degrades independently). New `shutdown: Optional[asyncio.Event]`
+  param for graceful external shutdown via cancellable sleep. 4 new tests
+  added; all 13 dashboard tests pass. **Not yet tested live against a
+  running sentinel by the user** — smoke-tested only (3s timeout run, exit 124).
 - 2026-05-01: Phase A landed. Hot-path embedder swapped from
   nomic-embed-text to qwen3-embedding:4b. EmbeddingConfig refactored to a
   named-role dict with extra='forbid'; consolidation and rerank roles

@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import logging
 import pathlib
 import re
+import time
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -21,6 +24,8 @@ from rich.table import Table
 from rich.text import Text
 
 from .violation_db import ViolationDB
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -204,30 +209,83 @@ async def run_dashboard(
     violation_limit: int = 10,
     min_count: int = 2,
     console: Optional[Console] = None,
+    shutdown: Optional[asyncio.Event] = None,
 ) -> None:
-    """Render the live dashboard until Ctrl-C."""
+    """Render the live dashboard until cancelled or Ctrl-C.
+
+    Reuses one ViolationDB connection across ticks; reopens it on the next
+    tick if a query fails (handles DB rotation/replace). Runs filesystem and
+    sqlite work in a worker thread to keep the event loop responsive.
+    Per-tick exceptions are logged and the affected panel degrades to empty —
+    the loop never dies on a transient error.
+
+    Args:
+        shutdown: optional Event for graceful external shutdown. When set,
+                  the loop exits at the next sleep boundary.
+    """
     console = console or Console()
+    shutdown = shutdown or asyncio.Event()
 
-    def _snapshot() -> Layout:
-        import time
+    # WHY: one persistent connection instead of open/close every tick.
+    # TRADEOFF: reset to None on any query failure so next tick reconnects
+    #           (handles DB-replace scenarios without leaking a stale handle).
+    db: Optional[ViolationDB] = None
+
+    def _snapshot_blocking() -> Layout:
+        nonlocal db
         now = time.time()
-        reviews = recent_reviews(reviews_dir, limit=review_limit)
-        if db_path.exists():
-            db = ViolationDB(str(db_path))
-            try:
-                violations = top_violations(db, min_count=min_count, limit=violation_limit)
-            finally:
-                db.close()
-        else:
-            violations = []
-        return render_layout(str(watch_dir), reviews_dir, db_path,
-                             reviews, violations, now)
 
-    with Live(_snapshot(), console=console, refresh_per_second=4,
-              screen=True, transient=True) as live:
         try:
-            while True:
-                await asyncio.sleep(refresh_s)
-                live.update(_snapshot())
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            pass
+            reviews = recent_reviews(reviews_dir, limit=review_limit)
+        except Exception:
+            log.exception("recent_reviews failed")
+            reviews = []
+
+        violations: list = []
+        if db is None and db_path.exists():
+            try:
+                db = ViolationDB(db_path)
+            except Exception:
+                log.exception("ViolationDB open failed: %s", db_path)
+                db = None
+
+        if db is not None:
+            try:
+                violations = top_violations(
+                    db, min_count=min_count, limit=violation_limit
+                )
+            except Exception:
+                log.exception("top_violations failed; resetting connection")
+                with suppress(Exception):
+                    db.close()
+                db = None
+
+        return render_layout(
+            str(watch_dir), reviews_dir, db_path, reviews, violations, now
+        )
+
+    async def _snapshot() -> Layout:
+        return await asyncio.to_thread(_snapshot_blocking)
+
+    try:
+        with Live(
+            await _snapshot(),
+            console=console,
+            refresh_per_second=4,
+            screen=True,
+            transient=True,
+        ) as live:
+            while not shutdown.is_set():
+                # WHY: cancellable sleep — wakes immediately on shutdown.set()
+                # instead of waiting up to refresh_s seconds.
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(shutdown.wait(), timeout=refresh_s)
+                if shutdown.is_set():
+                    break
+                live.update(await _snapshot())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        if db is not None:
+            with suppress(Exception):
+                db.close()

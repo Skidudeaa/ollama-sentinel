@@ -1,12 +1,16 @@
-"""Tests for the dashboard data helpers."""
+"""Tests for the dashboard data helpers and main loop."""
+import asyncio
 import os
 import pathlib
+import sqlite3
 import time
+from unittest.mock import MagicMock, patch
 
 from ollama_sentinel.dashboard import (
     ReviewRow,
     ViolationRow,
     recent_reviews,
+    run_dashboard,
     top_violations,
 )
 from ollama_sentinel.violation_db import Finding, ViolationDB
@@ -111,3 +115,89 @@ class TestTopViolations:
             assert rows == []
         finally:
             db.close()
+
+
+def _mock_live() -> MagicMock:
+    live = MagicMock()
+    live.__enter__ = MagicMock(return_value=live)
+    live.__exit__ = MagicMock(return_value=False)
+    return live
+
+
+class TestRunDashboard:
+    async def test_exits_immediately_when_shutdown_pre_set(self, tmp_path):
+        shutdown = asyncio.Event()
+        shutdown.set()
+        with patch("ollama_sentinel.dashboard.Live", return_value=_mock_live()):
+            await run_dashboard(
+                watch_dir=tmp_path,
+                reviews_dir=tmp_path / "reviews",
+                db_path=tmp_path / "memory.db",
+                shutdown=shutdown,
+            )
+
+    async def test_cancellable_sleep_exits_quickly_despite_long_refresh(self, tmp_path):
+        shutdown = asyncio.Event()
+
+        async def _trigger() -> None:
+            await asyncio.sleep(0.05)
+            shutdown.set()
+
+        with patch("ollama_sentinel.dashboard.Live", return_value=_mock_live()):
+            task = asyncio.create_task(run_dashboard(
+                watch_dir=tmp_path,
+                reviews_dir=tmp_path / "reviews",
+                db_path=tmp_path / "memory.db",
+                shutdown=shutdown,
+                refresh_s=30.0,
+            ))
+            await asyncio.gather(_trigger(), asyncio.wait_for(task, timeout=2.0))
+
+    async def test_recent_reviews_exception_does_not_crash_loop(self, tmp_path, monkeypatch):
+        shutdown = asyncio.Event()
+        call_count = 0
+
+        def _bad_reviews(reviews_dir: pathlib.Path, limit: int) -> list:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise OSError("simulated disk error")
+            shutdown.set()
+            return []
+
+        monkeypatch.setattr("ollama_sentinel.dashboard.recent_reviews", _bad_reviews)
+        with patch("ollama_sentinel.dashboard.Live", return_value=_mock_live()):
+            await run_dashboard(
+                watch_dir=tmp_path,
+                reviews_dir=tmp_path / "reviews",
+                db_path=tmp_path / "memory.db",
+                shutdown=shutdown,
+                refresh_s=0.01,
+            )
+        assert call_count >= 2
+
+    async def test_db_connection_reset_on_query_failure(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "memory.db"
+        ViolationDB(str(db_path)).close()
+
+        shutdown = asyncio.Event()
+        call_count = 0
+
+        def _bad_violations(db: ViolationDB, min_count: int, limit: int) -> list:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise sqlite3.OperationalError("db locked")
+            shutdown.set()
+            return []
+
+        monkeypatch.setattr("ollama_sentinel.dashboard.top_violations", _bad_violations)
+        with patch("ollama_sentinel.dashboard.Live", return_value=_mock_live()):
+            await run_dashboard(
+                watch_dir=tmp_path,
+                reviews_dir=tmp_path / "reviews",
+                db_path=db_path,
+                shutdown=shutdown,
+                refresh_s=0.01,
+            )
+        assert call_count >= 2
