@@ -459,6 +459,30 @@ def render_layout(
 
 
 # ---------------------------------------------------------------------------
+# Interactive footer
+# ---------------------------------------------------------------------------
+
+def _footer_interactive(ui_state) -> Panel:
+    """Mode-aware footer with contextual keyboard hints."""
+    from .dashboard_input import Mode
+
+    if ui_state.mode == Mode.FILTER:
+        ft = ui_state.filter_text or ""
+        body = f"[bold white]/{ft}[/][dim]▏[/]  [dim]Type to filter[/]  [dim]│[/]  Enter apply  [dim]│[/]  Esc cancel"
+    elif ui_state.mode == Mode.DETAIL:
+        body = "[dim]Esc[/] close  [dim]│[/]  Viewing detail"
+    else:
+        body = (
+            "[dim]q[/] quit  [dim]│[/]  "
+            "[dim]Tab[/] focus  [dim]│[/]  "
+            "[dim]j/k[/] navigate  [dim]│[/]  "
+            "[dim]Enter[/] detail  [dim]│[/]  "
+            "[dim]/[/] filter"
+        )
+    return Panel(Text.from_markup(body), border_style="dim", padding=(0, 1))
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
@@ -475,6 +499,7 @@ async def run_dashboard(
     shutdown: Optional[asyncio.Event] = None,
     config_path: str = "",
     model_name: str = "",
+    interactive: Optional[bool] = None,
 ) -> None:
     """Render the live dashboard until cancelled or Ctrl-C.
 
@@ -489,18 +514,27 @@ async def run_dashboard(
                   the loop exits at the next sleep boundary.
         config_path: path to config file (enables Control Center layout).
         model_name: display name of the configured model.
+        interactive: enable keyboard navigation (auto-detects from TTY if None).
     """
+    import sys as _sys
+    from .dashboard_input import (
+        KeyEvent, Mode, PanelId, UIState, apply_key, key_reader_loop,
+    )
+
     console = console or Console()
     shutdown = shutdown or asyncio.Event()
+    if interactive is None:
+        interactive = _sys.stdin.isatty()
 
+    ui_state = UIState()
     db: Optional[ViolationDB] = None
 
-    def _snapshot_blocking() -> Layout:
+    def _fetch_data() -> dict:
         nonlocal db
         now = time.time()
 
         try:
-            reviews = recent_reviews(reviews_dir, limit=review_limit)
+            reviews = recent_reviews(reviews_dir, limit=review_limit if not interactive else 100)
         except Exception:
             log.exception("recent_reviews failed")
             reviews = []
@@ -520,7 +554,7 @@ async def run_dashboard(
         if db is not None:
             try:
                 violations = top_violations(
-                    db, min_count=min_count, limit=violation_limit
+                    db, min_count=min_count, limit=violation_limit if not interactive else 50
                 )
             except Exception:
                 log.exception("top_violations failed; resetting connection")
@@ -553,36 +587,215 @@ async def run_dashboard(
             except Exception:
                 pass
 
-        return render_layout(
-            str(watch_dir), reviews_dir, db_path, reviews, violations, now,
+        return {
+            "reviews": reviews,
+            "violations": violations,
+            "severity_counts": severity_counts,
+            "hottest": hottest,
+            "new_this_week": new_this_week,
+            "research_latest": research_latest,
+            "now": now,
+        }
+
+    def _build_layout(data: dict, state: UIState) -> Layout:
+        reviews = data["reviews"]
+        violations = data["violations"]
+        now = data["now"]
+
+        # Apply filter if active
+        if state.filter_active and state.filter_text:
+            ft = state.filter_text.lower()
+            violations = [v for v in violations
+                          if ft in v.severity.lower() or ft in v.category.lower()]
+
+        if not config_path:
+            return render_layout(
+                str(watch_dir), reviews_dir, db_path, reviews, violations, now,
+            )
+
+        # Interactive Control Center layout
+        stats = compute_overview(
+            reviews=reviews,
+            severity_counts=data["severity_counts"],
+            hottest=data["hottest"],
+            new_this_week=data["new_this_week"],
             config_path=config_path,
             model_name=model_name,
-            severity_counts=severity_counts,
-            hottest=hottest,
-            new_this_week=new_this_week,
-            research_latest=research_latest,
+            watch_dir=str(watch_dir),
+            db_exists=db_path.exists(),
+            now=now,
+            research_latest=data["research_latest"],
         )
 
-    async def _snapshot() -> Layout:
-        return await asyncio.to_thread(_snapshot_blocking)
+        # Panel focus styling
+        overview_border = "bold cyan" if state.focused_panel == PanelId.OVERVIEW else "green"
+        reviews_border = "bold cyan" if state.focused_panel == PanelId.REVIEWS else "blue"
+        patterns_border = "bold cyan" if state.focused_panel == PanelId.PATTERNS else "magenta"
+
+        # Build panels with selection awareness
+        overview_p = _overview_panel(stats)
+        overview_p.border_style = overview_border
+
+        # Reviews panel with selection
+        sel_idx = state.selection.get(PanelId.REVIEWS, 0) if state.focused_panel == PanelId.REVIEWS else -1
+        scroll = state.scroll_offset.get(PanelId.REVIEWS, 0)
+        reviews_p = _reviews_panel_interactive(reviews, now, sel_idx, scroll)
+        reviews_p.border_style = reviews_border
+
+        # Patterns panel with selection and filter
+        sel_idx_p = state.selection.get(PanelId.PATTERNS, 0) if state.focused_panel == PanelId.PATTERNS else -1
+        scroll_p = state.scroll_offset.get(PanelId.PATTERNS, 0)
+        title_suffix = f" [filter: {state.filter_text}]" if state.filter_active else ""
+        patterns_p = _patterns_panel_interactive(violations, sel_idx_p, scroll_p, title_suffix)
+        patterns_p.border_style = patterns_border
+
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header", size=5),
+            Layout(name="body", ratio=1),
+            Layout(name="footer", size=3),
+        )
+        layout["header"].update(_header_panel_v2(stats, now))
+        layout["body"].split_row(
+            Layout(name="left", ratio=2),
+            Layout(name="right", ratio=3),
+        )
+        layout["body"]["left"].split_column(
+            Layout(name="overview", size=8),
+            Layout(name="reviews", ratio=1),
+        )
+        layout["body"]["left"]["overview"].update(overview_p)
+        layout["body"]["left"]["reviews"].update(reviews_p)
+        layout["body"]["right"].update(patterns_p)
+
+        if interactive and state.mode != Mode.NORMAL or state.filter_active or state.mode == Mode.DETAIL:
+            layout["footer"].update(_footer_interactive(state))
+        elif interactive:
+            layout["footer"].update(_footer_interactive(state))
+        else:
+            layout["footer"].update(_footer_panel_v2())
+
+        return layout
+
+    # Key queue for interactive mode
+    key_queue: asyncio.Queue = asyncio.Queue()
+    reader_task = None
 
     try:
+        data = await asyncio.to_thread(_fetch_data)
+        initial_layout = _build_layout(data, ui_state)
+
+        if interactive:
+            reader_task = asyncio.create_task(key_reader_loop(key_queue, shutdown))
+
         with Live(
-            await _snapshot(),
+            initial_layout,
             console=console,
             refresh_per_second=4,
             screen=True,
             transient=True,
         ) as live:
+            last_fetch = time.monotonic()
+
             while not shutdown.is_set():
-                with suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(shutdown.wait(), timeout=refresh_s)
-                if shutdown.is_set():
-                    break
-                live.update(await _snapshot())
+                if interactive:
+                    try:
+                        timeout = max(0.05, refresh_s - (time.monotonic() - last_fetch))
+                        event = await asyncio.wait_for(key_queue.get(), timeout=timeout)
+                        item_counts = {
+                            PanelId.REVIEWS: len(data["reviews"]),
+                            PanelId.PATTERNS: len(data["violations"]),
+                        }
+                        ui_state = apply_key(ui_state, event, item_counts)
+                        if ui_state.quit_requested:
+                            break
+                        live.update(_build_layout(data, ui_state))
+                        continue
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(shutdown.wait(), timeout=refresh_s)
+                    if shutdown.is_set():
+                        break
+
+                # Refresh data on timer
+                data = await asyncio.to_thread(_fetch_data)
+                live.update(_build_layout(data, ui_state))
+                last_fetch = time.monotonic()
+
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
+        if reader_task and not reader_task.done():
+            reader_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await reader_task
         if db is not None:
             with suppress(Exception):
                 db.close()
+
+
+# ---------------------------------------------------------------------------
+# Interactive panel variants
+# ---------------------------------------------------------------------------
+
+def _reviews_panel_interactive(
+    rows: List[ReviewRow], now: float, selection: int, scroll: int,
+) -> Panel:
+    """Reviews panel with selection highlighting."""
+    if not rows:
+        return Panel(Text("no reviews yet — save a watched file", style="dim"),
+                     title="Recent Reviews", border_style="blue")
+    visible = rows[scroll:scroll + 15]
+    table = Table.grid(padding=(0, 1), expand=True)
+    table.add_column(justify="right", style="dim", no_wrap=True)
+    table.add_column(no_wrap=True, overflow="ellipsis")
+    for i, r in enumerate(visible):
+        abs_idx = scroll + i
+        style = "reverse" if abs_idx == selection else ""
+        table.add_row(
+            Text(_format_ago(r.mtime, now), style=style or "dim"),
+            Text(r.rel_path, style=style),
+        )
+    count = len(rows)
+    title = f"Recent Reviews ({count})"
+    if scroll > 0 or scroll + 15 < count:
+        title += f" [{scroll + 1}-{min(scroll + 15, count)}]"
+    return Panel(table, title=title, border_style="blue")
+
+
+def _patterns_panel_interactive(
+    rows: List[ViolationRow], selection: int, scroll: int, title_suffix: str = "",
+) -> Panel:
+    """Patterns panel with selection highlighting and optional filter indicator."""
+    if not rows:
+        msg = "no matches" if title_suffix else "no patterns detected yet"
+        return Panel(Text(msg, style="dim"),
+                     title=f"Patterns{title_suffix}", border_style="magenta")
+    visible = rows[scroll:scroll + 15]
+    table = Table.grid(padding=(0, 1), expand=True)
+    table.add_column(justify="right", style="bold", no_wrap=True)
+    table.add_column(no_wrap=True)
+    table.add_column(no_wrap=True)
+    table.add_column(overflow="ellipsis")
+    for i, r in enumerate(visible):
+        abs_idx = scroll + i
+        if abs_idx == selection:
+            table.add_row(
+                Text(f"{r.count}x", style="reverse"),
+                Text(r.severity, style="reverse"),
+                Text(r.category, style="reverse"),
+                Text(f"{r.file_path}:{r.line_start} — {r.description}", style="reverse"),
+            )
+        else:
+            sev_style = _SEVERITY_STYLE.get(r.severity.lower(), "white")
+            table.add_row(
+                f"{r.count}x",
+                Text(r.severity, style=sev_style),
+                r.category,
+                f"{r.file_path}:{r.line_start} — {r.description}",
+            )
+    count = len(rows)
+    title = f"Patterns ({count}){title_suffix}"
+    return Panel(table, title=title, border_style="magenta")
