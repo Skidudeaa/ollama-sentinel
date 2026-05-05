@@ -462,5 +462,122 @@ def dashboard(
         pass
 
 
+@app.command()
+def research(
+    query: Optional[str] = typer.Argument(
+        None,
+        help="Research query. Omit to enter interactive mode.",
+    ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Enter interactive research REPL",
+    ),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+    context: Optional[str] = typer.Option(
+        None,
+        "--context",
+        help="Path to a source file for code context",
+    ),
+    output_path: Optional[str] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Save research answer to this file",
+    ),
+):
+    """Research a question using web search, code analysis, and synthesis."""
+    from .research_bridge import is_available
+
+    if not is_available():
+        console.print(
+            "[bold red]Research extras not installed.[/]\n\n"
+            "Install with: [bold]pip install -e \".[research]\"[/]"
+        )
+        raise typer.Exit(code=1)
+
+    from .config import load_config
+
+    config_file = pathlib.Path(config_path)
+    config = load_config(config_file) if config_file.exists() else None
+
+    # Resolve paths from config or defaults
+    if config:
+        watch_dir = pathlib.Path(config.watch.directory).resolve()
+        repo_path = (
+            pathlib.Path(config.research.repo_path).resolve()
+            if config.research.repo_path
+            else watch_dir
+        )
+        research_config = (
+            pathlib.Path(config.research.config_path)
+            if config.research.config_path
+            else None
+        )
+        output_dir = watch_dir / config.output.directory
+    else:
+        repo_path = pathlib.Path.cwd()
+        research_config = None
+        output_dir = None
+
+    if interactive or query is None:
+        from .research_bridge import run_interactive
+        try:
+            run_interactive(repo_path, research_config)
+        except KeyboardInterrupt:
+            pass
+        return
+
+    # One-shot query
+    code_context = None
+    if context:
+        ctx_path = pathlib.Path(context)
+        if not ctx_path.is_file():
+            log.error(f"Context file not found: {context}")
+            raise typer.Exit(code=1)
+        code_context = ctx_path.read_text(errors="replace")
+
+    from .research_bridge import run_query, persist_latest
+
+    try:
+        result = run_query(
+            query=query,
+            repo_path=repo_path,
+            config_path=research_config,
+            code_context=code_context,
+        )
+    except Exception as e:
+        log.error(f"Research failed: {e}")
+        raise typer.Exit(code=2)
+
+    # Render answer
+    try:
+        from rich.markdown import Markdown
+        console.print(Markdown(result["answer"]))
+    except Exception:
+        print(result["answer"])
+
+    conf = result.get("confidence", 0)
+    console.print(f"\n[dim]Confidence: {conf:.0%} | Sources: {result.get('source_count', 0)}[/]")
+
+    # Persist for Control Center
+    if output_dir:
+        persist_latest(result, output_dir)
+
+    # Save to file if requested
+    if output_path:
+        try:
+            pathlib.Path(output_path).write_text(result["answer"])
+        except OSError as e:
+            log.error(f"Failed to write output: {e}")
+            raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()

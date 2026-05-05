@@ -261,6 +261,15 @@ class MemoryConfig(BaseModel):
     structural_recall: bool = True
 
 
+class ResearchConfig(BaseModel):
+    """Optional bridge to the research agent subsystem."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    config_path: Optional[str] = None
+    repo_path: Optional[str] = None
+
+
 class SentinelConfig(BaseModel):
     """Main application configuration."""
     watch: WatchConfig
@@ -270,3 +279,4 @@ class SentinelConfig(BaseModel):
     notifications: NotificationsConfig = NotificationsConfig()
     memory: MemoryConfig = MemoryConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
+    research: ResearchConfig = ResearchConfig()

@@ -293,16 +293,20 @@ export RESEARCH_MODEL="gpt-4o"         # optional (default: gpt-4o-preview)
 ### Commands
 
 ```bash
-# One-shot query
-python -m research_agent.main query "how to migrate from Flask to FastAPI" \
-  --context ./src --output migration.md
+# One-shot query (unified CLI — preferred)
+ollama-sentinel research "how to migrate from Flask to FastAPI" \
+  --context ./src/app.py --output migration.md
 
 # Interactive session
-python -m research_agent.main interactive
+ollama-sentinel research -i
 
-# Check your environment is set up
+# Legacy entry point (still works)
+python -m research_agent.main query "same question" --context ./src --output result.md
+python -m research_agent.main interactive
 python -m research_agent.main setup
 ```
+
+Research results are automatically persisted and visible in the Control Center's Overview panel.
 
 ---
 

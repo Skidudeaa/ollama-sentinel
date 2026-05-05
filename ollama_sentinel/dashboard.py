@@ -87,6 +87,7 @@ class OverviewStats:
     model_name: str = ""
     watch_dir: str = ""
     db_exists: bool = False
+    research_latest: Optional[Dict] = None
 
 
 def recent_reviews(reviews_dir: pathlib.Path, limit: int) -> List[ReviewRow]:
@@ -156,6 +157,7 @@ def compute_overview(
     watch_dir: str,
     db_exists: bool,
     now: float,
+    research_latest: Optional[Dict] = None,
 ) -> OverviewStats:
     """Compute aggregate overview stats from pre-fetched data."""
     newest_age = (now - reviews[0].mtime) if reviews else None
@@ -172,6 +174,7 @@ def compute_overview(
         model_name=model_name,
         watch_dir=watch_dir,
         db_exists=db_exists,
+        research_latest=research_latest,
     )
 
 
@@ -316,6 +319,15 @@ def _overview_panel(stats: OverviewStats) -> Panel:
     action = suggested_action(stats)
     table.add_row(f"[dim]Action:[/] [italic]{action}[/]", "")
 
+    # Row 5: latest research (conditional, null-safe)
+    if stats.research_latest:
+        r = stats.research_latest
+        q = (r.get("query") or "")[:35]
+        conf = r.get("confidence") or 0
+        ts = r.get("timestamp")
+        ago = _format_ago(ts, time.time()) if ts else ""
+        table.add_row(f"[dim]Research:[/] [white]{q}[/] ({conf:.0%}) [dim]{ago}[/]", "")
+
     return Panel(table, title="Overview", border_style="green", padding=(0, 1))
 
 
@@ -386,6 +398,7 @@ def render_layout(
     severity_counts: Optional[Dict[str, int]] = None,
     hottest: Optional[tuple] = None,
     new_this_week: int = 0,
+    research_latest: Optional[Dict] = None,
 ) -> Layout:
     """Build the full Rich layout for one frame.
 
@@ -420,6 +433,7 @@ def render_layout(
         watch_dir=watch_dir,
         db_exists=db_path.exists(),
         now=now,
+        research_latest=research_latest,
     )
 
     layout = Layout()
@@ -531,6 +545,14 @@ async def run_dashboard(
                 except Exception:
                     log.exception("count_new_since failed")
 
+        research_latest = None
+        if config_path:
+            try:
+                from .research_bridge import load_latest
+                research_latest = load_latest(reviews_dir)
+            except Exception:
+                pass
+
         return render_layout(
             str(watch_dir), reviews_dir, db_path, reviews, violations, now,
             config_path=config_path,
@@ -538,6 +560,7 @@ async def run_dashboard(
             severity_counts=severity_counts,
             hottest=hottest,
             new_this_week=new_this_week,
+            research_latest=research_latest,
         )
 
     async def _snapshot() -> Layout:

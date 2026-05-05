@@ -88,8 +88,9 @@ The "I always forget what to run" table.
 | Same, machine-readable | `ollama-sentinel report -f json` | JSON array on stdout |
 | Diagnose a failing log | `ollama-sentinel triage < pytest.log`<br>or `ollama-sentinel triage some.log -o out.md` | Markdown diagnosis with file:line references |
 | Create a config file | `ollama-sentinel init` | Writes `ollama-sentinel.yaml` in the current dir |
-| Run dependency impact analysis | `python -m research_agent.main query "is this safe to upgrade?" --context src/ --output result.md` | Ranked impact report at `result.md` with HIGH / MEDIUM / LOW severity per call site |
-| Interactive research | `python -m research_agent.main interactive` | REPL prompt — ask follow-up questions in the same session |
+| Research a question | `ollama-sentinel research "is SQLAlchemy 2.0 safe to upgrade?"` | Synthesized answer with confidence score, persisted to Control Center |
+| Research with code context | `ollama-sentinel research "what breaks?" --context src/db.py` | Answer grounded in your actual code |
+| Interactive research | `ollama-sentinel research -i` | REPL prompt — ask follow-up questions in the same session |
 | Run all tests | `pytest tests/ -q` | `413 passed, 15 skipped` (the 15 skips are intentional — fallback paths covered by the other CI runner) |
 
 ## When something looks wrong
