@@ -93,6 +93,27 @@ The header shows:
 
 The Control Center polls every 1 second by default. It doesn't modify any state — it's purely a read-only view of what the watcher has produced.
 
+### Keyboard Navigation
+
+The Control Center is interactive. When running in a terminal (TTY), these keys are available:
+
+| Key | Action |
+|-----|--------|
+| `q` | Quit |
+| `Tab` | Cycle focus to next panel (Overview → Reviews → Patterns) |
+| `Shift-Tab` | Cycle focus to previous panel |
+| `j` / `↓` | Move selection down in the focused list |
+| `k` / `↑` | Move selection up in the focused list |
+| `Enter` | Open detail view for the selected item |
+| `Esc` | Close detail view or cancel filter |
+| `/` | Enter filter mode (filters Patterns by severity or category) |
+
+**Filter mode:** Type a severity (`high`, `crit`) or category (`security`, `perf`) to narrow the Patterns list. Press Enter to lock the filter, Esc to cancel. All keys (including `q`, `j`, `k`) type normally while filtering.
+
+**Detail mode:** Press Enter on a review or pattern to see full details in a dedicated panel. Press Esc to return to the normal view.
+
+The focused panel has a bright cyan border. The selected row is highlighted with reverse video.
+
 ---
 
 ## The Sentinel

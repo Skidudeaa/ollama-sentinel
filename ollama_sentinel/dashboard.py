@@ -627,6 +627,21 @@ async def run_dashboard(
             research_latest=data["research_latest"],
         )
 
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header", size=5),
+            Layout(name="body", ratio=1),
+            Layout(name="footer", size=3),
+        )
+        layout["header"].update(_header_panel_v2(stats, now))
+
+        # Detail mode: replace body with full-width detail panel
+        if state.mode == Mode.DETAIL:
+            detail_panel = _detail_panel(state, reviews, violations, now)
+            layout["body"].update(detail_panel)
+            layout["footer"].update(_footer_interactive(state))
+            return layout
+
         # Panel focus styling
         overview_border = "bold cyan" if state.focused_panel == PanelId.OVERVIEW else "green"
         reviews_border = "bold cyan" if state.focused_panel == PanelId.REVIEWS else "blue"
@@ -649,13 +664,6 @@ async def run_dashboard(
         patterns_p = _patterns_panel_interactive(violations, sel_idx_p, scroll_p, title_suffix)
         patterns_p.border_style = patterns_border
 
-        layout = Layout()
-        layout.split_column(
-            Layout(name="header", size=5),
-            Layout(name="body", ratio=1),
-            Layout(name="footer", size=3),
-        )
-        layout["header"].update(_header_panel_v2(stats, now))
         layout["body"].split_row(
             Layout(name="left", ratio=2),
             Layout(name="right", ratio=3),
@@ -820,3 +828,36 @@ def _patterns_panel_interactive(
     count = len(rows)
     title = f"Patterns ({count}){title_suffix}"
     return Panel(table, title=title, border_style="magenta")
+
+
+def _detail_panel(state, reviews: List[ReviewRow], violations: List[ViolationRow], now: float) -> Panel:
+    """Full-width detail view for the selected item."""
+    from .dashboard_input import PanelId
+
+    panel = state.focused_panel
+    idx = state.selection.get(panel, 0)
+
+    if panel == PanelId.REVIEWS and idx < len(reviews):
+        r = reviews[idx]
+        table = Table.grid(padding=(0, 2), expand=True)
+        table.add_column(style="dim", no_wrap=True)
+        table.add_column()
+        table.add_row("File:", r.rel_path)
+        table.add_row("Last reviewed:", _format_ago(r.mtime, now))
+        table.add_row("Modified:", _dt.datetime.fromtimestamp(r.mtime).strftime("%Y-%m-%d %H:%M:%S"))
+        return Panel(table, title=f"Review: {r.rel_path}", border_style="bold blue")
+
+    if panel == PanelId.PATTERNS and idx < len(violations):
+        v = violations[idx]
+        sev_style = _SEVERITY_STYLE.get(v.severity.lower(), "white")
+        table = Table.grid(padding=(0, 2), expand=True)
+        table.add_column(style="dim", no_wrap=True)
+        table.add_column()
+        table.add_row("Severity:", Text(v.severity, style=sev_style))
+        table.add_row("Category:", v.category)
+        table.add_row("File:", f"{v.file_path}:{v.line_start}-{v.line_end}")
+        table.add_row("Occurrences:", f"{v.count}x")
+        table.add_row("Description:", v.description)
+        return Panel(table, title=f"Pattern: {v.category} in {v.file_path}", border_style="bold magenta")
+
+    return Panel(Text("No item selected", style="dim"), border_style="dim")
