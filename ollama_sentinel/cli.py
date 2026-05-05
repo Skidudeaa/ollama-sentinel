@@ -18,7 +18,7 @@ from .processor import FileChange
 from .watcher import FileSentinel
 from watchfiles import Change
 
-app = typer.Typer()
+app = typer.Typer(invoke_without_command=True)
 console = Console()
 
 
@@ -32,8 +32,9 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def _main(
+    ctx: typer.Context,
     version: Optional[bool] = typer.Option(
         None,
         "--version",
@@ -42,8 +43,46 @@ def _main(
         is_eager=True,
         help="Show version and exit.",
     ),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
 ) -> None:
-    pass
+    """Ollama Sentinel — local-first AI code review companion."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    config_file = pathlib.Path(config_path)
+    if not config_file.exists():
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
+
+    from .config import load_config
+    from .dashboard import run_dashboard
+
+    config = load_config(config_file)
+    if config is None:
+        log.error("Failed to load configuration.")
+        raise typer.Exit(code=1)
+
+    watch_dir = pathlib.Path(config.watch.directory).resolve()
+    reviews_dir = watch_dir / config.output.directory
+    db_path = watch_dir / config.memory.db_path
+    model_cfg = config.ollama.models.get("default")
+    model_display = model_cfg.name if model_cfg else "unknown"
+
+    try:
+        asyncio.run(run_dashboard(
+            watch_dir=watch_dir,
+            reviews_dir=reviews_dir,
+            db_path=db_path,
+            config_path=str(config_file),
+            model_name=model_display,
+        ))
+    except KeyboardInterrupt:
+        pass
 
 # Configure rich console and logging
 logging.basicConfig(
@@ -227,7 +266,7 @@ def report(
     if output_format == "json":
         console.print(json_mod.dumps(violations, indent=2))
     else:
-        table = Table(title=f"Recurring Violations (seen >= {min_count}x)")
+        table = Table(title=f"Patterns (seen >= {min_count}x)")
         table.add_column("#", style="dim", width=4)
         table.add_column("Count", style="bold red", width=6)
         table.add_column("Severity", width=10)
@@ -390,10 +429,10 @@ def dashboard(
         2,
         "--min-count",
         "-n",
-        help="Minimum occurrence count for 'Top Recurring'",
+        help="Minimum occurrence count for Patterns panel",
     ),
 ):
-    """Live TUI dashboard for a running sentinel (read-only)."""
+    """Live Control Center dashboard for a running sentinel (read-only)."""
     from .config import load_config
     from .dashboard import run_dashboard
 
@@ -410,6 +449,8 @@ def dashboard(
     watch_dir = pathlib.Path(config.watch.directory).resolve()
     reviews_dir = watch_dir / config.output.directory
     db_path = watch_dir / config.memory.db_path
+    model_cfg = config.ollama.models.get("default")
+    model_display = model_cfg.name if model_cfg else "unknown"
 
     try:
         asyncio.run(run_dashboard(
@@ -418,6 +459,8 @@ def dashboard(
             db_path=db_path,
             refresh_s=refresh,
             min_count=min_count,
+            config_path=str(config_file),
+            model_name=model_display,
         ))
     except KeyboardInterrupt:
         pass

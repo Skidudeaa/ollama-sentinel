@@ -7,11 +7,21 @@ import time
 from unittest.mock import MagicMock, patch
 
 from ollama_sentinel.dashboard import (
+    OverviewStats,
     ReviewRow,
     ViolationRow,
+    compute_overview,
     recent_reviews,
+    render_layout,
     run_dashboard,
+    suggested_action,
     top_violations,
+    watcher_status,
+    watcher_status_from_age,
+    _overview_panel,
+    _patterns_panel,
+    _header_panel_v2,
+    _footer_panel_v2,
 )
 from ollama_sentinel.violation_db import Finding, ViolationDB
 
@@ -201,3 +211,240 @@ class TestRunDashboard:
                 refresh_s=0.01,
             )
         assert call_count >= 2
+
+
+# ---------------------------------------------------------------------------
+# Control Center v2 tests
+# ---------------------------------------------------------------------------
+
+
+class TestWatcherStatus:
+    def test_active_within_60s(self):
+        now = time.time()
+        reviews = [ReviewRow(rel_path="a.md", mtime=now - 30)]
+        label, style = watcher_status(reviews, now)
+        assert label == "Active"
+        assert style == "active"
+
+    def test_idle_between_60s_and_300s(self):
+        now = time.time()
+        reviews = [ReviewRow(rel_path="a.md", mtime=now - 120)]
+        label, style = watcher_status(reviews, now)
+        assert label == "Idle"
+        assert style == "idle"
+
+    def test_stale_beyond_300s(self):
+        now = time.time()
+        reviews = [ReviewRow(rel_path="a.md", mtime=now - 600)]
+        label, style = watcher_status(reviews, now)
+        assert label == "Stale"
+        assert style == "stale"
+
+    def test_no_data_when_empty(self):
+        now = time.time()
+        label, style = watcher_status([], now)
+        assert label == "No Data"
+        assert style == "no_data"
+
+
+class TestWatcherStatusFromAge:
+    def test_none_age(self):
+        assert watcher_status_from_age(None) == ("No Data", "no_data")
+
+    def test_active(self):
+        assert watcher_status_from_age(30.0) == ("Active", "active")
+
+    def test_idle(self):
+        assert watcher_status_from_age(120.0) == ("Idle", "idle")
+
+    def test_stale(self):
+        assert watcher_status_from_age(600.0) == ("Stale", "stale")
+
+
+class TestComputeOverview:
+    def test_empty_data(self):
+        now = time.time()
+        stats = compute_overview(
+            reviews=[], severity_counts={}, hottest=None,
+            new_this_week=0, config_path="test.yaml",
+            model_name="gemma3", watch_dir="/tmp", db_exists=False, now=now,
+        )
+        assert stats.total_reviews == 0
+        assert stats.newest_review_age_s is None
+        assert stats.total_unresolved == 0
+        assert stats.hottest_file is None
+        assert stats.new_this_week == 0
+
+    def test_populated_data(self):
+        now = time.time()
+        reviews = [
+            ReviewRow(rel_path="a.md", mtime=now - 10),
+            ReviewRow(rel_path="b.md", mtime=now - 100),
+        ]
+        stats = compute_overview(
+            reviews=reviews,
+            severity_counts={"critical": 2, "high": 5, "medium": 3},
+            hottest=("src/auth.py", 4),
+            new_this_week=7,
+            config_path="sentinel.yaml",
+            model_name="deepseek",
+            watch_dir="/code",
+            db_exists=True,
+            now=now,
+        )
+        assert stats.total_reviews == 2
+        assert stats.newest_review_age_s is not None
+        assert abs(stats.newest_review_age_s - 10) < 1
+        assert stats.total_unresolved == 10
+        assert stats.hottest_file == "src/auth.py"
+        assert stats.hottest_count == 4
+        assert stats.new_this_week == 7
+
+
+class TestSuggestedAction:
+    def test_no_reviews(self):
+        stats = OverviewStats(
+            total_reviews=0, newest_review_age_s=None, total_unresolved=0,
+        )
+        assert "first review" in suggested_action(stats).lower()
+
+    def test_critical_findings(self):
+        stats = OverviewStats(
+            total_reviews=5, newest_review_age_s=10.0, total_unresolved=3,
+            severity_counts={"critical": 2}, hottest_file="auth.py", hottest_count=2,
+        )
+        action = suggested_action(stats)
+        assert "critical" in action.lower()
+        assert "auth.py" in action
+
+    def test_high_findings(self):
+        stats = OverviewStats(
+            total_reviews=5, newest_review_age_s=10.0, total_unresolved=3,
+            severity_counts={"high": 3}, hottest_file="db.py", hottest_count=3,
+        )
+        action = suggested_action(stats)
+        assert "high" in action.lower()
+
+    def test_all_clear(self):
+        stats = OverviewStats(
+            total_reviews=5, newest_review_age_s=10.0, total_unresolved=0,
+            severity_counts={},
+        )
+        assert "all clear" in suggested_action(stats).lower()
+
+
+class TestControlCenterPanels:
+    def test_overview_panel_renders(self):
+        stats = OverviewStats(
+            total_reviews=10, newest_review_age_s=30.0, total_unresolved=5,
+            severity_counts={"high": 3, "medium": 2},
+            hottest_file="src/app.py", hottest_count=3,
+            new_this_week=2,
+        )
+        panel = _overview_panel(stats)
+        assert panel.title == "Overview"
+
+    def test_patterns_panel_empty(self):
+        panel = _patterns_panel([])
+        assert panel.title == "Patterns"
+
+    def test_patterns_panel_with_data(self):
+        rows = [
+            ViolationRow(count=3, severity="high", category="bug",
+                         file_path="a.py", line_start=10, line_end=10,
+                         description="null ref"),
+        ]
+        panel = _patterns_panel(rows)
+        assert "Patterns (1)" in panel.title
+
+    def test_header_v2_renders(self):
+        stats = OverviewStats(
+            total_reviews=5, newest_review_age_s=30.0, total_unresolved=8,
+            config_path="test.yaml", model_name="gemma3",
+            watch_dir="/code", db_exists=True,
+        )
+        panel = _header_panel_v2(stats, time.time())
+        assert panel.border_style == "bold cyan"
+
+    def test_footer_v2_renders(self):
+        panel = _footer_panel_v2()
+        assert panel.border_style == "dim"
+
+
+class TestRenderLayoutBackwardsCompat:
+    def test_old_signature_produces_legacy_layout(self, tmp_path):
+        now = time.time()
+        layout = render_layout(
+            str(tmp_path), tmp_path, tmp_path / "memory.db",
+            [], [], now,
+        )
+        assert layout["header"] is not None
+        assert layout["body"] is not None
+        assert layout["footer"] is not None
+
+    def test_new_signature_produces_control_center(self, tmp_path):
+        now = time.time()
+        layout = render_layout(
+            str(tmp_path), tmp_path, tmp_path / "memory.db",
+            [], [], now,
+            config_path="test.yaml",
+            model_name="gemma3",
+            severity_counts={"high": 2},
+        )
+        assert layout["header"] is not None
+        assert layout["body"]["left"]["overview"] is not None
+        assert layout["body"]["right"] is not None
+
+
+class TestViolationDBNewHelpers:
+    def test_count_by_severity(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "m.db"))
+        try:
+            findings = [
+                Finding("a.py", 1, 1, "bug", "critical", "crash"),
+                Finding("b.py", 2, 2, "style", "low", "naming"),
+                Finding("c.py", 3, 3, "perf", "high", "slow"),
+            ]
+            db.persist_findings("a.py", [findings[0]])
+            db.persist_findings("b.py", [findings[1]])
+            db.persist_findings("c.py", [findings[2]])
+            counts = db.count_by_severity()
+            assert counts["critical"] == 1
+            assert counts["low"] == 1
+            assert counts["high"] == 1
+        finally:
+            db.close()
+
+    def test_count_new_since(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "m.db"))
+        try:
+            f = Finding("a.py", 1, 1, "bug", "high", "issue")
+            db.persist_findings("a.py", [f])
+            count = db.count_new_since("2000-01-01T00:00:00")
+            assert count == 1
+            count = db.count_new_since("2099-01-01T00:00:00")
+            assert count == 0
+        finally:
+            db.close()
+
+    def test_hottest_file(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "m.db"))
+        try:
+            db.persist_findings("a.py", [
+                Finding("a.py", 1, 1, "bug", "high", "issue1"),
+                Finding("a.py", 2, 2, "bug", "high", "issue2"),
+            ])
+            db.persist_findings("b.py", [
+                Finding("b.py", 1, 1, "style", "low", "naming"),
+            ])
+            hot = db.hottest_file(limit=1)
+            assert hot[0] == ("a.py", 2)
+        finally:
+            db.close()
+
+    def test_hottest_file_empty_db(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "m.db"))
+        try:
+            assert db.hottest_file() == []
+        finally:
+            db.close()

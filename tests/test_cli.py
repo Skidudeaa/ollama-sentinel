@@ -308,3 +308,32 @@ class TestTriageCommand:
             input="some error\n",
         )
         assert result.exit_code == 1
+
+
+class TestDefaultCommand:
+    """Tests for bare `ollama-sentinel` invocation (no subcommand)."""
+
+    def test_bare_invocation_no_config_shows_help(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        output = (result.stdout or "") + (result.output or "")
+        assert "Usage" in output or "ollama-sentinel" in output.lower()
+
+    def test_bare_invocation_with_config_launches_dashboard(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _write_config(tmp_path)
+        from unittest.mock import patch as mock_patch
+        with mock_patch("ollama_sentinel.dashboard.run_dashboard") as mock_run:
+            with mock_patch("asyncio.run") as mock_asyncio_run:
+                result = runner.invoke(
+                    app,
+                    ["-c", str(tmp_path / "ollama-sentinel.yaml")],
+                )
+        assert mock_asyncio_run.called
+
+    def test_version_flag_still_works(self):
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        output = (result.stdout or "") + (result.output or "")
+        assert "ollama-sentinel" in output

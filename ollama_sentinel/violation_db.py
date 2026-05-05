@@ -194,6 +194,35 @@ class ViolationDB:
             )
             return self._rows_to_dicts(cur)
 
+    def count_by_severity(self) -> dict:
+        """Return unresolved finding counts grouped by severity."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT severity, COUNT(*) FROM findings "
+                "WHERE resolved = 0 GROUP BY severity"
+            )
+            return dict(cur.fetchall())
+
+    def count_new_since(self, since_iso: str) -> int:
+        """Count findings with first_seen >= *since_iso*."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) FROM findings WHERE first_seen >= ?",
+                (since_iso,),
+            )
+            return cur.fetchone()[0]
+
+    def hottest_file(self, limit: int = 1) -> List[tuple]:
+        """Top files by unresolved finding count. Returns [(file_path, count)]."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT file_path, COUNT(*) as cnt FROM findings "
+                "WHERE resolved = 0 GROUP BY file_path "
+                "ORDER BY cnt DESC LIMIT ?",
+                (limit,),
+            )
+            return cur.fetchall()
+
     async def get_neighbors_by_similarity(
         self,
         query_text: str,

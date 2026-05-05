@@ -59,6 +59,42 @@ Now edit any file in the directory. Save it. Within a few seconds, a review appe
 
 ---
 
+## The Control Center
+
+The Control Center is the primary product surface. It shows everything the sentinel knows at a glance.
+
+```bash
+ollama-sentinel                    # opens the Control Center (default behavior)
+ollama-sentinel dashboard          # same thing, explicit command
+ollama-sentinel dashboard -r 0.5   # half-second refresh rate
+```
+
+### What You See
+
+The Control Center is a full-screen read-only TUI with three main areas:
+
+**Overview** (top-left) — aggregate system state:
+- Open findings count with severity breakdown (critical/high/medium/low)
+- New findings in the last 7 days
+- The "hottest" file (most unresolved findings)
+- A suggested next action based on current state
+
+**Recent Reviews** (bottom-left) — the latest review output files with relative timestamps, showing what was reviewed and when.
+
+**Patterns** (right) — recurring violations ranked by frequency. These are the issues the model keeps flagging across multiple reviews. If something shows up here repeatedly, it needs real attention.
+
+### Status Indicators
+
+The header shows:
+- **Watcher status** — Active (review <60s ago), Idle (<5m), or Stale (>5m)
+- **DB status** — total open findings count, or "no DB yet" if reviews haven't run
+- **Model** — which Ollama model is configured
+- **Update time** — when the display last refreshed
+
+The Control Center polls every 1 second by default. It doesn't modify any state — it's purely a read-only view of what the watcher has produced.
+
+---
+
 ## The Sentinel
 
 ### How It Works
@@ -102,8 +138,9 @@ ollama-sentinel triage error.log -o triage.md
 ollama-sentinel triage error.log --no-extract        # skip source extraction
 ollama-sentinel triage error.log --context src/foo.py:42  # add explicit context
 
-# Live TUI of recent reviews + recurring violations (read-only, polls the DB)
-ollama-sentinel dashboard
+# Control Center (live TUI, read-only, polls the DB)
+ollama-sentinel                                      # default: opens Control Center
+ollama-sentinel dashboard                            # same thing, explicit command
 ollama-sentinel dashboard -r 0.5 -n 3                # half-second refresh, min count 3
 ```
 
@@ -112,7 +149,7 @@ ollama-sentinel dashboard -r 0.5 -n 3                # half-second refresh, min 
 After running reviews for a while, `ollama-sentinel report` shows you the patterns:
 
 ```
-             Recurring Violations (seen >= 2x)
+                    Patterns (seen >= 2x)
 +------+-------+----------+----------+--------------+-------+---------------------+
 | #    | Count | Severity | Category | File         | Lines | Description         |
 +------+-------+----------+----------+--------------+-------+---------------------+
