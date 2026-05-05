@@ -99,7 +99,20 @@ def apply_key(state: UIState, event: KeyEvent, item_counts: dict) -> UIState:
                          focused_panel=_next_panel(state.focused_panel))
         return state
 
-    # Mode.NORMAL
+    # Mode.NORMAL — interpret chars as commands
+    if key == Key.CHAR:
+        ch = event.char
+        if ch == "q":
+            return _copy(state, quit_requested=True)
+        if ch == "j":
+            return _apply_move(state, 1, item_counts)
+        if ch == "k":
+            return _apply_move(state, -1, item_counts)
+        if ch == "/":
+            return _copy(state, mode=Mode.FILTER, focused_panel=PanelId.PATTERNS,
+                         filter_text="", filter_active=False)
+        return state
+
     if key == Key.QUIT:
         return _copy(state, quit_requested=True)
 
@@ -114,21 +127,29 @@ def apply_key(state: UIState, event: KeyEvent, item_counts: dict) -> UIState:
                      filter_text="", filter_active=False)
 
     if key in (Key.DOWN, Key.UP) and state.focused_panel in (PanelId.REVIEWS, PanelId.PATTERNS):
-        panel = state.focused_panel
-        max_idx = max(0, item_counts.get(panel, 0) - 1)
-        current = state.selection.get(panel, 0)
-        if key == Key.DOWN:
-            new_idx = min(current + 1, max_idx)
-        else:
-            new_idx = max(current - 1, 0)
-        new_sel = {**state.selection, panel: new_idx}
-        new_scroll = _adjust_scroll(state.scroll_offset, panel, new_idx)
-        return _copy(state, selection=new_sel, scroll_offset=new_scroll)
+        delta = 1 if key == Key.DOWN else -1
+        return _apply_move(state, delta, item_counts)
 
     if key == Key.ENTER and state.focused_panel in (PanelId.REVIEWS, PanelId.PATTERNS):
+        count = item_counts.get(state.focused_panel, 0)
+        if count == 0:
+            return state
         return _copy(state, mode=Mode.DETAIL)
 
     return state
+
+
+def _apply_move(state: UIState, delta: int, item_counts: dict) -> UIState:
+    """Move selection by delta within the focused panel."""
+    panel = state.focused_panel
+    if panel not in (PanelId.REVIEWS, PanelId.PATTERNS):
+        return state
+    max_idx = max(0, item_counts.get(panel, 0) - 1)
+    current = state.selection.get(panel, 0)
+    new_idx = max(0, min(current + delta, max_idx))
+    new_sel = {**state.selection, panel: new_idx}
+    new_scroll = _adjust_scroll(state.scroll_offset, panel, new_idx)
+    return _copy(state, selection=new_sel, scroll_offset=new_scroll)
 
 
 def _next_panel(current: PanelId) -> PanelId:
@@ -141,7 +162,10 @@ def _prev_panel(current: PanelId) -> PanelId:
     return _PANEL_CYCLE[(idx - 1) % len(_PANEL_CYCLE)]
 
 
-def _adjust_scroll(scroll_offset: dict, panel: PanelId, selection: int, visible: int = 12) -> dict:
+VISIBLE_ROWS = 15
+
+
+def _adjust_scroll(scroll_offset: dict, panel: PanelId, selection: int, visible: int = VISIBLE_ROWS) -> dict:
     offset = scroll_offset.get(panel, 0)
     if selection < offset:
         offset = selection
@@ -209,14 +233,6 @@ def _read_key_blocking(timeout: float = 0.1) -> Optional[KeyEvent]:
             return KeyEvent(Key.ENTER)
         if ch == "\x7f" or ch == "\x08":
             return KeyEvent(Key.BACKSPACE)
-        if ch == "q":
-            return KeyEvent(Key.QUIT)
-        if ch == "/":
-            return KeyEvent(Key.SLASH)
-        if ch == "j":
-            return KeyEvent(Key.DOWN)
-        if ch == "k":
-            return KeyEvent(Key.UP)
         if ch.isprintable():
             return KeyEvent(Key.CHAR, char=ch)
 

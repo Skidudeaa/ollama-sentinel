@@ -14,9 +14,9 @@ def _counts(reviews=5, patterns=10):
 
 
 class TestApplyKeyNormalMode:
-    def test_quit(self):
+    def test_quit_via_char_q(self):
         state = UIState()
-        result = apply_key(state, KeyEvent(Key.QUIT), _counts())
+        result = apply_key(state, KeyEvent(Key.CHAR, char="q"), _counts())
         assert result.quit_requested is True
 
     def test_tab_cycles_panels(self):
@@ -113,6 +113,17 @@ class TestApplyKeyFilterMode:
         state = apply_key(state, KeyEvent(Key.TAB), _counts())
         assert state.mode == Mode.NORMAL
         assert state.focused_panel == PanelId.OVERVIEW
+
+    def test_q_types_in_filter_mode(self):
+        state = UIState(mode=Mode.FILTER, filter_text="")
+        state = apply_key(state, KeyEvent(Key.CHAR, char="q"), _counts())
+        assert state.filter_text == "q"
+        assert state.quit_requested is False
+
+    def test_j_types_in_filter_mode(self):
+        state = UIState(mode=Mode.FILTER, filter_text="")
+        state = apply_key(state, KeyEvent(Key.CHAR, char="j"), _counts())
+        assert state.filter_text == "j"
 
 
 class TestApplyKeyDetailMode:

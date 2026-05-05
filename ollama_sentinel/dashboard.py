@@ -668,14 +668,37 @@ async def run_dashboard(
         layout["body"]["left"]["reviews"].update(reviews_p)
         layout["body"]["right"].update(patterns_p)
 
-        if interactive and state.mode != Mode.NORMAL or state.filter_active or state.mode == Mode.DETAIL:
-            layout["footer"].update(_footer_interactive(state))
-        elif interactive:
+        if interactive:
             layout["footer"].update(_footer_interactive(state))
         else:
             layout["footer"].update(_footer_panel_v2())
 
         return layout
+
+    def _effective_counts(data: dict, state: UIState) -> dict:
+        """Item counts considering active filter."""
+        violations = data["violations"]
+        if state.filter_active and state.filter_text:
+            ft = state.filter_text.lower()
+            violations = [v for v in violations
+                          if ft in v.severity.lower() or ft in v.category.lower()]
+        return {
+            PanelId.REVIEWS: len(data["reviews"]),
+            PanelId.PATTERNS: len(violations),
+        }
+
+    def _reclamp_selection(state: UIState, data: dict) -> UIState:
+        """Re-clamp selection indices after data refresh."""
+        counts = _effective_counts(data, state)
+        new_sel = dict(state.selection)
+        for panel, count in counts.items():
+            max_idx = max(0, count - 1) if count > 0 else 0
+            if new_sel.get(panel, 0) > max_idx:
+                new_sel[panel] = max_idx
+        if new_sel != state.selection:
+            from .dashboard_input import _copy
+            return _copy(state, selection=new_sel)
+        return state
 
     # Key queue for interactive mode
     key_queue: asyncio.Queue = asyncio.Queue()
@@ -702,15 +725,11 @@ async def run_dashboard(
                     try:
                         timeout = max(0.05, refresh_s - (time.monotonic() - last_fetch))
                         event = await asyncio.wait_for(key_queue.get(), timeout=timeout)
-                        item_counts = {
-                            PanelId.REVIEWS: len(data["reviews"]),
-                            PanelId.PATTERNS: len(data["violations"]),
-                        }
+                        item_counts = _effective_counts(data, ui_state)
                         ui_state = apply_key(ui_state, event, item_counts)
                         if ui_state.quit_requested:
                             break
                         live.update(_build_layout(data, ui_state))
-                        continue
                     except asyncio.TimeoutError:
                         pass
                 else:
@@ -719,10 +738,12 @@ async def run_dashboard(
                     if shutdown.is_set():
                         break
 
-                # Refresh data on timer
-                data = await asyncio.to_thread(_fetch_data)
-                live.update(_build_layout(data, ui_state))
-                last_fetch = time.monotonic()
+                # Refresh data on timer if due
+                if time.monotonic() - last_fetch >= refresh_s:
+                    data = await asyncio.to_thread(_fetch_data)
+                    ui_state = _reclamp_selection(ui_state, data)
+                    live.update(_build_layout(data, ui_state))
+                    last_fetch = time.monotonic()
 
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
