@@ -204,10 +204,10 @@ class ViolationDB:
             return dict(cur.fetchall())
 
     def count_new_since(self, since_iso: str) -> int:
-        """Count findings with first_seen >= *since_iso*."""
+        """Count unresolved findings with first_seen >= *since_iso*."""
         with self._lock:
             cur = self._conn.execute(
-                "SELECT COUNT(*) FROM findings WHERE first_seen >= ?",
+                "SELECT COUNT(*) FROM findings WHERE first_seen >= ? AND resolved = 0",
                 (since_iso,),
             )
             return cur.fetchone()[0]

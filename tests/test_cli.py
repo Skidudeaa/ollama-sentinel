@@ -326,10 +326,7 @@ class TestDefaultCommand:
         from unittest.mock import patch as mock_patch
         with mock_patch("ollama_sentinel.dashboard.run_dashboard") as mock_run:
             with mock_patch("asyncio.run") as mock_asyncio_run:
-                result = runner.invoke(
-                    app,
-                    ["-c", str(tmp_path / "ollama-sentinel.yaml")],
-                )
+                result = runner.invoke(app, [])
         assert mock_asyncio_run.called
 
     def test_version_flag_still_works(self):

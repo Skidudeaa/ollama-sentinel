@@ -43,16 +43,12 @@ def _main(
         is_eager=True,
         help="Show version and exit.",
     ),
-    config_path: str = typer.Option(
-        "ollama-sentinel.yaml",
-        "--config",
-        "-c",
-        help="Path to configuration file",
-    ),
 ) -> None:
     """Ollama Sentinel — local-first AI code review companion."""
     if ctx.invoked_subcommand is not None:
         return
+
+    config_path = "ollama-sentinel.yaml"
 
     config_file = pathlib.Path(config_path)
     if not config_file.exists():

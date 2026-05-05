@@ -182,10 +182,10 @@ def suggested_action(stats: OverviewStats) -> str:
 
     if stats.total_reviews == 0:
         return "Save a watched file to generate your first review"
-    if crit > 0 and stats.hottest_file:
-        return f"Resolve {crit} critical finding{'s' if crit > 1 else ''} in {stats.hottest_file}"
-    if high > 0 and stats.hottest_file:
-        return f"Address {high} high-severity finding{'s' if high > 1 else ''} in {stats.hottest_file}"
+    if crit > 0:
+        return f"Resolve {crit} critical finding{'s' if crit > 1 else ''}"
+    if high > 0:
+        return f"Address {high} high-severity finding{'s' if high > 1 else ''}"
     if stats.total_unresolved > 0:
         return f"{stats.total_unresolved} open finding{'s' if stats.total_unresolved > 1 else ''} across your codebase"
     return "All clear — no open findings"

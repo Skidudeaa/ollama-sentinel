@@ -315,7 +315,7 @@ class TestSuggestedAction:
         )
         action = suggested_action(stats)
         assert "critical" in action.lower()
-        assert "auth.py" in action
+        assert "2" in action
 
     def test_high_findings(self):
         stats = OverviewStats(
