@@ -1,5 +1,5 @@
 watch:
-  directory: /Users/thomasamosson/jan25/Noctober24_UNBLOCKED
+  directory: .
   recursive: true
   ignore_patterns:
   - '*.md'
@@ -53,6 +53,7 @@ memory:
   semantic_recall: true
 embedding:
   enabled: true
+  timeout_seconds: 120
   models:
     hot: qwen3-embedding:4b
     consolidation: qwen3-embedding:8b

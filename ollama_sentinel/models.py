@@ -181,12 +181,12 @@ class EmbeddingConfig(BaseModel):
         "hot": "qwen3-embedding:4b",
         **_NON_HOT_DEFAULTS,
     }
-    timeout_seconds: int = 30
-    """HTTP timeout for /api/embeddings calls. Default 30s covers natural
-    idle cold-load of qwen3-embedding:4b on M-series hardware with ~4.7x
-    margin (measured worst case on M2 Max after ~12 min idle: ~6.4s; best
-    case warm-page-cache: ~2s). Bump higher if EmbeddingUnavailable shows
-    up on the first review on slower disks."""
+    timeout_seconds: int = 120
+    """HTTP timeout for /api/embeddings calls. Default 120s covers fully-cold
+    loads where Ollama has fully evicted the model from VRAM and OS file-page
+    cache. Measured worst case observed in practice: ~81s on a fully-cold
+    qwen3-embedding:4b. Warm-path requests typically return in 50–200ms; this
+    ceiling only matters on the first request after long idle."""
 
     @field_validator("timeout_seconds")
     @classmethod
