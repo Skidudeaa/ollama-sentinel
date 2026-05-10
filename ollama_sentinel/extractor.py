@@ -1,10 +1,14 @@
 """
-Finding extractor — parse review markdown into structured Finding records.
+Finding extractor — validate or extract Finding records from review output.
 
-Sends a focused extraction prompt to the Ollama model and parses the
-JSON response into a list of Finding dataclass instances.
+Grounded path (default): the schema-constrained Ollama call returns pre-structured
+findings; ``validate_findings`` checks each one's ``verbatim_excerpt`` against the
+file's cited line range and drops mismatches.
+
+Legacy path (``--no-grounding``): regex-based extraction from free-form review
+markdown via ``extract_findings_legacy`` — pattern-matches without consulting the
+file, kept only as a debug-comparison escape hatch.
 """
-import json
 import logging
 import re
 from typing import List
@@ -14,57 +18,6 @@ from .violation_db import Finding
 log = logging.getLogger("ollama-sentinel")
 
 _REQUIRED_KEYS = {"line_start", "line_end", "category", "severity", "verbatim_excerpt", "description"}
-
-# Feature flag: set True to re-enable the regex fallback path
-# (_extract_from_markdown) which was removed in the reviewer-grounding
-# refactor. Currently False — the schema-constrained model output
-# replaces the old two-stage extraction pipeline.
-_USE_REGEX_FALLBACK = False
-
-
-def _strip_code_fences(text: str) -> str:
-    """Remove markdown code fences that LLMs often wrap around JSON."""
-    text = text.strip()
-    # Remove ```json ... ``` or ``` ... ```
-    m = re.match(r"^```(?:json)?\s*\n?(.*?)```\s*$", text, re.DOTALL)
-    if m:
-        return m.group(1).strip()
-    return text
-
-
-def _loads_findings_json(text: str):
-    """Parse finding JSON from model output.
-
-    Accepts either a raw array or an object containing a ``findings`` array.
-    If the model emits prose around JSON, tries to recover the first JSON-ish
-    array/object before falling back.
-    """
-    cleaned = _strip_code_fences(text)
-    candidates = [cleaned]
-
-    array_start = cleaned.find("[")
-    array_end = cleaned.rfind("]")
-    if array_start != -1 and array_end > array_start:
-        candidates.append(cleaned[array_start:array_end + 1])
-
-    object_start = cleaned.find("{")
-    object_end = cleaned.rfind("}")
-    if object_start != -1 and object_end > object_start:
-        candidates.append(cleaned[object_start:object_end + 1])
-
-    last_error = None
-    for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-        except (json.JSONDecodeError, TypeError) as e:
-            last_error = e
-            continue
-        if isinstance(parsed, dict) and isinstance(parsed.get("findings"), list):
-            return parsed["findings"]
-        return parsed
-    if last_error:
-        raise last_error
-    raise json.JSONDecodeError("No JSON object or array found", cleaned, 0)
 
 
 def _parse_finding(raw: dict, file_path: str) -> Finding | None:
@@ -155,10 +108,15 @@ def _validate_verbatim(finding: dict, file_content: str) -> bool:
     return excerpt in _normalise(slice_text)
 
 
-def _extract_from_markdown(review_text: str, file_path: str) -> List[Finding]:
-    """Regex fallback: extract findings from review markdown when LLM JSON fails.
+def extract_findings_legacy(review_text: str, file_path: str) -> List[Finding]:
+    """Regex-based extraction from free-form review markdown.
 
-    Looks for bullet points or numbered items that reference line numbers.
+    The pre-grounding extraction path: parses bullet points or numbered items
+    that reference line numbers, classifies severity and category by keyword
+    match. Pattern-matches without consulting the file under review, so it
+    cannot ground claims — but it's the only extraction path that works when
+    the schema-constrained output mode is disabled (e.g. via --no-grounding
+    for debug comparison). Returns Findings with empty ``verbatim_excerpt``.
     """
     findings: List[Finding] = []
     # Split into bullet/numbered items

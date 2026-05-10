@@ -103,21 +103,33 @@ def run(
         "--verbose",
         "-v",
         help="Enable verbose logging"
-    )
+    ),
+    no_grounding: bool = typer.Option(
+        False,
+        "--no-grounding",
+        help=(
+            "Debug-only: disable schema-constrained output and verbatim-excerpt "
+            "validation. Falls back to the legacy regex extractor on free-form "
+            "prose. Use only for comparing grounded vs ungrounded model output."
+        ),
+    ),
 ):
     """Run the Ollama Sentinel service."""
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+
     log.info(f"Ollama Sentinel v{__version__}")
-    
+
     config_file = pathlib.Path(config_path)
     if not config_file.exists():
         log.error(f"Configuration file not found: {config_file}")
         raise typer.Exit(code=1)
-    
+
     try:
-        sentinel = FileSentinel(config_file)
+        grounding_override = False if no_grounding else None
+        sentinel = FileSentinel(config_file, grounding_override=grounding_override)
+        if no_grounding:
+            log.warning("--no-grounding: schema-constrained output disabled; using legacy regex extractor")
         asyncio.run(sentinel.run())
     except KeyboardInterrupt:
         log.info("Stopped by user")
@@ -140,22 +152,35 @@ def review(
         "--model",
         "-m",
         help="Model role to use for review"
-    )
+    ),
+    no_grounding: bool = typer.Option(
+        False,
+        "--no-grounding",
+        help=(
+            "Debug-only: disable schema-constrained output and verbatim-excerpt "
+            "validation. Falls back to the legacy regex extractor on free-form "
+            "prose. Use only for comparing grounded vs ungrounded model output."
+        ),
+    ),
 ):
     """Manually review a single file."""
     config_file = pathlib.Path(config_path)
     if not config_file.exists():
         log.error(f"Configuration file not found: {config_file}")
         raise typer.Exit(code=1)
-    
+
     file_path = pathlib.Path(path).resolve()
-    
+
     if not file_path.is_file():
         log.error(f"File not found: {file_path}")
         raise typer.Exit(code=1)
-    
+
+    grounding_override = False if no_grounding else None
+    if no_grounding:
+        log.warning("--no-grounding: schema-constrained output disabled; using legacy regex extractor")
+
     async def run_review():
-        sentinel = FileSentinel(config_file)
+        sentinel = FileSentinel(config_file, grounding_override=grounding_override)
         file_change = FileChange(path=file_path, change_type=Change.modified)
         await sentinel.process_change(file_change, model_role=model)
         await sentinel.processor.close()

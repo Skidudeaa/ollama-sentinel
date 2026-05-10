@@ -100,6 +100,12 @@ class ProcessingConfig(BaseModel):
     max_concurrent_reviews: int = 3
     max_concurrent_chunks_per_file: int = 2
     git_diff_mode: bool = False
+    # When True (default), reviews use schema-constrained Ollama output with
+    # verbatim-excerpt validation. When False, falls back to the pre-grounding
+    # regex extractor on free-form prose — a debug-only escape hatch for
+    # comparing grounded vs ungrounded output. The CLI exposes this via
+    # `--no-grounding`.
+    grounding: bool = True
     # Legacy fields — kept as declared for back-compat; deprecated in favor of
     # OllamaModelConfig.context_window. Remove when no callers reference them.
     max_chars_per_chunk: int = 12000

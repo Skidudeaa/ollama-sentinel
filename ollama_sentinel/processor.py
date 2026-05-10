@@ -44,6 +44,16 @@ _REVIEW_SCHEMA = {
 }
 
 
+def _review_format(config) -> Optional[Union[str, Dict[str, Any]]]:
+    """Pick the Ollama ``format`` argument based on the grounding flag.
+
+    Returns ``_REVIEW_SCHEMA`` in grounded mode (default) and ``None`` when
+    ``--no-grounding`` has flipped ``config.processing.grounding`` off — the
+    model then emits free-form prose that the legacy regex extractor handles.
+    """
+    return _REVIEW_SCHEMA if config.processing.grounding else None
+
+
 def _is_retryable_ollama_error(exc: BaseException) -> bool:
     """Return True for transient Ollama HTTP errors worth retrying.
 
@@ -377,6 +387,7 @@ class FileProcessor:
             counter=self.counter,
             total_budget=self.total_budget,
             retriever=self.retriever,
+            grounding=self.config.processing.grounding,
         )
 
     async def _get_ranked_prior_violations(
@@ -484,12 +495,16 @@ class FileProcessor:
 
         return await asyncio.to_thread(_scan)
 
-    def _parse_review_response(self, raw: str) -> dict[str, Any]:
-        """Parse Ollama's JSON response into a structured review dict.
+    def _parse_review_response(self, raw: str, *, grounding: bool = True) -> dict[str, Any]:
+        """Parse Ollama's response into a structured review dict.
 
-        Returns a dict with ``summary`` (str) and ``findings`` (list[dict]).
-        Falls back to prose-only output with empty findings on parse failure.
+        In grounded mode (``grounding=True``), expects schema-conformant JSON
+        and falls back to prose-only output with empty findings on parse failure.
+        In ungrounded mode, treats ``raw`` as free-form prose — findings are
+        extracted downstream by the legacy regex path in ``watcher._process_file``.
         """
+        if not grounding:
+            return {"summary": raw, "findings": []}
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, dict) and "summary" in parsed and "findings" in parsed:
@@ -519,17 +534,17 @@ class FileProcessor:
         if file_change.diff is not None:
             prompt = await self.format_prompt(file_change, prior_violations=prior)
             raw = await self.ollama_client.generate_review(
-                model_role, prompt, response_format=_REVIEW_SCHEMA,
+                model_role, prompt, response_format=_review_format(self.config),
             )
-            return self._parse_review_response(raw)
+            return self._parse_review_response(raw, grounding=self.config.processing.grounding)
 
         content = file_change.content
         if not content:
             prompt = await self.format_prompt(file_change, prior_violations=prior)
             raw = await self.ollama_client.generate_review(
-                model_role, prompt, response_format=_REVIEW_SCHEMA,
+                model_role, prompt, response_format=_review_format(self.config),
             )
-            return self._parse_review_response(raw)
+            return self._parse_review_response(raw, grounding=self.config.processing.grounding)
 
         chunks = self.chunk_content(content, file_change.file_type)
 
@@ -538,9 +553,9 @@ class FileProcessor:
                 file_change, chunk_text=chunks[0], prior_violations=prior,
             )
             raw = await self.ollama_client.generate_review(
-                model_role, prompt, response_format=_REVIEW_SCHEMA,
+                model_role, prompt, response_format=_review_format(self.config),
             )
-            return self._parse_review_response(raw)
+            return self._parse_review_response(raw, grounding=self.config.processing.grounding)
 
         async def review_chunk(chunk_idx, total_chunks):
             violations = prior if chunk_idx == 0 else None
@@ -552,9 +567,9 @@ class FileProcessor:
                 prior_violations=violations,
             )
             raw = await self.ollama_client.generate_review(
-                model_role, prompt, response_format=_REVIEW_SCHEMA,
+                model_role, prompt, response_format=_review_format(self.config),
             )
-            return self._parse_review_response(raw)
+            return self._parse_review_response(raw, grounding=self.config.processing.grounding)
 
         max_concurrent_chunks = min(
             len(chunks), self.config.processing.max_concurrent_chunks_per_file,

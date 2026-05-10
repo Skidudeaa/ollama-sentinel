@@ -384,6 +384,16 @@ class TestMemoryConfigSemanticFields:
         assert cfg.semantic_recall is True
 
 
+class TestProcessingConfigGrounding:
+    def test_grounding_defaults_to_true(self):
+        cfg = ProcessingConfig()
+        assert cfg.grounding is True
+
+    def test_grounding_can_be_disabled(self):
+        cfg = ProcessingConfig(grounding=False)
+        assert cfg.grounding is False
+
+
 class TestProcessingConfigDeprecation:
     def test_legacy_fields_are_accepted_and_warn_once(self, caplog):
         # Reset the module-level flag so this test works in isolation.

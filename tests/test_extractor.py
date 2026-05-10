@@ -419,6 +419,28 @@ class TestRecipeInstructionOrdering:
             "INSTRUCTIONS section must appear before FILE section"
         )
 
+    async def test_instructions_omitted_when_grounding_disabled(self, sentinel_config, tmp_path):
+        """With grounding off, the INSTRUCTIONS section is dropped from the prompt.
+
+        The instruction references "the schema will reject findings without them",
+        which is a lie when no schema is enforced. Better to drop it entirely than
+        confuse the model with a fake constraint.
+        """
+        from ollama_sentinel.processor import FileProcessor, FileChange
+        from watchfiles import Change
+
+        source = tmp_path / "sample.py"
+        source.write_text("x = 1\n")
+
+        sentinel_config.processing.grounding = False
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified, content="x = 1\n")
+
+        prompt = await fp.format_prompt(fc)
+        assert "For each issue you flag, provide" not in prompt
+        assert "schema will reject" not in prompt
+        assert "FILE:" in prompt  # File section still present
+
 
 # ---------------------------------------------------------------------------
 # Fixtures needed by the test classes above

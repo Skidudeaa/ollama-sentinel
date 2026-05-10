@@ -5,13 +5,13 @@ import asyncio
 import logging
 import pathlib
 import time
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
 import pathspec
 from watchfiles import awatch, Change
 
 from .config import load_config
-from .extractor import validate_findings
+from .extractor import extract_findings_legacy, validate_findings
 from .models import SentinelConfig
 from .processor import FileChange, FileProcessor
 from .violation_db import ViolationDB
@@ -100,12 +100,15 @@ def _is_likely_binary(path: pathlib.Path, peek_bytes: int = 8192) -> bool:
 class FileSentinel:
     """Main sentinel class that watches for file changes and coordinates processing."""
     
-    def __init__(self, config_path: pathlib.Path):
+    def __init__(self, config_path: pathlib.Path, *, grounding_override: Optional[bool] = None):
         """
         Initialize the file sentinel.
-        
+
         Args:
             config_path: Path to configuration file
+            grounding_override: If not None, overrides the YAML's
+                ``processing.grounding`` value. Used by the CLI's
+                ``--no-grounding`` flag for ad-hoc debug runs.
         """
         self.config_path = config_path
         loaded = load_config(config_path)
@@ -114,6 +117,8 @@ class FileSentinel:
             raise ValueError(f"Failed to load configuration from {config_path}")
 
         self.config: SentinelConfig = loaded
+        if grounding_override is not None:
+            self.config.processing.grounding = grounding_override
 
         # Initialize violation memory if enabled
         self.violation_db = None
@@ -221,7 +226,9 @@ class FileSentinel:
             if self.violation_db:
                 try:
                     findings_list = review.get("findings", [])
+                    valid_findings: list = []
                     if findings_list:
+                        # Grounded path: verbatim-validate pre-structured findings.
                         file_content = file_change.content
                         if file_content is None:
                             try:
@@ -231,11 +238,15 @@ class FileSentinel:
                         valid_findings = await validate_findings(
                             findings_list, str(rel_path), file_content,
                         )
-                        if valid_findings:
-                            await asyncio.to_thread(
-                                self.violation_db.persist_findings, str(rel_path), valid_findings,
-                            )
-                            log.info(f"Persisted {len(valid_findings)} findings for {rel_path}")
+                    elif not self.config.processing.grounding:
+                        # Ungrounded path: regex-extract findings from free-form prose.
+                        summary_text = review.get("summary", "")
+                        valid_findings = extract_findings_legacy(summary_text, str(rel_path))
+                    if valid_findings:
+                        await asyncio.to_thread(
+                            self.violation_db.persist_findings, str(rel_path), valid_findings,
+                        )
+                        log.info(f"Persisted {len(valid_findings)} findings for {rel_path}")
                 except Exception as e:
                     log.warning(f"Finding persistence failed for {rel_path}: {e}")
 

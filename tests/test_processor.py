@@ -474,6 +474,71 @@ def _make_file_change(tmp_path, rel="src/app.py"):
     return FileChange(path=file_path, change_type=Change.modified)
 
 
+class TestNoGroundingMode:
+    """Tests for --no-grounding (config.processing.grounding=False) wiring."""
+
+    async def test_no_schema_sent_when_grounding_disabled(
+        self, sentinel_config, tmp_path, httpx_mock: HTTPXMock
+    ):
+        """In ungrounded mode, the Ollama payload omits any ``format`` key.
+
+        The grounded path sends ``format=_REVIEW_SCHEMA``; the ungrounded path
+        must send no format constraint so the model emits free-form prose.
+        """
+        source = tmp_path / "small.py"
+        source.write_text("print('hello')")
+
+        # Model returns free-form prose, not JSON.
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "Looks fine to me — no issues found."}},
+        )
+
+        sentinel_config.processing.grounding = False
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified)
+        try:
+            result = await fp.generate_review(fc)
+        finally:
+            await fp.ollama_client.close()
+
+        # Free-form prose becomes the summary; findings list is empty.
+        assert result["summary"] == "Looks fine to me — no issues found."
+        assert result["findings"] == []
+
+        # Critical: the request payload must NOT have a format key.
+        body = json.loads(httpx_mock.get_requests()[0].content)
+        assert "format" not in body, (
+            "ungrounded mode must omit the format key so Ollama doesn't constrain output"
+        )
+
+    async def test_schema_sent_when_grounding_enabled(
+        self, sentinel_config, tmp_path, httpx_mock: HTTPXMock
+    ):
+        """Symmetric check: grounded mode (default) sends the schema."""
+        source = tmp_path / "small.py"
+        source.write_text("print('hello')")
+
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": json.dumps({"summary": "ok", "findings": []})}},
+        )
+
+        # grounding defaults to True; no override needed.
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified)
+        try:
+            await fp.generate_review(fc)
+        finally:
+            await fp.ollama_client.close()
+
+        body = json.loads(httpx_mock.get_requests()[0].content)
+        assert "format" in body, "grounded mode must send a format schema"
+        assert isinstance(body["format"], dict), "format must be a JSON Schema dict"
+        assert "summary" in body["format"]["properties"]
+        assert "findings" in body["format"]["properties"]
+
+
 class TestSaveReview:
     """Tests for FileProcessor.save_review."""
 

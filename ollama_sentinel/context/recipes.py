@@ -56,10 +56,18 @@ async def build_review_context(
     counter: TokenCounter,
     total_budget: int,
     retriever: Retriever,
+    grounding: bool = True,
 ) -> str:
-    """Sentinel recipe — replaces the body of FileProcessor.format_prompt."""
-    sections: List[Section] = [
-        Section(
+    """Sentinel recipe — replaces the body of FileProcessor.format_prompt.
+
+    When ``grounding`` is True (default), prepends an INSTRUCTIONS section that
+    requires verbatim quoting and references the JSON schema's rejection
+    behaviour. When False, omits that section because no schema is enforced —
+    the instruction would be a lie and waste context.
+    """
+    sections: List[Section] = []
+    if grounding:
+        sections.append(Section(
             name="INSTRUCTIONS",
             items=[
                 "For each issue you flag, provide:\n"
@@ -72,15 +80,14 @@ async def build_review_context(
             ],
             priority=Priority.MUST_FIT,
             soft_budget=128,
-        ),
-        Section(
-            name=f"FILE: {file_rel_path}{chunk_info}",
-            items=[_render_file_block(content, diff, file_type)],
-            priority=Priority.MUST_FIT,
-            soft_budget=int(total_budget * 0.70),
-            truncate="tail",
-        ),
-    ]
+        ))
+    sections.append(Section(
+        name=f"FILE: {file_rel_path}{chunk_info}",
+        items=[_render_file_block(content, diff, file_type)],
+        priority=Priority.MUST_FIT,
+        soft_budget=int(total_budget * 0.70),
+        truncate="tail",
+    ))
     if prior_violations:
         violation_items = [
             ContextItem(

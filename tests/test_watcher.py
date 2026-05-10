@@ -53,6 +53,27 @@ def sentinel(tmp_path):
 # Config loading tests
 # ---------------------------------------------------------------------------
 
+class TestGroundingOverride:
+    """Tests for the FileSentinel grounding_override kwarg used by --no-grounding."""
+
+    def test_default_grounding_is_true(self, tmp_path):
+        config_path = _write_config(tmp_path)
+        sentinel = FileSentinel(config_path)
+        assert sentinel.config.processing.grounding is True
+
+    def test_override_to_false_flips_config(self, tmp_path):
+        config_path = _write_config(tmp_path)
+        sentinel = FileSentinel(config_path, grounding_override=False)
+        assert sentinel.config.processing.grounding is False
+
+    def test_override_none_preserves_yaml_value(self, tmp_path):
+        """An explicit None override is a no-op — YAML wins."""
+        config_path = _write_config(tmp_path)
+        sentinel = FileSentinel(config_path, grounding_override=None)
+        # YAML doesn't set grounding, so it defaults to True from the model.
+        assert sentinel.config.processing.grounding is True
+
+
 class TestConfigLoading:
     """Tests for config loading via FileSentinel.__init__."""
 
