@@ -9,22 +9,17 @@ import logging
 import re
 from typing import List
 
-from .processor import OllamaClient
 from .violation_db import Finding
 
 log = logging.getLogger("ollama-sentinel")
 
-_REQUIRED_KEYS = {"line_start", "line_end", "category", "severity", "description"}
+_REQUIRED_KEYS = {"line_start", "line_end", "category", "severity", "verbatim_excerpt", "description"}
 
-_EXTRACTION_PROMPT = (
-    "Extract code review findings from the text below as a JSON array. "
-    'Each finding: {{"line_start": int, "line_end": int, "category": str, '
-    '"severity": str, "description": str}}. '
-    "Categories: bug, security, performance, style, design. "
-    "Severities: critical, high, medium, low. "
-    "If no findings, return []. Return ONLY the JSON array.\n\n"
-    "REVIEW:\n{review_text}"
-)
+# Feature flag: set True to re-enable the regex fallback path
+# (_extract_from_markdown) which was removed in the reviewer-grounding
+# refactor. Currently False — the schema-constrained model output
+# replaces the old two-stage extraction pipeline.
+_USE_REGEX_FALLBACK = False
 
 
 def _strip_code_fences(text: str) -> str:
@@ -86,6 +81,7 @@ def _parse_finding(raw: dict, file_path: str) -> Finding | None:
             category=str(raw["category"]),
             severity=str(raw["severity"]),
             description=str(raw["description"]),
+            verbatim_excerpt=str(raw.get("verbatim_excerpt", "")),
         )
     except (ValueError, TypeError):
         return None
@@ -128,6 +124,35 @@ _CATEGORY_KEYWORDS = {
     "refactor": "design",
     "architecture": "design",
 }
+
+
+def _validate_verbatim(finding: dict, file_content: str) -> bool:
+    """Return True if the finding's verbatim_excerpt is found in the cited lines.
+
+    Slices ``file_content`` at the finding's ``line_start``..``line_end``,
+    normalises whitespace (collapse runs to single spaces, strip), and checks
+    that the finding's ``verbatim_excerpt`` (also whitespace-normalised) is
+    contained in that slice.
+    """
+    lines = file_content.splitlines()
+    try:
+        start = max(0, int(finding.get("line_start", 0)) - 1)
+        end = int(finding.get("line_end", 0))
+    except (ValueError, TypeError):
+        return False
+    if start >= len(lines):
+        return False
+    end = min(end, len(lines))
+    slice_text = "\n".join(lines[start:end])
+
+    def _normalise(text: str) -> str:
+        import re as _re
+        return _re.sub(r"\s+", " ", text).strip()
+
+    excerpt = _normalise(finding.get("verbatim_excerpt", ""))
+    if not excerpt:
+        return False
+    return excerpt in _normalise(slice_text)
 
 
 def _extract_from_markdown(review_text: str, file_path: str) -> List[Finding]:
@@ -177,56 +202,38 @@ def _extract_from_markdown(review_text: str, file_path: str) -> List[Finding]:
     return findings
 
 
-async def extract_findings(
-    review_text: str,
+async def validate_findings(
+    findings: list[dict],
     file_path: str,
-    ollama_client: OllamaClient,
-    model_role: str = "default",
+    file_content: str,
 ) -> List[Finding]:
-    """Extract structured findings from free-form review text.
+    """Validate pre-structured findings from the schema-constrained review.
 
-    Primary: sends a focused extraction prompt to the Ollama model and parses
-    the JSON response. Fallback: regex-based extraction from the original
-    review markdown when the LLM doesn't produce valid JSON.
+    Each finding is checked against the file content via ``_validate_verbatim``.
+    Findings whose ``verbatim_excerpt`` doesn't appear in the cited line range
+    are logged as WARNING and dropped. Other findings in the same batch still
+    persist.
 
-    Returns an empty list on complete failure (never raises).
+    Args:
+        findings: A list of dicts with keys matching ``_REQUIRED_KEYS``.
+        file_path: Relative path of the reviewed file (for Finding records).
+        file_content: Full file text for verbatim-excerpt checks.
+
+    Returns a list of valid ``Finding`` dataclass instances (never raises).
     """
-    prompt = _EXTRACTION_PROMPT.format(review_text=review_text)
-
-    try:
-        response = await ollama_client.generate_review(
-            model_role,
-            prompt,
-            response_format="json",
-        )
-    except Exception:
-        log.warning("Ollama API error during finding extraction; trying regex fallback")
-        return _extract_from_markdown(review_text, file_path)
-
-
-    try:
-        parsed = _loads_findings_json(response)
-    except (json.JSONDecodeError, TypeError):
-        log.warning("Malformed JSON from extraction model; trying regex fallback")
-        return _extract_from_markdown(review_text, file_path)
-
-    if not isinstance(parsed, list):
-        log.warning("Extraction response is not a JSON array; trying regex fallback")
-        return _extract_from_markdown(review_text, file_path)
-
-    findings: List[Finding] = []
-    for entry in parsed:
+    valid: List[Finding] = []
+    for entry in findings:
+        if not _validate_verbatim(entry, file_content):
+            log.warning(
+                "verbatim_excerpt not found in cited range %s:%s-%s; dropping finding",
+                file_path,
+                entry.get("line_start"),
+                entry.get("line_end"),
+            )
+            continue
         finding = _parse_finding(entry, file_path)
         if finding is not None:
-            findings.append(finding)
+            valid.append(finding)
         else:
             log.warning("Skipping malformed finding entry: %s", entry)
-
-    # If LLM produced empty results but review has content, try regex too
-    if not findings and len(review_text) > 100:
-        regex_findings = _extract_from_markdown(review_text, file_path)
-        if regex_findings:
-            log.info("LLM extraction empty; regex fallback found %d findings", len(regex_findings))
-            return regex_findings
-
-    return findings
+    return valid

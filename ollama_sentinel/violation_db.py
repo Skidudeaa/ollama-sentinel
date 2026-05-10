@@ -17,6 +17,7 @@ class Finding:
     category: str    # e.g., "bug", "security", "performance", "style"
     severity: str    # "critical", "high", "medium", "low"
     description: str
+    verbatim_excerpt: str = ""
 
 
 class ViolationDB:
