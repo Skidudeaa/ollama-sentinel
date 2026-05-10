@@ -78,10 +78,9 @@ def test_slop_finding_is_dropped_with_warning(
     combined = " ".join(r.getMessage() for r in warnings)
     assert "synthetic.py" in combined, f"{case_id}: WARNING must name the file"
     assert "1-1" in combined, f"{case_id}: WARNING must name the line range"
-    # The excerpt is NOT included in the current Step-1 log message; see the
-    # report at the end of this PR for the spec deviation. This test asserts
-    # the implemented behaviour (file + range) so it stays green; the excerpt
-    # gap is tracked separately.
+    assert finding["verbatim_excerpt"] in combined, (
+        f"{case_id}: WARNING must include the rejected excerpt"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +159,10 @@ def test_mixed_batch_preserves_valid_finding(caplog):
     warnings = [
         r.getMessage()
         for r in caplog.records
-        if r.levelname == "WARNING" and "verbatim_excerpt not found" in r.getMessage()
+        if r.levelname == "WARNING" and "not found in cited range" in r.getMessage()
     ]
     assert warnings, "expected WARNING for the dropped slop finding"
     assert any("mixed.py" in m for m in warnings)
+    assert any("MAGIC = 42" in m for m in warnings), (
+        "WARNING must include the rejected excerpt"
+    )

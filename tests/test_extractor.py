@@ -199,8 +199,8 @@ class TestValidateFindingsVerbatimFailure:
         assert result[1].category == "performance"
 
         # A WARNING was logged for the dropped finding
-        warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
-        assert any("verbatim_excerpt not found" in m for m in warning_messages)
+        warning_messages = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("not found in cited range" in m for m in warning_messages)
 
     def test_all_mismatched_produces_empty(self, caplog):
         """When every finding fails verbatim, the result is an empty list."""

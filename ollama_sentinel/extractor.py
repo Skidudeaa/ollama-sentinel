@@ -225,7 +225,8 @@ async def validate_findings(
     for entry in findings:
         if not _validate_verbatim(entry, file_content):
             log.warning(
-                "verbatim_excerpt not found in cited range %s:%s-%s; dropping finding",
+                "verbatim_excerpt %r not found in cited range %s:%s-%s; dropping finding",
+                entry.get("verbatim_excerpt"),
                 file_path,
                 entry.get("line_start"),
                 entry.get("line_end"),
