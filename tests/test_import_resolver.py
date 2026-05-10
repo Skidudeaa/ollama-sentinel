@@ -1,4 +1,4 @@
-"""Tests for research_agent.tools.import_resolver."""
+"""Tests for ollama_sentinel.context.import_resolver."""
 from __future__ import annotations
 
 import textwrap
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from research_agent.tools.import_resolver import ImportResolver
+from ollama_sentinel.context.import_resolver import ImportResolver
 
 
 # ---------------------------------------------------------------------------

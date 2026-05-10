@@ -19,7 +19,7 @@ from research_agent.tools.code_context import CodeSearchTool
 from research_agent.tools.memory import EnhancedMemoryStore, WebPage, SearchQuery
 from research_agent.tools.synthesis import SynthesisTool
 from research_agent.tools.verification import VerificationTool
-from research_agent.tools.import_resolver import ImportResolver
+from ollama_sentinel.context.import_resolver import ImportResolver
 from research_agent.utils.cache import Cache
 from research_agent.core.models import (
     ResearchSession, ContentItem, ImpactAnalysis, ImpactItem,

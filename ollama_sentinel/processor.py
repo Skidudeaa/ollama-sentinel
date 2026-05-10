@@ -14,6 +14,7 @@ import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from watchfiles import Change
 
+from .context.import_resolver import ImportResolver
 from .models import OutputFormat, SentinelConfig
 from .utils import generate_diff, safe_read, save_compressed
 
@@ -250,14 +251,12 @@ class FileProcessor:
                 self.embedder = None
                 self.retriever = NullRetriever()
 
-        # Structural recall: lazy AST-based import resolver to surface findings
-        # from a file's 1-hop import neighbors. The resolver lives in
-        # research_agent.tools but only depends on stdlib + research_agent.core.logging,
-        # so importing it does not pull in the [research] extras.
-        self._import_resolver = None
+        # Structural recall: AST-based import resolver to surface findings
+        # from a file's 1-hop import neighbors. Now lives in
+        # ollama_sentinel.context — no [research] extras dependency.
+        self._import_resolver: Optional[ImportResolver] = None
         if config.memory.structural_recall:
             try:
-                from research_agent.tools.import_resolver import ImportResolver
                 self._import_resolver = ImportResolver(str(self.watch_dir))
             except Exception as e:
                 log.warning(
