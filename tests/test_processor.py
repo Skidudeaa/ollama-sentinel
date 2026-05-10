@@ -364,9 +364,13 @@ class TestFileProcessorGenerateReview:
         source = tmp_path / "small.py"
         source.write_text("print('hello')")
 
+        response_json = json.dumps({
+            "summary": "Single chunk review.",
+            "findings": [],
+        })
         httpx_mock.add_response(
             url=OLLAMA_CHAT_URL,
-            json={"message": {"content": "Single chunk review."}},
+            json={"message": {"content": response_json}},
         )
 
         fp = FileProcessor(sentinel_config)
@@ -376,7 +380,8 @@ class TestFileProcessorGenerateReview:
         finally:
             await fp.ollama_client.close()
 
-        assert result == "Single chunk review."
+        assert result["summary"] == "Single chunk review."
+        assert result["findings"] == []
         assert len(httpx_mock.get_requests()) == 1
 
     @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
@@ -392,9 +397,13 @@ class TestFileProcessorGenerateReview:
 
         # Register more responses than needed; the marker above permits leftovers.
         for i in range(10):
+            chunk_response = json.dumps({
+                "summary": f"Review chunk {i}",
+                "findings": [],
+            })
             httpx_mock.add_response(
                 url=OLLAMA_CHAT_URL,
-                json={"message": {"content": f"Review chunk {i}"}},
+                json={"message": {"content": chunk_response}},
             )
 
         fp = FileProcessor(small_chunk_config)
@@ -421,9 +430,10 @@ class TestFileProcessorGenerateReview:
         assert request_count > 1, "Expected multiple API calls for multi-chunk content"
 
         # The combined review should contain the header and part markers.
-        assert "Combined Review" in result
-        assert "## Part 1/" in result
-        assert "## Part 2/" in result
+        summary = result["summary"]
+        assert "Combined Review" in summary
+        assert "## Part 1/" in summary
+        assert "## Part 2/" in summary
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +486,7 @@ class TestSaveReview:
         fake_now = datetime.datetime(2025, 3, 15, 10, 30, 45)
         with patch("ollama_sentinel.processor.datetime") as mock_dt:
             mock_dt.datetime.now.return_value = fake_now
-            result_path = fp.save_review(fc, "Great code!")
+            result_path = fp.save_review(fc, {"summary": "Great code!", "findings": []})
 
         output_dir = tmp_path / ".ollama_reviews" / "src"
         # Versioned file
@@ -502,7 +512,7 @@ class TestSaveReview:
         for ts in timestamps:
             with patch("ollama_sentinel.processor.datetime") as mock_dt:
                 mock_dt.datetime.now.return_value = ts
-                fp.save_review(fc, f"Review at {ts}")
+                fp.save_review(fc, {"summary": f"Review at {ts}", "findings": []})
 
         output_dir = tmp_path / ".ollama_reviews" / "src"
         versioned_files = sorted(
@@ -522,7 +532,7 @@ class TestSaveReview:
         for ts in timestamps:
             with patch("ollama_sentinel.processor.datetime") as mock_dt:
                 mock_dt.datetime.now.return_value = ts
-                fp.save_review(fc, f"Review at {ts}")
+                fp.save_review(fc, {"summary": f"Review at {ts}", "findings": []})
 
         output_dir = tmp_path / ".ollama_reviews" / "src"
         versioned_files = sorted(output_dir.glob("app_*.md"))
@@ -543,7 +553,7 @@ class TestSaveReview:
         fake_now = datetime.datetime(2025, 6, 1, 12, 0, 0)
         with patch("ollama_sentinel.processor.datetime") as mock_dt:
             mock_dt.datetime.now.return_value = fake_now
-            fp.save_review(fc, "JSON review content")
+            fp.save_review(fc, {"summary": "JSON review content", "findings": []})
 
         output_dir = tmp_path / ".ollama_reviews" / "src"
         latest = output_dir / "app.json"
@@ -560,7 +570,7 @@ class TestSaveReview:
         fp = FileProcessor(cfg)
         fc = _make_file_change(tmp_path)
 
-        fp.save_review(fc, "No history review")
+        fp.save_review(fc, {"summary": "No history review", "findings": []})
 
         output_dir = tmp_path / ".ollama_reviews" / "src"
         latest = output_dir / "app.md"
@@ -581,7 +591,7 @@ class TestSaveReview:
         fake_now = datetime.datetime(2025, 1, 1, 0, 0, 0)
         with patch("ollama_sentinel.processor.datetime") as mock_dt:
             mock_dt.datetime.now.return_value = fake_now
-            result_path = fp.save_review(fc, "Nested review")
+            result_path = fp.save_review(fc, {"summary": "Nested review", "findings": []})
 
         assert result_path.exists()
         assert result_path.read_text() == "Nested review"

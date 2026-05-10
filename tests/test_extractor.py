@@ -1,371 +1,447 @@
-"""Tests for ollama_sentinel.extractor — finding extraction from review text."""
-import json
-
+"""Tests for ollama_sentinel.extractor — finding validation from schema output."""
 import pytest
-from pytest_httpx import HTTPXMock
-from tenacity import wait_none
 
-from ollama_sentinel.extractor import extract_findings
-from ollama_sentinel.models import OllamaConfig, OllamaModelConfig
-from ollama_sentinel.processor import OllamaClient
+from ollama_sentinel.extractor import (
+    _validate_verbatim,
+    validate_findings,
+)
 from ollama_sentinel.violation_db import Finding
 
 
-OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
-
-
-@pytest.fixture
-def ollama_config():
-    """Minimal Ollama config dict matching what OllamaClient expects."""
-    return OllamaConfig(
-        host="http://localhost:11434",
-        models={
-            "default": OllamaModelConfig(
-                name="test-model", system_prompt="Review code."
-            ),
-        },
-    ).model_dump()
-
-
 # ---------------------------------------------------------------------------
-# Happy-path tests
+# _validate_verbatim tests
 # ---------------------------------------------------------------------------
 
 
-class TestExtractFindingsHappyPath:
-    """Tests for well-formed extraction results."""
+class TestValidateVerbatim:
+    """Tests for the _validate_verbatim helper."""
 
-    async def test_valid_json_array_with_three_findings(
-        self, ollama_config, httpx_mock: HTTPXMock
-    ):
-        """A valid JSON array with 3 findings produces 3 Finding objects."""
-        findings_json = json.dumps([
+    def test_exact_match(self):
+        """A verbatim excerpt that matches the cited lines passes."""
+        content = "line one\nline two\nline three\n"
+        finding = {
+            "line_start": 2,
+            "line_end": 3,
+            "verbatim_excerpt": "line two\nline three",
+        }
+        assert _validate_verbatim(finding, content) is True
+
+    def test_excerpt_within_normalised_whitespace(self):
+        """Whitespace-normalised excerpt within whitespace-normalised slice passes."""
+        content = "def  foo():\n    return  42\n"
+        finding = {
+            "line_start": 1,
+            "line_end": 2,
+            "verbatim_excerpt": "def foo():   return 42",
+        }
+        assert _validate_verbatim(finding, content) is True
+
+    def test_excerpt_not_found(self):
+        """An excerpt that does not appear in the cited lines fails."""
+        content = "line one\nline two\nline three\n"
+        finding = {
+            "line_start": 2,
+            "line_end": 2,
+            "verbatim_excerpt": "line three",
+        }
+        assert _validate_verbatim(finding, content) is False
+
+    def test_empty_excerpt_fails(self):
+        """An empty verbatim_excerpt always fails."""
+        content = "line one\nline two\n"
+        finding = {
+            "line_start": 1,
+            "line_end": 2,
+            "verbatim_excerpt": "",
+        }
+        assert _validate_verbatim(finding, content) is False
+
+    def test_line_start_out_of_range(self):
+        """line_start beyond the file length returns False."""
+        content = "only one line\n"
+        finding = {
+            "line_start": 10,
+            "line_end": 10,
+            "verbatim_excerpt": "anything",
+        }
+        assert _validate_verbatim(finding, content) is False
+
+    def test_non_integer_lines(self):
+        """Non-integer line values return False without crashing."""
+        content = "some\nlines\n"
+        finding = {
+            "line_start": "abc",
+            "line_end": "def",
+            "verbatim_excerpt": "some",
+        }
+        assert _validate_verbatim(finding, content) is False
+
+
+# ---------------------------------------------------------------------------
+# validate_findings — happy path
+# ---------------------------------------------------------------------------
+
+
+class TestValidateFindingsHappyPath:
+    """Tests for well-formed findings that pass verbatim validation."""
+
+    def test_single_valid_finding(self):
+        """A single valid finding with matching verbatim_excerpt returns one Finding."""
+        findings = [
             {
-                "line_start": 10,
-                "line_end": 12,
+                "line_start": 1,
+                "line_end": 1,
                 "category": "bug",
                 "severity": "high",
-                "description": "Null pointer dereference",
+                "verbatim_excerpt": "x = None",
+                "description": "Null pointer risk",
             },
-            {
-                "line_start": 25,
-                "line_end": 25,
-                "category": "style",
-                "severity": "low",
-                "description": "Missing docstring",
-            },
-            {
-                "line_start": 40,
-                "line_end": 45,
-                "category": "security",
-                "severity": "critical",
-                "description": "SQL injection via string format",
-            },
-        ])
+        ]
+        content = "x = None\n"
+        import asyncio
+        result = asyncio.run(validate_findings(findings, "app.py", content))
 
-        httpx_mock.add_response(
-            url=OLLAMA_CHAT_URL,
-            json={"message": {"content": findings_json}},
-        )
+        assert len(result) == 1
+        assert isinstance(result[0], Finding)
+        assert result[0].file_path == "app.py"
+        assert result[0].category == "bug"
+        assert result[0].severity == "high"
+        assert result[0].verbatim_excerpt == "x = None"
+        assert result[0].description == "Null pointer risk"
 
-        client = OllamaClient(ollama_config)
-        try:
-            results = await extract_findings(
-                review_text="some review text",
-                file_path="src/app.py",
-                ollama_client=client,
-            )
-        finally:
-            await client.close()
-
-        assert len(results) == 3
-        assert all(isinstance(f, Finding) for f in results)
-
-        # Verify file_path is filled in from the parameter, not the JSON
-        assert all(f.file_path == "src/app.py" for f in results)
-
-        # Spot-check individual findings
-        assert results[0].category == "bug"
-        assert results[0].severity == "high"
-        assert results[0].line_start == 10
-        assert results[0].line_end == 12
-        assert results[0].description == "Null pointer dereference"
-
-        assert results[2].category == "security"
-        assert results[2].severity == "critical"
-
-    async def test_empty_json_array_returns_empty_list(
-        self, ollama_config, httpx_mock: HTTPXMock
-    ):
-        """Model returning '[]' produces an empty list."""
-        httpx_mock.add_response(
-            url=OLLAMA_CHAT_URL,
-            json={"message": {"content": "[]"}},
-        )
-
-        client = OllamaClient(ollama_config)
-        try:
-            results = await extract_findings(
-                review_text="clean code, no issues",
-                file_path="src/clean.py",
-                ollama_client=client,
-            )
-        finally:
-            await client.close()
-
-        assert results == []
-
-    async def test_json_wrapped_in_code_fences(
-        self, ollama_config, httpx_mock: HTTPXMock
-    ):
-        """Model returning JSON inside ```json ... ``` fences still parses."""
-        inner = json.dumps([
+    def test_multiple_valid_findings_all_pass(self):
+        """Multiple findings whose excerpts match all return as Finding objects."""
+        findings = [
             {
                 "line_start": 1,
                 "line_end": 1,
                 "category": "style",
                 "severity": "low",
+                "verbatim_excerpt": "x = 1",
                 "description": "Trailing whitespace",
             },
-        ])
-        wrapped = f"```json\n{inner}\n```"
-
-        httpx_mock.add_response(
-            url=OLLAMA_CHAT_URL,
-            json={"message": {"content": wrapped}},
-        )
-
-        client = OllamaClient(ollama_config)
-        try:
-            results = await extract_findings(
-                review_text="review text",
-                file_path="src/fmt.py",
-                ollama_client=client,
-            )
-        finally:
-            await client.close()
-
-        assert len(results) == 1
-        assert results[0].description == "Trailing whitespace"
-
-    async def test_object_wrapped_findings_array(
-        self, ollama_config, httpx_mock: HTTPXMock
-    ):
-        """Model returning {"findings": [...]} is accepted."""
-        response_json = json.dumps({
-            "findings": [
-                {
-                    "line_start": 7,
-                    "line_end": 9,
-                    "category": "bug",
-                    "severity": "medium",
-                    "description": "Bounds check is missing",
-                },
-            ],
-        })
-
-        httpx_mock.add_response(
-            url=OLLAMA_CHAT_URL,
-            json={"message": {"content": response_json}},
-        )
-
-        client = OllamaClient(ollama_config)
-        try:
-            results = await extract_findings(
-                review_text="review text",
-                file_path="src/bounds.py",
-                ollama_client=client,
-            )
-        finally:
-            await client.close()
-
-        assert len(results) == 1
-        assert results[0].line_start == 7
-        request_body = json.loads(httpx_mock.get_requests()[0].content)
-        assert request_body["format"] == "json"
-
-
-# ---------------------------------------------------------------------------
-# Edge-case tests
-# ---------------------------------------------------------------------------
-
-
-class TestExtractFindingsEdgeCases:
-    """Tests for malformed or partial responses."""
-
-    async def test_malformed_json_returns_empty_list(
-        self, ollama_config, httpx_mock: HTTPXMock
-    ):
-        """Completely invalid JSON returns an empty list, no crash."""
-        httpx_mock.add_response(
-            url=OLLAMA_CHAT_URL,
-            json={"message": {"content": "This is not JSON at all {{{"}},
-        )
-
-        client = OllamaClient(ollama_config)
-        try:
-            results = await extract_findings(
-                review_text="review text",
-                file_path="src/bad.py",
-                ollama_client=client,
-            )
-        finally:
-            await client.close()
-
-        assert results == []
-
-    async def test_missing_fields_skips_bad_entries(
-        self, ollama_config, httpx_mock: HTTPXMock
-    ):
-        """Entries missing required fields are skipped; valid ones are kept."""
-        findings_json = json.dumps([
             {
-                # Valid entry
+                "line_start": 3,
+                "line_end": 5,
+                "category": "performance",
+                "severity": "medium",
+                "verbatim_excerpt": "for i in range",
+                "description": "Use comprehension",
+            },
+        ]
+        content = "x = 1\ny = 2\nfor i in range(10):\n    pass\nz = 3\n"
+        import asyncio
+        result = asyncio.run(validate_findings(findings, "mod.py", content))
+
+        assert len(result) == 2
+        assert result[0].category == "style"
+        assert result[1].category == "performance"
+
+    def test_empty_findings_list(self):
+        """An empty findings list produces an empty result list."""
+        import asyncio
+        result = asyncio.run(validate_findings([], "clean.py", "any content"))
+        assert result == []
+
+    def test_finding_with_no_findings_but_prose_persisted(self):
+        """findings: [] persists no findings (tested via validate_findings returning [])."""
+        import asyncio
+        result = asyncio.run(validate_findings([], "some.py", "content"))
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# validate_findings — verbatim failure path
+# ---------------------------------------------------------------------------
+
+
+class TestValidateFindingsVerbatimFailure:
+    """Tests where findings fail the verbatim check."""
+
+    def test_mismatched_verbatim_is_dropped_with_warning(self, caplog):
+        """A finding whose verbatim_excerpt doesn't match is dropped with WARNING;
+        other valid findings in the same batch still pass."""
+        import asyncio
+        findings = [
+            {
+                "line_start": 1,
+                "line_end": 1,
+                "category": "bug",
+                "severity": "high",
+                "verbatim_excerpt": "x = None",
+                "description": "Null pointer risk",
+            },
+            {
+                "line_start": 3,
+                "line_end": 3,
+                "category": "style",
+                "severity": "low",
+                "verbatim_excerpt": "bad line",
+                "description": "Does not match",
+            },
+            {
                 "line_start": 5,
                 "line_end": 5,
+                "category": "performance",
+                "severity": "medium",
+                "verbatim_excerpt": "quick_sort(data)",
+                "description": "Use built-in sorted",
+            },
+        ]
+        content = "x = None\ny = 2\nz = 3\nw = 4\nquick_sort(data)\n"
+
+        with caplog.at_level("WARNING"):
+            result = asyncio.run(validate_findings(findings, "test.py", content))
+
+        # Only the valid findings survive
+        assert len(result) == 2
+        assert result[0].category == "bug"
+        assert result[1].category == "performance"
+
+        # A WARNING was logged for the dropped finding
+        warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        assert any("verbatim_excerpt not found" in m for m in warning_messages)
+
+    def test_all_mismatched_produces_empty(self, caplog):
+        """When every finding fails verbatim, the result is an empty list."""
+        import asyncio
+        findings = [
+            {
+                "line_start": 1,
+                "line_end": 1,
+                "category": "bug",
+                "severity": "high",
+                "verbatim_excerpt": "nonexistent",
+                "description": "Never in file",
+            },
+        ]
+        content = "actual content\n"
+
+        with caplog.at_level("WARNING"):
+            result = asyncio.run(validate_findings(findings, "fake.py", content))
+
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# validate_findings — malformed entries
+# ---------------------------------------------------------------------------
+
+
+class TestValidateFindingsMalformed:
+    """Tests for entries with missing or invalid fields."""
+
+    def test_missing_required_keys_skipped(self):
+        """Entries missing required keys like severity are skipped; valid ones pass."""
+        import asyncio
+        findings = [
+            {
+                "line_start": 1,
+                "line_end": 1,
                 "category": "bug",
                 "severity": "medium",
+                "verbatim_excerpt": "off_by_one(items)",
                 "description": "Off-by-one error",
             },
             {
-                # Missing 'severity' and 'description'
-                "line_start": 20,
-                "line_end": 22,
+                # Missing severity and verbatim_excerpt
+                "line_start": 2,
+                "line_end": 2,
                 "category": "performance",
-            },
-            {
-                # Missing everything except description
                 "description": "Orphan finding",
             },
             {
-                # Valid entry
-                "line_start": 30,
-                "line_end": 35,
+                "line_start": 3,
+                "line_end": 8,
                 "category": "design",
                 "severity": "low",
+                "verbatim_excerpt": "def process(self",
                 "description": "Consider extracting a method",
             },
-        ])
-
-        httpx_mock.add_response(
-            url=OLLAMA_CHAT_URL,
-            json={"message": {"content": findings_json}},
+        ]
+        content = (
+            "off_by_one(items)\n"
+            "extra line\n"
+            "def process(self):\n"
+            "    pass\n"
+            "    pass\n"
+            "    pass\n"
+            "    pass\n"
+            "    pass\n"
+            "    pass\n"
         )
 
-        client = OllamaClient(ollama_config)
+        result = asyncio.run(validate_findings(findings, "mixed.py", content))
+
+        # The middle entry (finding 2) lacks severity and verbatim_excerpt,
+        # so _parse_finding rejects it because _REQUIRED_KEYS is not satisfied.
+        assert len(result) == 2
+        assert result[0].description == "Off-by-one error"
+        assert result[1].description == "Consider extracting a method"
+
+
+# ---------------------------------------------------------------------------
+# Schema failure fallback tests (processor-level)
+# ---------------------------------------------------------------------------
+
+
+class TestParseReviewResponse:
+    """Tests for FileProcessor._parse_review_response via generate_review."""
+
+    async def test_schema_conformant_response(self, sentinel_config, tmp_path, httpx_mock):
+        """A schema-conformant model response with one valid finding round-trips."""
+        from ollama_sentinel.processor import FileProcessor, FileChange
+        from watchfiles import Change
+        import json
+
+        source = tmp_path / "app.py"
+        source.write_text("x = None\n")
+
+        response_data = {
+            "summary": "Found one issue.",
+            "findings": [
+                {
+                    "line_start": 1,
+                    "line_end": 1,
+                    "category": "bug",
+                    "severity": "high",
+                    "verbatim_excerpt": "x = None",
+                    "description": "Null pointer risk",
+                },
+            ],
+        }
+        httpx_mock.add_response(
+            url="http://localhost:11434/api/chat",
+            json={"message": {"content": json.dumps(response_data)}},
+        )
+
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified)
         try:
-            results = await extract_findings(
-                review_text="review text",
-                file_path="src/mixed.py",
-                ollama_client=client,
-            )
+            result = await fp.generate_review(fc)
         finally:
-            await client.close()
+            await fp.ollama_client.close()
 
-        # Only 2 valid entries should survive
-        assert len(results) == 2
-        assert results[0].description == "Off-by-one error"
-        assert results[1].description == "Consider extracting a method"
-        assert all(f.file_path == "src/mixed.py" for f in results)
+        assert result["summary"] == "Found one issue."
+        assert len(result["findings"]) == 1
+        assert result["findings"][0]["verbatim_excerpt"] == "x = None"
 
-
-# ---------------------------------------------------------------------------
-# Error-path tests
-# ---------------------------------------------------------------------------
-
-
-class TestExtractFindingsErrors:
-    """Tests for API and network errors."""
-
-    async def test_http_500_exhausts_retries_returns_empty(
-        self, ollama_config, httpx_mock: HTTPXMock
+    async def test_empty_findings_produces_prose_no_findings(
+        self, sentinel_config, tmp_path, httpx_mock, caplog
     ):
-        """HTTP 500 on all 5 retry attempts results in an empty list."""
-        # The retry decorator does stop_after_attempt(5), so queue 5 failures.
-        for _ in range(5):
-            httpx_mock.add_response(url=OLLAMA_CHAT_URL, status_code=500)
+        """A response with findings: [] persists no findings, writes prose, no warnings."""
+        from ollama_sentinel.processor import FileProcessor, FileChange
+        from watchfiles import Change
+        import json
 
-        client = OllamaClient(ollama_config)
-        # Disable wait between retries for fast test execution.
-        # The @retry decorator is on generate_with_model (the HTTP layer).
-        client.generate_with_model.retry.wait = wait_none()
-        try:
-            results = await extract_findings(
-                review_text="review text",
-                file_path="src/fail.py",
-                ollama_client=client,
-            )
-        finally:
-            await client.close()
+        source = tmp_path / "clean.py"
+        source.write_text("print('hello')\n")
 
-        assert results == []
-        assert len(httpx_mock.get_requests()) == 5
-
-
-# ---------------------------------------------------------------------------
-# Regex fallback tests
-# ---------------------------------------------------------------------------
-
-from ollama_sentinel.extractor import _extract_from_markdown
-
-
-class TestRegexFallback:
-    """Tests for the regex-based markdown fallback extractor."""
-
-    def test_extracts_from_bullet_points_with_line_refs(self):
-        review = """## Code Review
-
-- **Line 42**: Null pointer dereference — `user` may be None here
-- **Line 15-20**: SQL injection vulnerability via string formatting
-- **Line 88**: Minor style issue — consider renaming variable
-"""
-        findings = _extract_from_markdown(review, "app.py")
-        assert len(findings) == 3
-        assert findings[0].line_start == 42
-        assert findings[0].file_path == "app.py"
-        assert findings[1].line_start == 15
-        assert findings[1].line_end == 20
-        assert findings[1].category == "security"
-
-    def test_extracts_from_numbered_list(self):
-        review = """1. Line 10: Bug — off-by-one error in loop condition
-2. Line 30: Performance issue — this runs in O(n^2)
-3. No line reference here, should be skipped
-"""
-        findings = _extract_from_markdown(review, "x.py")
-        assert len(findings) == 2
-        assert findings[0].line_start == 10
-        assert findings[0].category == "bug"
-        assert findings[1].category == "performance"
-
-    def test_no_line_references_returns_empty(self):
-        review = "This code looks great! No issues found."
-        findings = _extract_from_markdown(review, "clean.py")
-        assert findings == []
-
-    def test_severity_detection(self):
-        review = """- Line 5: Critical security vulnerability — SQL injection
-- Line 10: Minor nit — trailing whitespace
-"""
-        findings = _extract_from_markdown(review, "a.py")
-        assert findings[0].severity == "critical"
-        assert findings[1].severity == "low"
-
-    async def test_fallback_used_on_malformed_json(self, ollama_config, httpx_mock: HTTPXMock):
-        """When LLM returns garbage, regex fallback extracts from original review."""
-        review_text = """## Review
-- Line 42: Bug — possible null pointer
-- Line 88: Style — rename this variable
-"""
+        response_data = {
+            "summary": "Clean code, no issues.",
+            "findings": [],
+        }
         httpx_mock.add_response(
-            url=OLLAMA_CHAT_URL,
-            json={"message": {"content": "Sorry, I can't produce JSON"}},
+            url="http://localhost:11434/api/chat",
+            json={"message": {"content": json.dumps(response_data)}},
         )
-        client = OllamaClient(ollama_config)
+
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified)
         try:
-            results = await extract_findings(review_text, "app.py", client)
+            result = await fp.generate_review(fc)
         finally:
-            await client.close()
-        # Regex fallback should find the 2 items from the original review
-        assert len(results) == 2
-        assert results[0].line_start == 42
+            await fp.ollama_client.close()
+
+        assert result["summary"] == "Clean code, no issues."
+        assert result["findings"] == []
+
+        # No WARNING or ERROR logs
+        for record in caplog.records:
+            assert record.levelname not in ("WARNING", "ERROR")
+
+    async def test_schema_parse_failure_falls_back_to_prose(
+        self, sentinel_config, tmp_path, httpx_mock, caplog
+    ):
+        """A response that fails JSON parse falls back to prose with empty findings."""
+        from ollama_sentinel.processor import FileProcessor, FileChange
+        from watchfiles import Change
+
+        source = tmp_path / "broken.py"
+        source.write_text("x = 1\n")
+
+        # Non-JSON response (e.g. model did not follow schema)
+        httpx_mock.add_response(
+            url="http://localhost:11434/api/chat",
+            json={"message": {"content": "This is free-form prose review."}},
+        )
+
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified)
+        try:
+            result = await fp.generate_review(fc)
+        finally:
+            await fp.ollama_client.close()
+
+        assert result["summary"] == "This is free-form prose review."
+        assert result["findings"] == []
+
+        # ERROR log was emitted
+        error_messages = [r.message for r in caplog.records if r.levelname == "ERROR"]
+        assert any("Schema validation failed" in m for m in error_messages)
+
+
+# ---------------------------------------------------------------------------
+# Recipe instruction ordering test (Step 2)
+# ---------------------------------------------------------------------------
+
+
+class TestRecipeInstructionOrdering:
+    """Verify the INSTRUCTIONS section appears before the FILE section."""
+
+    async def test_instructions_before_file_in_prompt(self, sentinel_config, tmp_path):
+        """The INSTRUCTIONS block appears before the FILE block in the rendered prompt."""
+        from ollama_sentinel.processor import FileProcessor, FileChange
+        from watchfiles import Change
+
+        source = tmp_path / "sample.py"
+        source.write_text("x = 1\n")
+
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified, content="x = 1\n")
+
+        prompt = await fp.format_prompt(fc)
+        instructions_pos = prompt.find("For each issue you flag, provide")
+        file_pos = prompt.find("FILE:")
+        assert instructions_pos != -1, "INSTRUCTIONS section not found in prompt"
+        assert file_pos != -1, "FILE section not found in prompt"
+        assert instructions_pos < file_pos, (
+            "INSTRUCTIONS section must appear before FILE section"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fixtures needed by the test classes above
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sentinel_config(tmp_path):
+    """Minimal SentinelConfig for FileProcessor tests."""
+    from ollama_sentinel.models import (
+        SentinelConfig,
+        OllamaConfig,
+        OllamaModelConfig,
+        WatchConfig,
+    )
+    return SentinelConfig(
+        watch=WatchConfig(directory=str(tmp_path)),
+        ollama=OllamaConfig(
+            host="http://localhost:11434",
+            models={
+                "default": OllamaModelConfig(
+                    name="test-model", system_prompt="Review code."
+                )
+            },
+        ),
+    )

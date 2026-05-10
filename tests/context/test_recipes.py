@@ -77,7 +77,7 @@ class TestBuildReviewContext:
             chunk_info=" (Part 1/2)",
             prior_violations=violations,
             counter=counter,
-            total_budget=500,
+            total_budget=700,
             retriever=NullRetriever(),
         )
         assert "FILE: src/a.py (Part 1/2)" in out
