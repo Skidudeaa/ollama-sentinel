@@ -146,6 +146,76 @@ class TestOllamaClient:
         # Should have been called exactly once (no retries for KeyError).
         assert len(httpx_mock.get_requests()) == 1
 
+    async def test_output_reserve_caps_generation_by_default(
+        self, ollama_config, httpx_mock: HTTPXMock
+    ):
+        """Configured output reserve is sent to Ollama as num_predict."""
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "bounded review"}},
+        )
+
+        client = OllamaClient(ollama_config)
+        try:
+            result = await client.generate_review("default", "review this")
+        finally:
+            await client.close()
+
+        assert result == "bounded review"
+        body = json.loads(httpx_mock.get_requests()[0].content)
+        assert body["options"]["num_predict"] == 2000
+
+    async def test_max_tokens_overrides_output_reserve(
+        self, ollama_config, httpx_mock: HTTPXMock
+    ):
+        """Explicit max_tokens wins over the prompt-budget reserve."""
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "bounded review"}},
+        )
+
+        client = OllamaClient(ollama_config)
+        try:
+            await client.generate_with_model(
+                {
+                    "name": "test-model",
+                    "system_prompt": "Review code.",
+                    "max_tokens": 321,
+                    "output_reserve_tokens": 2000,
+                },
+                "review this",
+            )
+        finally:
+            await client.close()
+
+        body = json.loads(httpx_mock.get_requests()[0].content)
+        assert body["options"]["num_predict"] == 321
+
+    async def test_think_flag_is_forwarded_when_configured(
+        self, ollama_config, httpx_mock: HTTPXMock
+    ):
+        """Thinking models can be forced into non-thinking chat mode."""
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "review"}},
+        )
+
+        client = OllamaClient(ollama_config)
+        try:
+            await client.generate_with_model(
+                {
+                    "name": "test-model",
+                    "system_prompt": "Review code.",
+                    "think": False,
+                },
+                "review this",
+            )
+        finally:
+            await client.close()
+
+        body = json.loads(httpx_mock.get_requests()[0].content)
+        assert body["think"] is False
+
     async def test_http_500_is_retried(self, ollama_config, httpx_mock: HTTPXMock):
         """HTTP 500 triggers tenacity retry; succeeds on the third attempt."""
         # Two 500 errors followed by a success.
@@ -167,6 +237,38 @@ class TestOllamaClient:
 
         assert result == "recovered"
         assert len(httpx_mock.get_requests()) == 3
+
+    async def test_http_404_is_not_retried(self, ollama_config, httpx_mock: HTTPXMock):
+        """Model/config errors should fail once rather than retrying."""
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            status_code=404,
+            json={"error": "model not found"},
+        )
+
+        client = OllamaClient(ollama_config)
+        try:
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.generate_review("default", "review this")
+        finally:
+            await client.close()
+
+        assert len(httpx_mock.get_requests()) == 1
+
+    async def test_read_timeout_is_not_retried(
+        self, ollama_config, httpx_mock: HTTPXMock
+    ):
+        """Long model generations should not be repeated after a read timeout."""
+        httpx_mock.add_exception(httpx.ReadTimeout("timed out"), url=OLLAMA_CHAT_URL)
+
+        client = OllamaClient(ollama_config)
+        try:
+            with pytest.raises(httpx.ReadTimeout):
+                await client.generate_review("default", "review this")
+        finally:
+            await client.close()
+
+        assert len(httpx_mock.get_requests()) == 1
 
     async def test_valid_json_extracts_content(
         self, ollama_config, httpx_mock: HTTPXMock

@@ -14,6 +14,7 @@ ollama:
   models:
     default:
       name: deepseek-v4-pro:cloud
+      think: false
       system_prompt: 'You are a senior code reviewer. Return constructive, actionable
         feedback for each file: identify bugs (with line numbers), design smells,
         and small refactors that improve readability and performance. Respond in GitHub-flavored
@@ -23,6 +24,7 @@ ollama:
       output_reserve_tokens: 2000
     triage:
       name: deepseek-v4-pro:cloud
+      think: false
       system_prompt: "You are a senior developer helping triage a failing build or\
         \ test run.\nGiven the tool output and referenced source code, respond with:\n\
         \n1. DIAGNOSIS: one-sentence root cause (be specific \u2014 name the variable,\n\

@@ -11,13 +11,37 @@ from typing import Dict, List, Optional, cast
 
 import git
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from watchfiles import Change
 
 from .models import OutputFormat, SentinelConfig
 from .utils import generate_diff, safe_read, save_compressed
 
 log = logging.getLogger("ollama-sentinel")
+
+
+def _is_retryable_ollama_error(exc: BaseException) -> bool:
+    """Return True for transient Ollama HTTP errors worth retrying.
+
+    ReadTimeout is intentionally not retried: with stream=False it means the
+    model did not finish generation before the configured read timeout, so
+    repeating the same prompt usually just creates another long hang.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status == 408 or status == 429 or status >= 500
+
+    return isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.NetworkError,
+            httpx.PoolTimeout,
+            httpx.RemoteProtocolError,
+            httpx.WriteTimeout,
+        ),
+    )
 
 
 @dataclass
@@ -52,7 +76,7 @@ class OllamaClient:
         await self.client.aclose()
 
     @retry(
-        retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
+        retry=retry_if_exception(_is_retryable_ollama_error),
         wait=wait_exponential(multiplier=1, min=2, max=60),
         stop=stop_after_attempt(5),
         reraise=True,
@@ -81,7 +105,10 @@ class OllamaClient:
         system_prompt = _get("system_prompt", "")
         temperature = _get("temperature", 0.1)
         top_p = _get("top_p", 0.9)
+        think = _get("think", None)
         max_tokens = _get("max_tokens", None)
+        if max_tokens is None:
+            max_tokens = _get("output_reserve_tokens", None)
 
         url = f"{self.config['host']}/api/chat"
         options = {
@@ -102,12 +129,24 @@ class OllamaClient:
         }
         if response_format is not None:
             payload["format"] = response_format
+        if think is not None:
+            payload["think"] = think
 
         headers = {"Content-Type": "application/json"}
         try:
             response = await self.client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()["message"]["content"]
+        except httpx.ReadTimeout:
+            log.error(
+                "Ollama API read timeout after %ss for model %s "
+                "(num_predict=%s)",
+                self.config["request_timeout"],
+                name,
+                options.get("num_predict", "unset"),
+                exc_info=True,
+            )
+            raise
         except httpx.HTTPError as e:
             log.error(
                 "Ollama API error (%s): %s",

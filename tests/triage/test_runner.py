@@ -47,7 +47,14 @@ class TestRunTriage:
             url=OLLAMA_CHAT_URL,
             json={"message": {"content": "ok"}},
         )
-        cfg = _sentinel_config(tmp_path)  # only 'default' role
+        cfg = _sentinel_config(
+            tmp_path,
+            models={
+                "default": OllamaModelConfig(
+                    name="d", system_prompt="Default.", think=False,
+                )
+            },
+        )
 
         await run_triage(
             input_text="some error",
@@ -59,6 +66,7 @@ class TestRunTriage:
         body = json.loads(req.content)
         assert body["messages"][0]["content"] == TRIAGE_SYSTEM_PROMPT
         assert body["model"] == "d"
+        assert body["think"] is False
 
     async def test_explicit_triage_role_is_used(
         self, tmp_path, httpx_mock: HTTPXMock

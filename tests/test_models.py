@@ -135,6 +135,7 @@ class TestOllamaModelConfig:
         model = OllamaModelConfig(name="codellama", system_prompt="Review.")
         assert model.temperature == 0.1
         assert model.top_p == 0.9
+        assert model.think is None
         assert model.max_tokens is None
 
     def test_custom_values(self):
@@ -143,10 +144,12 @@ class TestOllamaModelConfig:
             system_prompt="Security review.",
             temperature=0.5,
             top_p=0.8,
+            think=False,
             max_tokens=4096,
         )
         assert model.temperature == 0.5
         assert model.top_p == 0.8
+        assert model.think is False
         assert model.max_tokens == 4096
 
 

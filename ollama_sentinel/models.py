@@ -53,6 +53,7 @@ class OllamaModelConfig(BaseModel):
     system_prompt: str
     temperature: float = 0.1
     top_p: float = 0.9
+    think: Optional[bool] = None
     max_tokens: Optional[int] = None
     context_window: int = 8192
     output_reserve_tokens: int = 2000

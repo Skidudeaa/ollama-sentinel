@@ -60,6 +60,7 @@ async def run_triage(
             system_prompt=TRIAGE_SYSTEM_PROMPT,
             temperature=default.temperature,
             top_p=default.top_p,
+            think=default.think,
             max_tokens=default.max_tokens,
             context_window=default.context_window,
             output_reserve_tokens=default.output_reserve_tokens,
