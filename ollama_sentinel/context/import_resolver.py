@@ -212,3 +212,78 @@ class ImportResolver:
             return True
         except ValueError:
             return False
+
+
+# ---------------------------------------------------------------------------
+# Symbol-resolution helper for SZZ pickaxe overlay
+# ---------------------------------------------------------------------------
+
+
+def enclosing_symbol(source: str, line: int) -> Optional[str]:
+    """Return the qualified name of the innermost function/class/method
+    that encloses *line* in *source*, or ``None`` if the line is not
+    inside any def or class (e.g., module-level code).
+
+    Used by the v0.2 pytest plugin's pickaxe overlay: given a failing
+    test's ``(file, line)``, extract the enclosing symbol so
+    ``git log -S <symbol>`` can find every commit that added or removed
+    that symbol — directly addressing the ~25% of bug-inducing commits
+    that pure file:line blame misses.
+
+    Names are dotted to preserve nesting (e.g., ``Outer.Inner.method``
+    or ``outer.<closure>``). Returns the *innermost* containing scope,
+    not the file's top-level def. Lines inside both the body and the
+    decorator list count as "inside" the def.
+
+    Files with syntax errors return ``None``.
+    """
+    if line < 1:
+        return None
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+
+    return _walk_for_enclosing(tree, line, prefix="")
+
+
+def _walk_for_enclosing(
+    node: ast.AST, line: int, *, prefix: str
+) -> Optional[str]:
+    """Recursive helper for enclosing_symbol.
+
+    Walks the AST top-down. At each FunctionDef / AsyncFunctionDef /
+    ClassDef whose line range covers *line*, descends to find a more
+    deeply nested match before returning the current node's name.
+    """
+    best: Optional[str] = None
+    for child in ast.iter_child_nodes(node):
+        if not isinstance(
+            child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            # Even non-def nodes may contain nested defs (e.g., a try block).
+            inner = _walk_for_enclosing(child, line, prefix=prefix)
+            if inner is not None:
+                best = inner
+            continue
+
+        start = _node_start(child)
+        end = getattr(child, "end_lineno", None) or start
+        if not (start <= line <= end):
+            continue
+
+        qualified = f"{prefix}{child.name}" if not prefix else f"{prefix}.{child.name}"
+        # Descend looking for a more specific (nested) match.
+        nested = _walk_for_enclosing(child, line, prefix=qualified)
+        best = nested if nested is not None else qualified
+    return best
+
+
+def _node_start(node: ast.AST) -> int:
+    """First line covered by *node*, including any decorators."""
+    decorators = getattr(node, "decorator_list", None) or []
+    if decorators:
+        return min(
+            getattr(d, "lineno", getattr(node, "lineno", 1)) for d in decorators
+        )
+    return getattr(node, "lineno", 1)

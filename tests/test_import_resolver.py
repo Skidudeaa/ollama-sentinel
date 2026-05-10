@@ -190,3 +190,98 @@ class TestFromDotImport:
         result = resolver.resolve_imports(str(pkg / "main.py"))
 
         assert str(pkg / "utils.py") in result
+
+
+# ---------------------------------------------------------------------------
+# enclosing_symbol — used by the v0.2 pytest plugin's pickaxe overlay
+# ---------------------------------------------------------------------------
+
+
+from ollama_sentinel.context.import_resolver import enclosing_symbol
+
+
+class TestEnclosingSymbol:
+    """``enclosing_symbol(source, line)`` — innermost def/class covering line."""
+
+    def test_returns_none_for_module_level_line(self) -> None:
+        source = textwrap.dedent("""\
+            x = 1
+            y = 2
+        """)
+        assert enclosing_symbol(source, 1) is None
+        assert enclosing_symbol(source, 2) is None
+
+    def test_returns_function_name_inside_function_body(self) -> None:
+        source = textwrap.dedent("""\
+            def alpha():
+                return 1
+            def beta():
+                return 2
+        """)
+        assert enclosing_symbol(source, 2) == "alpha"
+        assert enclosing_symbol(source, 4) == "beta"
+
+    def test_returns_class_name_for_line_in_class_body_outside_methods(self) -> None:
+        source = textwrap.dedent("""\
+            class Foo:
+                CONSTANT = 7
+
+                def method(self):
+                    return 1
+        """)
+        # Line 2 is inside Foo's body but not inside any method.
+        assert enclosing_symbol(source, 2) == "Foo"
+
+    def test_returns_dotted_name_for_method_inside_class(self) -> None:
+        source = textwrap.dedent("""\
+            class Foo:
+                def method(self):
+                    return 42
+        """)
+        assert enclosing_symbol(source, 3) == "Foo.method"
+
+    def test_returns_innermost_for_nested_functions(self) -> None:
+        source = textwrap.dedent("""\
+            def outer():
+                def inner():
+                    return 1
+                return inner
+        """)
+        assert enclosing_symbol(source, 3) == "outer.inner"
+        # The line returning `inner` belongs to outer, not inner.
+        assert enclosing_symbol(source, 4) == "outer"
+
+    def test_handles_async_function_def(self) -> None:
+        source = textwrap.dedent("""\
+            async def handler():
+                await something()
+        """)
+        assert enclosing_symbol(source, 2) == "handler"
+
+    def test_decorator_lines_count_as_inside_the_def(self) -> None:
+        source = textwrap.dedent("""\
+            @decorator
+            @another
+            def target():
+                pass
+        """)
+        assert enclosing_symbol(source, 1) == "target"
+        assert enclosing_symbol(source, 2) == "target"
+
+    def test_returns_none_on_syntax_error(self) -> None:
+        assert enclosing_symbol("def broken(:\n", 1) is None
+
+    def test_returns_none_for_invalid_line(self) -> None:
+        assert enclosing_symbol("x = 1\n", 0) is None
+        assert enclosing_symbol("x = 1\n", -1) is None
+
+    def test_finds_def_inside_try_block(self) -> None:
+        source = textwrap.dedent("""\
+            try:
+                def helper():
+                    return 1
+            except Exception:
+                pass
+        """)
+        # AST walk must descend through non-def parents to reach helper.
+        assert enclosing_symbol(source, 3) == "helper"
