@@ -20,6 +20,29 @@ from .utils import generate_diff, safe_read, save_compressed
 
 log = logging.getLogger("ollama-sentinel")
 
+_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "line_start": {"type": "integer"},
+                    "line_end": {"type": "integer"},
+                    "category": {"type": "string"},
+                    "severity": {"type": "string"},
+                    "verbatim_excerpt": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["line_start", "line_end", "category", "severity", "verbatim_excerpt", "description"],
+            },
+        },
+    },
+    "required": ["summary", "findings"],
+}
+
 
 def _is_retryable_ollama_error(exc: BaseException) -> bool:
     """Return True for transient Ollama HTTP errors worth retrying.
@@ -461,7 +484,23 @@ class FileProcessor:
 
         return await asyncio.to_thread(_scan)
 
-    async def generate_review(self, file_change: FileChange, model_role: str = "default") -> str:
+    def _parse_review_response(self, raw: str) -> dict[str, Any]:
+        """Parse Ollama's JSON response into a structured review dict.
+
+        Returns a dict with ``summary`` (str) and ``findings`` (list[dict]).
+        Falls back to prose-only output with empty findings on parse failure.
+        """
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and "summary" in parsed and "findings" in parsed:
+                return parsed  # type: ignore[return-value]
+            if isinstance(parsed, dict) and "summary" in parsed:
+                return {"summary": parsed["summary"], "findings": []}
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            log.error("Schema validation failed for review response: %s", e)
+        return {"summary": raw, "findings": []}
+
+    async def generate_review(self, file_change: FileChange, model_role: str = "default") -> dict[str, Any]:
         """
         Generate a review for the file change.
 
@@ -470,7 +509,7 @@ class FileProcessor:
             model_role: Role of the model to use
 
         Returns:
-            Generated review text
+            A dict with ``summary`` (str) and ``findings`` (list[dict]).
         """
         await asyncio.to_thread(self.prepare_file_content, file_change)
         prior = await self._get_ranked_prior_violations(
@@ -479,12 +518,18 @@ class FileProcessor:
 
         if file_change.diff is not None:
             prompt = await self.format_prompt(file_change, prior_violations=prior)
-            return await self.ollama_client.generate_review(model_role, prompt)
+            raw = await self.ollama_client.generate_review(
+                model_role, prompt, response_format=_REVIEW_SCHEMA,
+            )
+            return self._parse_review_response(raw)
 
         content = file_change.content
         if not content:
             prompt = await self.format_prompt(file_change, prior_violations=prior)
-            return await self.ollama_client.generate_review(model_role, prompt)
+            raw = await self.ollama_client.generate_review(
+                model_role, prompt, response_format=_REVIEW_SCHEMA,
+            )
+            return self._parse_review_response(raw)
 
         chunks = self.chunk_content(content, file_change.file_type)
 
@@ -492,7 +537,10 @@ class FileProcessor:
             prompt = await self.format_prompt(
                 file_change, chunk_text=chunks[0], prior_violations=prior,
             )
-            return await self.ollama_client.generate_review(model_role, prompt)
+            raw = await self.ollama_client.generate_review(
+                model_role, prompt, response_format=_REVIEW_SCHEMA,
+            )
+            return self._parse_review_response(raw)
 
         async def review_chunk(chunk_idx, total_chunks):
             violations = prior if chunk_idx == 0 else None
@@ -503,7 +551,10 @@ class FileProcessor:
                 total_chunks=total_chunks,
                 prior_violations=violations,
             )
-            return await self.ollama_client.generate_review(model_role, prompt)
+            raw = await self.ollama_client.generate_review(
+                model_role, prompt, response_format=_REVIEW_SCHEMA,
+            )
+            return self._parse_review_response(raw)
 
         max_concurrent_chunks = min(
             len(chunks), self.config.processing.max_concurrent_chunks_per_file,
@@ -517,25 +568,34 @@ class FileProcessor:
         tasks = [
             process_chunk_with_semaphore(i, len(chunks)) for i in range(len(chunks))
         ]
-        reviews = await asyncio.gather(*tasks)
+        reviews: list[dict[str, Any]] = await asyncio.gather(*tasks)
+
+        summaries = [r.get("summary", "") for r in reviews]
+        all_findings: list[dict[str, Any]] = []
+        for r in reviews:
+            all_findings.extend(r.get("findings", []))
 
         combined = "\n\n".join([
-            f"## Part {i+1}/{len(chunks)}\n\n{review}"
-            for i, review in enumerate(reviews)
+            f"## Part {i+1}/{len(chunks)}\n\n{s}"
+            for i, s in enumerate(summaries)
         ])
-        return f"# Combined Review for {file_change.path.name}\n\n{combined}"
+        return {
+            "summary": f"# Combined Review for {file_change.path.name}\n\n{combined}",
+            "findings": all_findings,
+        }
 
-    def save_review(self, file_change: FileChange, review: str) -> pathlib.Path:
+    def save_review(self, file_change: FileChange, review: dict[str, Any]) -> pathlib.Path:
         """
         Save the review to the output directory.
 
         Args:
             file_change: File change that was reviewed
-            review: Generated review text
+            review: A dict with ``summary`` (str) and ``findings`` (list[dict]).
 
         Returns:
             Path where the review was saved
         """
+        review_text = review.get("summary", "")
         rel_path = file_change.path.relative_to(self.watch_dir)
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -555,10 +615,10 @@ class FileProcessor:
             content = json.dumps({
                 "file": str(rel_path),
                 "timestamp": timestamp,
-                "review": review
+                "review": review_text,
             }, indent=2)
         else:
-            content = review
+            content = review_text
 
         # Base filename
         base_filename = f"{rel_path.stem}{extension}"

@@ -11,7 +11,7 @@ import pathspec
 from watchfiles import awatch, Change
 
 from .config import load_config
-from .extractor import extract_findings
+from .extractor import validate_findings
 from .models import SentinelConfig
 from .processor import FileChange, FileProcessor
 from .violation_db import ViolationDB
@@ -214,33 +214,42 @@ class FileSentinel:
         log.info(f"Processing {rel_path}")
 
         try:
-            # Generate review
+            # Generate review (returns dict with "summary" and "findings" keys)
             review = await self.processor.generate_review(file_change, model_role=model_role)
 
-            # Extract and persist findings (best-effort — never blocks review saving)
+            # Persist findings from the structured review output (best-effort)
             if self.violation_db:
                 try:
-                    findings = await extract_findings(
-                        review, str(rel_path), self.processor.ollama_client, model_role
-                    )
-                    if findings:
-                        await asyncio.to_thread(
-                            self.violation_db.persist_findings, str(rel_path), findings
+                    findings_list = review.get("findings", [])
+                    if findings_list:
+                        file_content = file_change.content
+                        if file_content is None:
+                            try:
+                                file_content = file_change.path.read_text(errors="replace")
+                            except OSError:
+                                file_content = ""
+                        valid_findings = await validate_findings(
+                            findings_list, str(rel_path), file_content,
                         )
-                        log.info(f"Persisted {len(findings)} findings for {rel_path}")
+                        if valid_findings:
+                            await asyncio.to_thread(
+                                self.violation_db.persist_findings, str(rel_path), valid_findings,
+                            )
+                            log.info(f"Persisted {len(valid_findings)} findings for {rel_path}")
                 except Exception as e:
-                    log.warning(f"Finding extraction/persistence failed for {rel_path}: {e}")
+                    log.warning(f"Finding persistence failed for {rel_path}: {e}")
 
             # Save review (sync I/O, run in thread to avoid blocking event loop)
             output_path = await asyncio.to_thread(self.processor.save_review, file_change, review)
             log.info(f"Saved review to {output_path}")
 
             # Output to console if enabled
+            summary_text = review.get("summary", "")
             if self.config.output.console_output:
                 print("\n" + "=" * 80)
                 print(f"Review for {path.name}")
                 print("=" * 80)
-                print(review)
+                print(summary_text)
                 print("=" * 80 + "\n")
 
         except Exception as e:
