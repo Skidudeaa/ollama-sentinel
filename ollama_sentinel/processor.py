@@ -7,7 +7,7 @@ import json
 import logging
 import pathlib
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Union, cast
 
 import git
 import httpx
@@ -86,7 +86,7 @@ class OllamaClient:
         model_config,
         prompt: str,
         *,
-        response_format: Optional[str] = None,
+        response_format: Optional[Union[str, Dict[str, Any]]] = None,
     ) -> str:
         """Send `prompt` to Ollama using an explicit model config.
 
@@ -161,9 +161,15 @@ class OllamaClient:
         model_role: str,
         prompt: str,
         *,
-        response_format: Optional[str] = None,
+        response_format: Optional[Union[str, Dict[str, Any]]] = None,
     ) -> str:
-        """Send `prompt` to Ollama using a role name looked up in config."""
+        """Send `prompt` to Ollama using a role name looked up in config.
+
+        ``response_format`` accepts either ``"json"`` (Ollama's loose JSON
+        mode) or a JSON Schema dict (Ollama's strict structured-output
+        mode, ≥ v0.5.0). Either is forwarded verbatim as the ``format``
+        payload key.
+        """
         if model_role not in self.config["models"]:
             log.warning(f"Model role '{model_role}' not found, falling back to default")
             model_role = "default"
