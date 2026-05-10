@@ -60,6 +60,20 @@ async def build_review_context(
     """Sentinel recipe — replaces the body of FileProcessor.format_prompt."""
     sections: List[Section] = [
         Section(
+            name="INSTRUCTIONS",
+            items=[
+                "For each issue you flag, provide:\n"
+                "1. The exact line range (line_start..line_end).\n"
+                "2. The verbatim excerpt from those lines (no paraphrasing).\n"
+                "3. Your claim about that excerpt.\n\n"
+                "If you cannot quote verbatim from the file, do not flag the issue.\n"
+                "The excerpt and claim are required; the schema will reject findings\n"
+                "without them.",
+            ],
+            priority=Priority.MUST_FIT,
+            soft_budget=128,
+        ),
+        Section(
             name=f"FILE: {file_rel_path}{chunk_info}",
             items=[_render_file_block(content, diff, file_type)],
             priority=Priority.MUST_FIT,
