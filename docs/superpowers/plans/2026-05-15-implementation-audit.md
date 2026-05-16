@@ -148,12 +148,28 @@ harmless `RuntimeWarning` (un-awaited AsyncMock) in the test run.
 3. Status headers corrected on the 4 plans that have them; status line added
    to the 2 that don't (context-builder, triage).
 
+## Resolved same day (2026-05-15)
+
+Both reviewer-grounding flags were closed for good rather than deferred:
+
+- **Plan-body staleness.** Not a wholesale rewrite (that would turn a
+  planning doc into a duplicate of this audit). Added per-section
+  `> **SHIPPED**` markers under Step 1 / Step 2 / Step 3 / Validation so a
+  mid-doc reader can't be misled; the "Ground truth at the time this spec
+  was written" section stays frozen by design. Header was already annotated.
+- **Validation item 2 (synthetic positives).** Closed with
+  `test_correct_finding_on_real_source_is_not_rejected` (P1-P4) in
+  `tests/test_grounding_regression.py`. Fixtures are VERBATIM real source
+  frozen from `processor.py` @ 47f1929 (the exact `@retry` construct the
+  plan's schema example cites), each with a uniqueness guard so it cannot
+  pass for the wrong reason. Covers the strictness modes item 2 names that
+  R3 did not: multi-line spans, line-range start/end boundaries, deep
+  indentation, regex-metachar excerpts. Path A (replay pre-grounding
+  `.ollama_reviews/` captures) is structurally impossible — those predate
+  the `verbatim_excerpt` field, so they lack the key the validator checks.
+  Suite: 483 passed / 15 skipped.
+
 ## Not done (flagged, no action)
 
-- reviewer-grounding plan **body** is stale pre-implementation prose. Header
-  fixed; full-body rewrite deferred — low value, the plan is shipped and the
-  header now says so.
-- reviewer-grounding validation-checklist item 2 uses synthetic rather than
-  captured real-history positive fixtures. Minor empirical gap, not a defect.
 - phase-a recall-diff receipt is sparse — re-capture when violation DB has
   real data.
