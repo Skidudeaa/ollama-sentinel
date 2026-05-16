@@ -1,6 +1,6 @@
 # v0.2: Incident Schema — Finding/Incident Split
 
-**Status:** IN PROGRESS — **Piece 1 SHIPPED** (schema + migration + CRUD + 9 tests, TDD). Pieces 2–5 (post-commit hook, confirm verb, pytest plugin, incidents CLI) not started. Prerequisite (reviewer-grounding) SHIPPED.
+**Status:** IN PROGRESS — **Pieces 1 & 2 SHIPPED.** P1: schema + migration + CRUD (9 tests). P2: post-commit hook + `install-hooks`/`record-commit` CLI verbs (9 tests). Both TDD. Pieces 3–5 (confirm verb, pytest plugin, incidents CLI) not started. Prerequisite (reviewer-grounding) SHIPPED.
 **Effort:** ~3-4 days across schema + hooks + pytest plugin + CLI verbs
 **Owner:** unassigned
 **Prerequisites:** Phase A merged (PR #4). CB-3 shipped.
@@ -253,6 +253,17 @@ db.close()`). New test class `TestIncidents`:
   and findings have the new nullable columns.
 
 ### Piece 2: Post-commit hook + `install-hooks` CLI verb (~half day)
+
+> **SHIPPED.** New `ollama_sentinel/hooks.py`: `install_hooks(repo_path)`
+> (writes an executable `.git/hooks/post-commit`, never clobbers an
+> existing one, raises on non-repo) and `record_commit(repo_path, db, *,
+> commit_sha=None)` (resolves HEAD/SHA via GitPython, links touched files
+> via `link_commit_to_findings`). CLI verbs `install-hooks` /
+> `record-commit` added to `cli.py` (shared `_load_config_or_exit`
+> helper). 9 tests in `tests/test_hooks.py` — the plan's 5 plus
+> non-repo-reject, explicit-SHA, and 2 CLI-wrapper tests (untested
+> wrappers would violate TDD; same "complete the surface" rule as P1's
+> 9th test). Real git repos via GitPython, no mocks. Suite 497 / 15.
 
 **Files:** `ollama_sentinel/hooks.py` (new), `ollama_sentinel/cli.py`,
 `tests/test_hooks.py` (new)

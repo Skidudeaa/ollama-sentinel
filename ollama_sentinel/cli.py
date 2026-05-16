@@ -309,6 +309,81 @@ def report(
         console.print(table)
 
 
+def _load_config_or_exit(config_path: str):
+    """Shared: resolve + load the YAML config or exit(1)."""
+    from .config import load_config
+
+    config_file = pathlib.Path(config_path)
+    if not config_file.exists():
+        log.error(f"Configuration file not found: {config_file}")
+        raise typer.Exit(code=1)
+    config = load_config(config_file)
+    if not config:
+        log.error("Failed to load configuration")
+        raise typer.Exit(code=1)
+    return config
+
+
+@app.command(name="install-hooks")
+def install_hooks_cmd(
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """Install the git post-commit hook into the watched repository."""
+    from .hooks import install_hooks
+
+    config = _load_config_or_exit(config_path)
+    repo_path = pathlib.Path(config.watch.directory).resolve()
+    try:
+        installed = install_hooks(repo_path)
+    except FileNotFoundError as e:
+        log.error(str(e))
+        raise typer.Exit(code=1)
+
+    if installed:
+        console.print(
+            f"[green]Installed git hook(s): {', '.join(installed)}[/green]"
+        )
+    else:
+        console.print(
+            "[yellow]post-commit hook already exists — left untouched.[/yellow]"
+        )
+
+
+@app.command(name="record-commit")
+def record_commit_cmd(
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+    commit_sha: Optional[str] = typer.Option(
+        None, "--commit", help="Commit SHA to link (default: HEAD)",
+    ),
+):
+    """Link a commit to open Findings in the files it touched.
+
+    Called by the post-commit git hook; also usable manually.
+    """
+    from .hooks import record_commit
+    from .violation_db import ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    repo_path = pathlib.Path(config.watch.directory).resolve()
+    db_path = repo_path / config.memory.db_path
+    if not db_path.exists():
+        log.info("No violation database yet — nothing to link.")
+        raise typer.Exit()
+
+    db = ViolationDB(str(db_path))
+    try:
+        linked = record_commit(repo_path, db, commit_sha=commit_sha)
+    finally:
+        db.close()
+    log.info("Linked %d finding(s) to the commit.", linked)
+
+
 @app.command()
 def triage(
     input_path: Optional[str] = typer.Argument(
