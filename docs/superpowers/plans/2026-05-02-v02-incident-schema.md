@@ -1,6 +1,6 @@
 # v0.2: Incident Schema — Finding/Incident Split
 
-**Status:** ready for review, then implementation
+**Status:** IN PROGRESS — **Piece 1 SHIPPED** (schema + migration + CRUD + 9 tests, TDD). Pieces 2–5 (post-commit hook, confirm verb, pytest plugin, incidents CLI) not started. Prerequisite (reviewer-grounding) SHIPPED.
 **Effort:** ~3-4 days across schema + hooks + pytest plugin + CLI verbs
 **Owner:** unassigned
 **Prerequisites:** Phase A merged (PR #4). CB-3 shipped.
@@ -179,6 +179,19 @@ resolves the Finding AND creates an Incident. Flag this in the PR.
 ## Implementation — five pieces
 
 ### Piece 1: Schema + migration + CRUD (~half day)
+
+> **SHIPPED.** `Incident` dataclass + `incidents` table + `_migrate`
+> extension (`triggering_commit_sha`, `fix_commit_sha`) + `PRAGMA
+> foreign_keys=ON` + `persist_incident` / `get_incidents_for_finding` /
+> `get_recent_incidents` / `get_findings_with_incidents` /
+> `link_commit_to_findings` + behavioral `mark_resolved(*, fix_commit=)`.
+> 9 tests in `TestIncidents` (the 8 specified + one for
+> `get_recent_incidents` so every CRUD method has a guarantee). TDD,
+> red→green→refactor; full suite 488 passed / 15 skipped (off master; 492 once PR #7 grounding tests also land). Reconciliation:
+> the "Ground truth" section below is frozen-as-written and now stale in
+> two ways that did NOT affect Piece 1 — test count is 488 here off master (not 378), and
+> `ImportResolver` was promoted to `ollama_sentinel.context` (commit
+> 0176b2f); the latter matters for Piece 4 (pytest plugin), not here.
 
 **Files:** `ollama_sentinel/violation_db.py`, `tests/test_violation_db.py`
 
@@ -490,6 +503,19 @@ feels forced or missing, the schema is wrong and needs revision before
 implementation starts.
 
 This exercise is not optional. It's the spec's acceptance test.
+
+> **EXECUTED 2026-05-16 (Piece 1).** No somaCURA / Song Expanse access,
+> so — same in-repo-substitution principle as the reviewer-grounding
+> fixtures — the exercise was run against a real *ollama-sentinel* bug:
+> the `run_dashboard` per-tick DB-connection churn caught in adversarial
+> review and fixed in `1b3c127`. A `Finding` + `Incident` pair was filled
+> out and round-tripped through the shipped schema: every field
+> (`triggering_commit`, `suspect_commits`, `confirming_signal`/`artifact`,
+> `symptom_file`/`line`, `blast_radius`, `fix_commit`, `fix_shape`)
+> populated cleanly with nothing forced or missing, and it naturally
+> demonstrated A3-style multi-corroboration (`manual_confirm` +
+> `fix_commit` Incidents on one Finding). Schema accepted — no revision
+> needed before Pieces 2–5.
 
 ---
 

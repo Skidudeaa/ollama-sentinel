@@ -412,3 +412,206 @@ class TestThreadSafety:
         db = ViolationDB(str(tmp_path / "close.db"))
         db.close()
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# v0.2 Piece 1 — Incident schema + migration + CRUD
+# ---------------------------------------------------------------------------
+
+
+def _seed_finding_id(db, **overrides) -> int:
+    """Persist one finding and return its row id.
+
+    Selects by the finding's full upsert key (not ``[0]``) so it stays
+    correct when several findings share a file.
+    """
+    f = _make_finding(**overrides)
+    db.persist_findings(f.file_path, [f])
+    row = db._conn.execute(
+        """
+        SELECT id FROM findings
+        WHERE file_path = ? AND line_start = ? AND line_end = ? AND category = ?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (f.file_path, f.line_start, f.line_end, f.category),
+    ).fetchone()
+    return row[0]
+
+
+def _make_incident(finding_id: int, **overrides):
+    """Build an Incident with sensible defaults, allowing overrides."""
+    from ollama_sentinel.violation_db import Incident
+
+    defaults = dict(
+        finding_id=finding_id,
+        confirming_signal="test_failure",
+        confirming_artifact="tests/test_x.py::test_y",
+        triggering_commit="abc123",
+        suspect_commits=["abc123", "def456"],
+        symptom_file="src/other.py",
+        symptom_line=55,
+        blast_radius=["src/other.py", "src/more.py"],
+        fix_commit=None,
+        fix_shape=None,
+    )
+    defaults.update(overrides)
+    return Incident(**defaults)
+
+
+class TestIncidents:
+    def test_persist_incident_creates_row(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            fid = _seed_finding_id(db)
+            new_id = db.persist_incident(_make_incident(fid))
+            assert isinstance(new_id, int) and new_id > 0
+
+            rows = db.get_incidents_for_finding(fid)
+            assert len(rows) == 1
+            row = rows[0]
+            assert row["finding_id"] == fid
+            assert row["confirming_signal"] == "test_failure"
+            assert row["confirming_artifact"] == "tests/test_x.py::test_y"
+            assert row["symptom_line"] == 55
+            # JSON-array columns round-trip as Python lists.
+            assert row["suspect_commits"] == ["abc123", "def456"]
+            assert row["blast_radius"] == ["src/other.py", "src/more.py"]
+            assert row["created_at"]
+        finally:
+            db.close()
+
+    def test_multiple_incidents_same_finding(self, tmp_path):
+        """A1: two incidents on one finding are two distinct rows."""
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            fid = _seed_finding_id(db)
+            db.persist_incident(_make_incident(fid, confirming_artifact="run-1"))
+            db.persist_incident(_make_incident(fid, confirming_artifact="run-2"))
+
+            rows = db.get_incidents_for_finding(fid)
+            assert len(rows) == 2
+            assert {r["confirming_artifact"] for r in rows} == {"run-1", "run-2"}
+        finally:
+            db.close()
+
+    def test_incident_requires_valid_finding_id(self, tmp_path):
+        """Incidents require a real Finding FK — orphan inserts must fail."""
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                db.persist_incident(_make_incident(99999))
+        finally:
+            db.close()
+
+    def test_get_findings_with_incidents_filters_correctly(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            fid_with = _seed_finding_id(db, file_path="src/a.py")
+            _seed_finding_id(db, file_path="src/b.py")  # no incident
+            db.persist_incident(_make_incident(fid_with))
+
+            rows = db.get_findings_with_incidents(["src/a.py", "src/b.py"])
+            assert len(rows) == 1
+            assert rows[0]["id"] == fid_with
+            assert rows[0]["file_path"] == "src/a.py"
+        finally:
+            db.close()
+
+    def test_link_commit_to_findings_updates_open_only(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            open_fid = _seed_finding_id(db, file_path="src/c.py", line_start=1, line_end=2)
+            resolved_fid = _seed_finding_id(
+                db, file_path="src/c.py", line_start=9, line_end=9
+            )
+            db.mark_resolved(resolved_fid)
+
+            n = db.link_commit_to_findings("sha789", ["src/c.py"])
+            assert n == 1
+
+            open_row = next(
+                r for r in db.get_unresolved("src/c.py") if r["id"] == open_fid
+            )
+            assert open_row["triggering_commit_sha"] == "sha789"
+
+            resolved_row = db._conn.execute(
+                "SELECT triggering_commit_sha FROM findings WHERE id = ?",
+                (resolved_fid,),
+            ).fetchone()
+            assert resolved_row[0] is None
+        finally:
+            db.close()
+
+    def test_mark_resolved_with_fix_commit_creates_incident(self, tmp_path):
+        """Behavioral change: fix_commit resolves AND records an Incident."""
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            fid = _seed_finding_id(db)
+            db.mark_resolved(fid, fix_commit="fixsha1")
+
+            assert db.get_unresolved("src/app.py") == []
+            row = db._conn.execute(
+                "SELECT fix_commit_sha FROM findings WHERE id = ?", (fid,)
+            ).fetchone()
+            assert row[0] == "fixsha1"
+
+            incidents = db.get_incidents_for_finding(fid)
+            assert len(incidents) == 1
+            assert incidents[0]["confirming_signal"] == "fix_commit"
+            assert incidents[0]["fix_commit"] == "fixsha1"
+        finally:
+            db.close()
+
+    def test_mark_resolved_without_fix_commit_backward_compat(self, tmp_path):
+        """Old call shape still works and creates no Incident."""
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            fid = _seed_finding_id(db)
+            db.mark_resolved(fid)
+
+            assert db.get_unresolved("src/app.py") == []
+            assert db.get_incidents_for_finding(fid) == []
+        finally:
+            db.close()
+
+    def test_get_recent_incidents_orders_by_created_at_desc(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            fid = _seed_finding_id(db)
+            db.persist_incident(_make_incident(fid, confirming_artifact="older"))
+            db.persist_incident(_make_incident(fid, confirming_artifact="newer"))
+
+            rows = db.get_recent_incidents(days=30, limit=50)
+            assert len(rows) == 2
+            # Most recent first (created_at desc, id desc tiebreak).
+            assert rows[0]["confirming_artifact"] == "newer"
+        finally:
+            db.close()
+
+    def test_migration_on_populated_db(self, tmp_path):
+        """A7: reopening a populated pre-v0.2 DB migrates without data loss."""
+        db_path = str(tmp_path / "v.db")
+        db1 = ViolationDB(db_path)
+        for i in range(5):
+            db1.persist_findings(
+                f"src/f{i}.py", [_make_finding(file_path=f"src/f{i}.py")]
+            )
+        assert len(db1.get_all_unresolved()) == 5
+        db1.close()
+
+        # Reopen — triggers _migrate on an existing populated DB.
+        db2 = ViolationDB(db_path)
+        try:
+            assert len(db2.get_all_unresolved()) == 5  # no data loss
+
+            cur = db2._conn.execute("PRAGMA table_info(findings)")
+            cols = {row[1] for row in cur.fetchall()}
+            assert "triggering_commit_sha" in cols
+            assert "fix_commit_sha" in cols
+
+            tbl = db2._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='incidents'"
+            ).fetchone()
+            assert tbl is not None
+        finally:
+            db2.close()
