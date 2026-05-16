@@ -385,6 +385,62 @@ def record_commit_cmd(
 
 
 @app.command()
+def confirm(
+    finding_id: int = typer.Argument(
+        ..., help="ID of the Finding to confirm"
+    ),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+    note: str = typer.Option(
+        "", "--note", "-n",
+        help="Optional context for the confirmation",
+    ),
+):
+    """Manually confirm a Finding, promoting it to an Incident.
+
+    Creates an Incident with confirming_signal='manual_confirm'. The
+    Finding stays open — confirmation is corroboration, not resolution.
+    """
+    import sqlite3
+
+    from .violation_db import Incident, ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    repo_path = pathlib.Path(config.watch.directory).resolve()
+    db_path = repo_path / config.memory.db_path
+    if not db_path.exists():
+        console.print("[red]No violation database found.[/red]")
+        raise typer.Exit(code=1)
+
+    db = ViolationDB(str(db_path))
+    try:
+        artifact = note or "manual confirm via `ollama-sentinel confirm`"
+        try:
+            db.persist_incident(
+                Incident(
+                    finding_id=finding_id,
+                    confirming_signal="manual_confirm",
+                    confirming_artifact=artifact,
+                )
+            )
+        except sqlite3.IntegrityError:
+            console.print(
+                f"[red]No finding with id {finding_id}; "
+                f"nothing to confirm.[/red]"
+            )
+            raise typer.Exit(code=1)
+    finally:
+        db.close()
+
+    console.print(
+        f"[green]Confirmed finding {finding_id} — Incident recorded "
+        f"(finding stays open).[/green]"
+    )
+
+
+@app.command()
 def triage(
     input_path: Optional[str] = typer.Argument(
         None,

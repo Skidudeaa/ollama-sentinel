@@ -1,6 +1,6 @@
 # v0.2: Incident Schema — Finding/Incident Split
 
-**Status:** IN PROGRESS — **Pieces 1 & 2 SHIPPED.** P1: schema + migration + CRUD (9 tests). P2: post-commit hook + `install-hooks`/`record-commit` CLI verbs (9 tests). Both TDD. Pieces 3–5 (confirm verb, pytest plugin, incidents CLI) not started. Prerequisite (reviewer-grounding) SHIPPED.
+**Status:** IN PROGRESS — **Pieces 1, 2 & 3 SHIPPED.** P1: schema + migration + CRUD (9 tests). P2: post-commit hook + `install-hooks`/`record-commit` verbs (9 tests). P3: `confirm` verb (3 tests). All TDD. Pieces 4–5 (pytest plugin, incidents CLI) not started. Prerequisite (reviewer-grounding) SHIPPED.
 **Effort:** ~3-4 days across schema + hooks + pytest plugin + CLI verbs
 **Owner:** unassigned
 **Prerequisites:** Phase A merged (PR #4). CB-3 shipped.
@@ -344,6 +344,16 @@ def record_commit_cmd(...):
   findings returns 0, no error.
 
 ### Piece 3: `ollama-sentinel confirm` CLI verb (~2 hours)
+
+> **SHIPPED.** `confirm <finding_id> [--note]` verb in `cli.py`: inserts
+> a `manual_confirm` Incident via `persist_incident`; the Finding stays
+> open (corroboration ≠ resolution). Nonexistent finding ids are caught
+> via Piece 1's FK constraint (`sqlite3.IntegrityError` → user error,
+> exit 1) — no extra existence query needed. `confirming_artifact` is the
+> `--note` text, or a default CLI-context string. Reuses Piece 2's
+> `_load_config_or_exit`. 3 tests in `tests/test_cli.py::TestConfirmCommand`
+> (the plan's 3 guarantees) using the existing `_make_report_config` /
+> CliRunner convention. Suite 500 / 15.
 
 **Files:** `ollama_sentinel/cli.py`, `tests/test_cli.py`
 

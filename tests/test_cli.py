@@ -334,3 +334,82 @@ class TestDefaultCommand:
         assert result.exit_code == 0
         output = (result.stdout or "") + (result.output or "")
         assert "ollama-sentinel" in output
+
+
+# ---------------------------------------------------------------------------
+# v0.2 Piece 3 — `ollama-sentinel confirm`
+# ---------------------------------------------------------------------------
+
+
+def _seed_one_finding_id(db_path):
+    """Seed a single finding and return (db_path, finding_id)."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = ViolationDB(str(db_path))
+    try:
+        db.persist_findings(
+            "src/app.py",
+            [Finding("src/app.py", 10, 12, "bug", "high", "Null deref")],
+        )
+        fid = db._conn.execute(
+            "SELECT id FROM findings ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+    finally:
+        db.close()
+    return fid
+
+
+class TestConfirmCommand:
+    """Tests for 'ollama-sentinel confirm' (manual corroboration)."""
+
+    def test_confirm_creates_incident(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        fid = _seed_one_finding_id(db_path)
+
+        result = runner.invoke(
+            app, ["confirm", str(fid), "--config", str(cfg)]
+        )
+        assert result.exit_code == 0, result.output
+
+        db = ViolationDB(str(db_path))
+        try:
+            incidents = db.get_incidents_for_finding(fid)
+            assert len(incidents) == 1
+            assert incidents[0]["confirming_signal"] == "manual_confirm"
+            # Confirmation is corroboration, NOT resolution — finding stays open.
+            assert len(db.get_unresolved("src/app.py")) == 1
+        finally:
+            db.close()
+
+    def test_confirm_nonexistent_finding_errors(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        ViolationDB(str(db_path)).close()  # empty DB, no finding 9999
+
+        result = runner.invoke(
+            app, ["confirm", "9999", "--config", str(cfg)]
+        )
+        assert result.exit_code == 1
+        assert "9999" in result.output or "no finding" in result.output.lower()
+
+    def test_confirm_with_note(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        fid = _seed_one_finding_id(db_path)
+
+        result = runner.invoke(
+            app,
+            ["confirm", str(fid), "--config", str(cfg), "--note", "hit in prod"],
+        )
+        assert result.exit_code == 0, result.output
+
+        db = ViolationDB(str(db_path))
+        try:
+            artifact = db.get_incidents_for_finding(fid)[0]["confirming_artifact"]
+            assert "hit in prod" in artifact
+        finally:
+            db.close()
