@@ -1,6 +1,6 @@
 # Reviewer grounding — schema-constrained output + verbatim validator
 
-**Status:** ready for review, then implementation
+**Status:** SHIPPED — master @ 47f1929 (Pre-1 2a83477; Step 1 810fc02+720972a; Step 2 d3262d6; Step 3 2f1e18e; --no-grounding 47f1929). Regex fallback retained behind --no-grounding per the plan's flag option. NOTE: the body below is stale pre-implementation prose ("After Pre-1 lands…", ground-truth @ 5c1e4a6) — describes pre-state, not current. Audit: docs/superpowers/plans/2026-05-15-implementation-audit.md
 **Effort:** ~1.5 days (Step 1) + ~2h (Step 2) on top of Pre-1
 **Owner:** unassigned
 **Prerequisites:** Pre-1 (widen `OllamaClient.response_format` to `Optional[Union[str, dict]]`)

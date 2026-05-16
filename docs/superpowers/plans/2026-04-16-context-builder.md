@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** SHIPPED 2026-04-16 — all phases landed. Follow-ups CB-1..CB-7 all closed (CB-1 by commit 1313681; followups.md previously mis-tracked it OPEN). Audit: docs/superpowers/plans/2026-05-15-implementation-audit.md
+
 **Goal:** Introduce a shared, token-budgeted, embedding-ranked context assembler (`ollama_sentinel/context/`) that replaces ad-hoc prompt assembly in the sentinel and the research agent, and upgrade `ViolationDB` to semantic recall via Ollama embeddings.
 
 **Architecture:** Six new files under `ollama_sentinel/context/` (pure assembler + tokenizer wrapper + Ollama embedder + retrievers + two named recipes). `ViolationDB` gains an `embed_text` column and a similarity-ranked query; `EnhancedMemoryStore` gets an optional async upgrade. Failures in the embedding path degrade to the existing exact-match / token-overlap behavior — review output is never blocked by infrastructure.

@@ -1,6 +1,6 @@
 # CB-3: Wire `find_similar_webpages_sync` into the analyze node
 
-**Status:** ready to ship
+**Status:** SHIPPED — commit 821b6b0 (2026-05-01). Test mechanism deviated from spec (formatter unit tests + source-level wiring guard instead of monkeypatch integration tests) per the closure-testing convention; equivalent guarantees, documented in commit body. Audit: docs/superpowers/plans/2026-05-15-implementation-audit.md
 **Effort:** ~30 min implementation + ~30 min tests, plus optional polish
 **Owner:** unassigned
 **Plan source:** Phase D of `~/.claude/plans/yes-putting-both-moonlit-galaxy.md`
