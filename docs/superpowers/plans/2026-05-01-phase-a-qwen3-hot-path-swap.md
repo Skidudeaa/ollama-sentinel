@@ -1,6 +1,6 @@
 # Phase A: Qwen3 hot-path swap + pre-registered role schema
 
-**Status:** ready to ship
+**Status:** SHIPPED 2026-05-01 (PR #4 area). Two documented deviations (§1 merge-in-validator, §5 closed role set) hardened the spec; both test-locked. Recall-diff receipt captured but sparse (thin violation DB). Audit: docs/superpowers/plans/2026-05-15-implementation-audit.md
 **Effort:** ~3-4 hours implementation + ~1 hour smoke testing
 **Owner:** unassigned (different agent team than the one implementing CB-3)
 **Plan source:** Phase A of `~/.claude/plans/yes-putting-both-moonlit-galaxy.md`,

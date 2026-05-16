@@ -1,6 +1,6 @@
 # v0.2: Incident Schema — Finding/Incident Split
 
-**Status:** ready for review, then implementation
+**Status:** NOT STARTED — cleanly parked, verified untouched at master @ 47f1929 (no incidents table / hooks.py / pytest plugin / CLI verbs / tests; CLAUDE.md "parked" claim accurate). Prerequisite (reviewer-grounding) now SHIPPED, so this is the next real implementation candidate. Audit: docs/superpowers/plans/2026-05-15-implementation-audit.md
 **Effort:** ~3-4 days across schema + hooks + pytest plugin + CLI verbs
 **Owner:** unassigned
 **Prerequisites:** Phase A merged (PR #4). CB-3 shipped.

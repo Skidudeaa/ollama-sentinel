@@ -1,6 +1,6 @@
 # Reviewer grounding — schema-constrained output + verbatim validator
 
-**Status:** ready for review, then implementation
+**Status:** SHIPPED — master @ 47f1929 (Pre-1 2a83477; Step 1 810fc02+720972a; Step 2 d3262d6; Step 3 2f1e18e; --no-grounding 47f1929). Regex fallback retained behind --no-grounding per the plan's flag option. NOTE: the body is the original pre-build plan ("After Pre-1 lands…", ground-truth @ 5c1e4a6); each Step/Validation heading carries a `> **SHIPPED**` marker recording what landed. Audit: docs/superpowers/plans/2026-05-15-implementation-audit.md
 **Effort:** ~1.5 days (Step 1) + ~2h (Step 2) on top of Pre-1
 **Owner:** unassigned
 **Prerequisites:** Pre-1 (widen `OllamaClient.response_format` to `Optional[Union[str, dict]]`)
@@ -133,6 +133,8 @@ Notes:
 
 ### Step 1: schema-constrained `generate_review` + validator (~1 day)
 
+> **SHIPPED** (810fc02 + 720972a). Prose below is the original pre-build plan. See audit: `docs/superpowers/plans/2026-05-15-implementation-audit.md`.
+
 **Files:** `ollama_sentinel/processor.py`, `ollama_sentinel/extractor.py`,
 `tests/test_processor.py`, `tests/test_extractor.py`
 
@@ -181,6 +183,8 @@ the wiring is:
 
 ### Step 2: quote-first prompt ordering (~2h)
 
+> **SHIPPED** (d3262d6; made grounding-conditional in 47f1929). Prose below is the original pre-build plan. See audit: `docs/superpowers/plans/2026-05-15-implementation-audit.md`.
+
 **Files:** `ollama_sentinel/context/recipes.py`, `tests/test_recipes.py`
 
 `build_review_context` (`recipes.py:48-91`) currently orders sections
@@ -210,6 +214,8 @@ tokens reach the schema's `verbatim_excerpt` slot naturally.
   measurably increases the WARNING-log rate on the same input set.
 
 ### Step 3: regression test against the May-3 slop set (~1h)
+
+> **SHIPPED** (2f1e18e — `tests/test_grounding_regression.py`, R1-R4 slop + P1-P4 real-source positive cases). The May-3 retro never snapshotted raw model responses, so fixtures are synthetic-slop / verbatim-real-source rather than replayed captures — see the P1-P4 header comment and the audit doc. See audit: `docs/superpowers/plans/2026-05-15-implementation-audit.md`.
 
 **Files:** `tests/test_grounding_regression.py` (new)
 
@@ -248,6 +254,12 @@ that is verifiable). This is the empirical seal on the fix.
 ---
 
 ## Validation — the empirical test
+
+> **SHIPPED & CLOSED.** Item 1 (slop inputs → zero findings): R1-R4. Item 2
+> (correct findings round-trip un-rejected): `test_correct_finding_on_real_source_is_not_rejected`
+> (P1-P4) using verbatim real source from `processor.py` @ 47f1929 — closes
+> the synthetic-positive gap the 2026-05-15 audit flagged. Item 3 (full
+> suite green post-removal): 483 passed / 15 skipped.
 
 Before this spec ships to merge:
 

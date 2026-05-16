@@ -158,17 +158,22 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 ### Resume here next time
 
-All open backlog items from the last two sessions are closed. Remaining
-deferred work is low-priority and not blocking anything:
+All open backlog items are closed. The 2026-05-15 implementation audit
+(`docs/superpowers/plans/2026-05-15-implementation-audit.md`) verified all
+6 plans against landed code: 4 SHIPPED, context-builder + triage SHIPPED,
+v0.2 incident schema cleanly NOT STARTED (parked).
 
-1. **Sanity check first.** `pytest tests/ -q` should report 378 / 15 skip.
-2. **Remaining open items** (from `docs/superpowers/followups.md`):
-   - CB-1 — dedupe impact-report formatters (harmless until `build_research_context` is reachable for impact data)
+1. **Sanity check first.** `pytest tests/ -q` should report ~494 collected
+   / 479 passed / 15 skip.
+2. **CB-1 is DONE** (commit `1313681`) — was previously mis-tracked OPEN
+   here and in followups.md; corrected by the 2026-05-15 audit. No open
+   follow-ups remain.
+
 ### Pickable next moves (ordered by leverage)
 
 | # | Item | Effort | Risk | Notes |
 |---|---|---|---|---|
-| 1 | CB-1 — dedupe impact-report formatter between `recipes.py:_format_impact_report` and `synthesis.py:format_impact_report` | ~30-45 min | low | Harmless today (mutually exclusive paths); only triggers if `build_research_context` ever gets impact data. |
+| 1 | v0.2 incident schema — Finding/Incident split | ~3-4 days | med | Plan `docs/superpowers/plans/2026-05-02-v02-incident-schema.md`. Its prerequisite (reviewer-grounding) is now SHIPPED, so this is unblocked. Fully parked — zero code footprint today. |
 
 Skip TR-3 — deliberate spec deviation, documented in followups.md.
 
