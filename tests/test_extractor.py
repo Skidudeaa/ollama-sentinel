@@ -419,6 +419,57 @@ class TestParseReviewResponse:
         assert not [r for r in caplog.records
                     if r.levelname in ("WARNING", "ERROR")]
 
+    async def test_schema_partial_json_flags_parse_failed(
+        self, sentinel_config, tmp_path, httpx_mock
+    ):
+        """Valid JSON that ignores the schema (summary but no findings array)
+        must degrade — this is the exact shape deepseek-v4-pro:cloud emits."""
+        from ollama_sentinel.processor import FileProcessor, FileChange
+        from watchfiles import Change
+        import json
+
+        source = tmp_path / "p.py"
+        source.write_text("x = 1\n")
+        httpx_mock.add_response(
+            url="http://localhost:11434/api/chat",
+            json={"message": {"content": json.dumps(
+                {"summary": "No bugs found.",
+                 "details": "x", "recommendations": []})}},
+        )
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified)
+        try:
+            result = await fp.generate_review(fc)
+        finally:
+            await fp.ollama_client.close()
+
+        assert result["summary"] == "No bugs found."
+        assert result["findings"] == []
+        assert result["grounding_parse_failed"] is True
+
+    async def test_non_dict_json_flags_parse_failed(
+        self, sentinel_config, tmp_path, httpx_mock
+    ):
+        """Valid JSON that is not a dict (e.g. a bare array) must degrade."""
+        from ollama_sentinel.processor import FileProcessor, FileChange
+        from watchfiles import Change
+
+        source = tmp_path / "q.py"
+        source.write_text("y = 2\n")
+        httpx_mock.add_response(
+            url="http://localhost:11434/api/chat",
+            json={"message": {"content": "[]"}},
+        )
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified)
+        try:
+            result = await fp.generate_review(fc)
+        finally:
+            await fp.ollama_client.close()
+
+        assert result["findings"] == []
+        assert result["grounding_parse_failed"] is True
+
 
 # ---------------------------------------------------------------------------
 # Recipe instruction ordering test (Step 2)

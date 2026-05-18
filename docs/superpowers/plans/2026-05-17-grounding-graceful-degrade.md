@@ -111,6 +111,17 @@ post-call assertions (lines 386-391) with:
 >    real method is `FileSentinel.process_change`. All references in this
 >    doc and the wiring-guard test were corrected to `process_change`.
 >    (The stale name originated in the CLAUDE.md architecture note.)
+> 3. **Scope completion (advisor-caught):** the original plan only flagged
+>    the `JSONDecodeError` path (C). `_parse_review_response` also has
+>    path B (valid JSON, `summary` present, `findings` absent — the exact
+>    shape `deepseek-v4-pro:cloud` emits on short prompts) and path D
+>    (valid non-dict JSON), both of which produced the *same*
+>    silent-zero-findings symptom with no flag. Under grounding, only the
+>    fully-conformant path A now returns without `grounding_parse_failed`;
+>    B/C/D all degrade. +2 tests
+>    (`test_schema_partial_json_flags_parse_failed`,
+>    `test_non_dict_json_flags_parse_failed`). Without this the
+>    followups.md "RESOLVED" claim would have been false.
 
 - [ ] **Step 2: Add a test that valid-JSON-empty does NOT set the flag**
 
