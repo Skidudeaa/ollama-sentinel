@@ -512,7 +512,15 @@ class FileProcessor:
             if isinstance(parsed, dict) and "summary" in parsed:
                 return {"summary": parsed["summary"], "findings": []}
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            log.error("Schema validation failed for review response: %s", e)
+            # The model ignored Ollama's `format` schema (common for :cloud
+            # models and markdown-instructed system prompts) and returned
+            # prose. Recoverable: the watcher degrades to the legacy regex
+            # extractor on the prose. WARNING, not ERROR — handled path.
+            log.warning(
+                "Grounded review did not parse as JSON (%s); "
+                "degrading to legacy prose extractor", e,
+            )
+            return {"summary": raw, "findings": [], "grounding_parse_failed": True}
         return {"summary": raw, "findings": []}
 
     async def generate_review(self, file_change: FileChange, model_role: str = "default") -> dict[str, Any]:
