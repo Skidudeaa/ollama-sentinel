@@ -18,9 +18,7 @@ from ollama_sentinel.dashboard import (
     top_violations,
     watcher_status,
     watcher_status_from_age,
-    _overview_panel,
     _patterns_panel,
-    _header_panel_v2,
     _footer_panel_v2,
 )
 from ollama_sentinel.violation_db import Finding, ViolationDB
@@ -343,16 +341,6 @@ class TestSuggestedAction:
 
 
 class TestControlCenterPanels:
-    def test_overview_panel_renders(self):
-        stats = OverviewStats(
-            total_reviews=10, newest_review_age_s=30.0, total_unresolved=5,
-            severity_counts={"high": 3, "medium": 2},
-            hottest_file="src/app.py", hottest_count=3,
-            new_this_week=2,
-        )
-        panel = _overview_panel(stats)
-        assert panel.title == "Overview"
-
     def test_patterns_panel_empty(self):
         panel = _patterns_panel([])
         assert panel.title == "Patterns"
@@ -365,15 +353,6 @@ class TestControlCenterPanels:
         ]
         panel = _patterns_panel(rows)
         assert "Patterns (1)" in panel.title
-
-    def test_header_v2_renders(self):
-        stats = OverviewStats(
-            total_reviews=5, newest_review_age_s=30.0, total_unresolved=8,
-            config_path="test.yaml", model_name="gemma3",
-            watch_dir="/code", db_exists=True,
-        )
-        panel = _header_panel_v2(stats, time.time())
-        assert panel.border_style == "bold cyan"
 
     def test_footer_v2_renders(self):
         panel = _footer_panel_v2()
