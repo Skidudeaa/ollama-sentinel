@@ -420,6 +420,23 @@ class TestControlCenterPanels:
                               total_unresolved=0, db_exists=False)
         assert "no findings" in _render(_severity_banner(stats)).lower()
 
+    def test_severity_banner_all_clear_when_no_unresolved(self):
+        from ollama_sentinel.dashboard import _severity_banner
+        stats = OverviewStats(total_reviews=10, newest_review_age_s=30.0,
+                              total_unresolved=0, db_exists=True)
+        assert "all clear" in _render(_severity_banner(stats)).lower()
+
+    def test_severity_banner_no_hottest_file_fallback(self):
+        from ollama_sentinel.dashboard import _severity_banner
+        stats = OverviewStats(
+            total_reviews=5, newest_review_age_s=30.0, total_unresolved=10,
+            severity_counts={"high": 5, "medium": 5},
+            hottest_file=None, hottest_count=0, db_exists=True,
+        )
+        text = _render(_severity_banner(stats))
+        assert "—" in text          # 🔥 — fallback rendered
+        assert "ErasZoneView" not in text
+
 
 class TestRenderLayoutBackwardsCompat:
     def test_old_signature_produces_legacy_layout(self, tmp_path):
