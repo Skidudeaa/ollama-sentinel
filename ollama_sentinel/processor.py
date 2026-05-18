@@ -498,10 +498,13 @@ class FileProcessor:
     def _parse_review_response(self, raw: str, *, grounding: bool = True) -> dict[str, Any]:
         """Parse Ollama's response into a structured review dict.
 
-        In grounded mode (``grounding=True``), expects schema-conformant JSON
-        and falls back to prose-only output with empty findings on parse failure.
-        In ungrounded mode, treats ``raw`` as free-form prose — findings are
-        extracted downstream by the legacy regex path in ``watcher._process_file``.
+        In grounded mode (``grounding=True``), expects schema-conformant JSON.
+        Any non-conformant grounded output (parse failure, valid JSON missing
+        the ``findings`` array, or non-dict JSON) returns prose with empty
+        findings AND ``grounding_parse_failed=True`` so the watcher degrades
+        to the legacy regex extractor. In ungrounded mode, treats ``raw`` as
+        free-form prose. Either way, prose findings are extracted downstream
+        by the legacy regex path in ``watcher.FileSentinel.process_change``.
         """
         if not grounding:
             return {"summary": raw, "findings": []}
