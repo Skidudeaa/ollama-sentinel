@@ -179,15 +179,19 @@ updates.
 `FileSentinel.process_change`).
 
 **Was:** grounded reviews from models that ignore Ollama's `format`
-schema (all `:cloud` models; markdown-instructed system prompts) failed
-`json.loads`, logged ERROR, and persisted zero findings — violation
-memory silently dead. Reproduced live against `deepseek-v4-pro:cloud`
-on `EnhancedVinylPlayerView.swift`.
+schema (all `:cloud` models; markdown-instructed system prompts)
+persisted zero findings — violation memory silently dead — via three
+distinct non-conformant outputs: JSONDecodeError on markdown (logged
+ERROR), valid-JSON-but-no-`findings` (the shape `deepseek-v4-pro:cloud`
+emits on short prompts), and valid non-dict JSON. Reproduced live
+against `deepseek-v4-pro:cloud` on `EnhancedVinylPlayerView.swift`.
 
-**Fix:** parse failure now flags `grounding_parse_failed` + logs WARNING;
-the watcher degrades to `extract_findings_legacy` on the prose via the
-pure `_should_run_legacy_extractor` predicate. Commits `9b239a1`,
-`4482b02`. Plan:
+**Fix:** every non-conformant grounded output now flags
+`grounding_parse_failed` (parse failure also logs WARNING, not ERROR);
+under grounding only the fully schema-conformant response skips the
+flag. The watcher degrades to `extract_findings_legacy` on the prose
+via the pure `_should_run_legacy_extractor` predicate. Commits
+`9b239a1`, `4482b02`, + path-B/D follow-up. Plan:
 `docs/superpowers/plans/2026-05-17-grounding-graceful-degrade.md`.
 
 **Residual:** prompt-level JSON instruction injection still unaddressed

@@ -510,7 +510,14 @@ class FileProcessor:
             if isinstance(parsed, dict) and "summary" in parsed and "findings" in parsed:
                 return parsed  # type: ignore[return-value]
             if isinstance(parsed, dict) and "summary" in parsed:
-                return {"summary": parsed["summary"], "findings": []}
+                # Valid JSON but schema-ignoring (no `findings` array — a
+                # required key). Same signal as a parse failure: degrade so
+                # the watcher runs the legacy extractor on the prose.
+                return {
+                    "summary": parsed["summary"],
+                    "findings": [],
+                    "grounding_parse_failed": True,
+                }
         except (json.JSONDecodeError, TypeError, ValueError) as e:
             # The model ignored Ollama's `format` schema (common for :cloud
             # models and markdown-instructed system prompts) and returned
@@ -521,7 +528,10 @@ class FileProcessor:
                 "degrading to legacy prose extractor", e,
             )
             return {"summary": raw, "findings": [], "grounding_parse_failed": True}
-        return {"summary": raw, "findings": []}
+        # Reached only under grounding (ungrounded returned early): JSON
+        # parsed but is not a dict / lacks `summary`. Non-conformant —
+        # degrade like the other schema-ignoring paths.
+        return {"summary": raw, "findings": [], "grounding_parse_failed": True}
 
     async def generate_review(self, file_change: FileChange, model_role: str = "default") -> dict[str, Any]:
         """
