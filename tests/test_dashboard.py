@@ -34,8 +34,9 @@ def _touch(path: pathlib.Path, mtime: float) -> None:
 
 def _render(renderable, width: int = 120) -> str:
     """Render a Rich renderable to plain text for content assertions."""
+    import io
     from rich.console import Console
-    c = Console(width=width, record=True, file=open(os.devnull, "w"))
+    c = Console(width=width, record=True, file=io.StringIO())
     c.print(renderable)
     return c.export_text()
 
