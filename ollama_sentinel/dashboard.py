@@ -46,6 +46,27 @@ _STATUS_STYLE = {
     "no_data": "dim",
 }
 
+_SEVERITY_WEIGHT = {
+    "critical": 8,
+    "high": 4,
+    "medium": 2,
+    "low": 1,
+}
+
+
+def blended_rank(rows: "List[ViolationRow]") -> "List[ViolationRow]":
+    """Order recurring findings by triage urgency.
+
+    Sort key: ``severity_weight * count`` descending; unknown severities
+    weigh 0 (sort last). Ties: count desc, then file_path asc. Pure and
+    stable; never raises on bad input.
+    """
+    def key(r: "ViolationRow"):
+        weight = _SEVERITY_WEIGHT.get(r.severity.lower(), 0)
+        return (-(weight * r.count), -r.count, r.file_path)
+
+    return sorted(rows, key=key)
+
 
 # ---------------------------------------------------------------------------
 # Pure data helpers (unit-tested)

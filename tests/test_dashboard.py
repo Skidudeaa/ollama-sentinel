@@ -32,6 +32,14 @@ def _touch(path: pathlib.Path, mtime: float) -> None:
     os.utime(path, (mtime, mtime))
 
 
+def _render(renderable, width: int = 120) -> str:
+    """Render a Rich renderable to plain text for content assertions."""
+    from rich.console import Console
+    c = Console(width=width, record=True, file=open(os.devnull, "w"))
+    c.print(renderable)
+    return c.export_text()
+
+
 class TestRecentReviews:
     def test_empty_dir_returns_empty(self, tmp_path):
         assert recent_reviews(tmp_path, limit=10) == []
@@ -448,3 +456,46 @@ class TestViolationDBNewHelpers:
             assert db.hottest_file() == []
         finally:
             db.close()
+
+
+class TestBlendedRank:
+    def _vr(self, sev, count, fp="f.py", line=1):
+        return ViolationRow(count=count, severity=sev, category="bug",
+                             file_path=fp, line_start=line, line_end=line,
+                             description="d")
+
+    def test_severity_weight_ordering_invariant(self):
+        from ollama_sentinel.dashboard import _SEVERITY_WEIGHT
+        w = _SEVERITY_WEIGHT
+        assert w["critical"] > w["high"] > w["medium"] > w["low"]
+        assert w["critical"] > 7 * w["low"]   # one CRIT outranks 7 LOW
+
+    def test_blended_orders_by_weight_times_count(self):
+        from ollama_sentinel.dashboard import blended_rank
+        rows = [
+            self._vr("medium", 15),   # 2*15 = 30
+            self._vr("high", 11),     # 4*11 = 44
+            self._vr("critical", 4),  # 8*4  = 32
+            self._vr("low", 50),      # 1*50 = 50
+        ]
+        ranked = blended_rank(rows)
+        assert [(r.severity, r.count) for r in ranked] == [
+            ("low", 50), ("high", 11), ("critical", 4), ("medium", 15)]
+
+    def test_tiebreak_count_then_filepath(self):
+        from ollama_sentinel.dashboard import blended_rank
+        a = self._vr("high", 5, fp="z.py")   # 20
+        b = self._vr("high", 5, fp="a.py")   # 20 -> file asc
+        c = self._vr("high", 9, fp="m.py")   # 36
+        ranked = blended_rank([a, b, c])
+        assert [r.file_path for r in ranked] == ["m.py", "a.py", "z.py"]
+
+    def test_unknown_severity_weight_zero_sorts_last(self):
+        from ollama_sentinel.dashboard import blended_rank
+        good = self._vr("low", 1)
+        bad = self._vr("bogus", 999)
+        assert blended_rank([bad, good]) == [good, bad]
+
+    def test_empty_returns_empty(self):
+        from ollama_sentinel.dashboard import blended_rank
+        assert blended_rank([]) == []
