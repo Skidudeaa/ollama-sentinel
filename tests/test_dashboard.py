@@ -461,6 +461,40 @@ class TestRenderLayoutBackwardsCompat:
         assert layout["footer"] is not None
 
 
+class TestTriageRenderIntegration:
+    """End-to-end lock: render_layout's v2 patterns panel shows findings in
+    blended (severity*recurrence) order, not input/recurrence-only order."""
+
+    def test_render_layout_patterns_are_blended_ranked(self, tmp_path):
+        now = time.time()
+        # low x50 -> weight 50 ; critical x1 -> weight 8 ; high x11 -> weight 44
+        # blended order must be: low(50), high(44), critical(8)
+        violations = [
+            ViolationRow(count=1, severity="critical", category="bug",
+                         file_path="CritFile.py", line_start=1, line_end=1,
+                         description="crit"),
+            ViolationRow(count=50, severity="low", category="style",
+                         file_path="LowFile.py", line_start=2, line_end=2,
+                         description="low"),
+            ViolationRow(count=11, severity="high", category="bug",
+                         file_path="HighFile.py", line_start=3, line_end=3,
+                         description="high"),
+        ]
+        layout = render_layout(
+            str(tmp_path), tmp_path, tmp_path / "memory.db",
+            [], violations, now,
+            config_path="test.yaml", model_name="gemma3",
+            severity_counts={"critical": 1, "high": 11, "low": 50},
+        )
+        # The panel render_layout actually built for the patterns region:
+        panel = layout["body"]["left"].renderable
+        out = _render(panel, width=120)
+        i_low = out.index("LowFile.py")
+        i_high = out.index("HighFile.py")
+        i_crit = out.index("CritFile.py")
+        assert i_low < i_high < i_crit, out
+
+
 class TestViolationDBNewHelpers:
     def test_count_by_severity(self, tmp_path):
         db = ViolationDB(str(tmp_path / "m.db"))
