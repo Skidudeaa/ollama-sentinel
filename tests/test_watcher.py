@@ -369,3 +369,29 @@ class TestWatchFilterCallable:
         from watchfiles import Change
         filter_fn = lambda _, p: not s._should_ignore(pathlib.Path(p))
         assert filter_fn(Change.modified, str(tmp_path / "app.py")) is True
+
+
+class TestShouldRunLegacyExtractor:
+    """Pure predicate: when does the legacy regex extractor run?"""
+
+    def test_ungrounded_always_runs(self):
+        from ollama_sentinel.watcher import _should_run_legacy_extractor
+        assert _should_run_legacy_extractor(False, {"summary": "x"}) is True
+
+    def test_grounded_clean_parse_does_not_run(self):
+        from ollama_sentinel.watcher import _should_run_legacy_extractor
+        assert _should_run_legacy_extractor(True, {"summary": "x"}) is False
+
+    def test_grounded_parse_failure_runs(self):
+        from ollama_sentinel.watcher import _should_run_legacy_extractor
+        review = {"summary": "## prose", "findings": [],
+                  "grounding_parse_failed": True}
+        assert _should_run_legacy_extractor(True, review) is True
+
+    def test_wiring_calls_predicate(self):
+        """Source guard: process_change must route through the predicate,
+        not an inline grounding-only check (closure-testing pattern)."""
+        import inspect, ollama_sentinel.watcher as w
+        src = inspect.getsource(w.FileSentinel.process_change)
+        assert "_should_run_legacy_extractor(" in src
+        assert "elif not self.config.processing.grounding:" not in src
