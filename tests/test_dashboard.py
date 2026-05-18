@@ -398,6 +398,7 @@ class TestControlCenterPanels:
                               total_unresolved=0)
         panel = _vitals_strip(stats, time.time())   # must not raise
         assert "unknown" in _render(panel)
+        assert "no DB" in _render(panel)
 
 
 class TestRenderLayoutBackwardsCompat:
