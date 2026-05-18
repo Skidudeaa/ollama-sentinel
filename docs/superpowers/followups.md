@@ -6,6 +6,7 @@ Not blockers — each entry has enough context to pick up in a fresh session.
 - [ContextBuilder](#contextbuilder-landed-2026-04-16) (2026-04-16)
 - [Triage](#triage-landed-2026-04-16) (2026-04-16)
 - [Operational DX](#operational-dx-filed-2026-05-02) (2026-05-02)
+- [Grounding graceful-degrade](#grounding-graceful-degrade-resolved-2026-05-17) (resolved 2026-05-17)
 
 ---
 
@@ -166,3 +167,28 @@ and is surprised that nothing changed.
 the `awatch` loop, not just rebuilding clients) — first pass should
 explicitly warn-and-skip directory changes and only honor model/timeout
 updates.
+
+---
+
+## Grounding graceful-degrade (resolved 2026-05-17)
+
+### RESOLVED 2026-05-17 — grounding silent-zero-findings on schema-ignoring models
+
+**Files:** `ollama_sentinel/processor.py` (`_parse_review_response`),
+`ollama_sentinel/watcher.py` (`_should_run_legacy_extractor` +
+`FileSentinel.process_change`).
+
+**Was:** grounded reviews from models that ignore Ollama's `format`
+schema (all `:cloud` models; markdown-instructed system prompts) failed
+`json.loads`, logged ERROR, and persisted zero findings — violation
+memory silently dead. Reproduced live against `deepseek-v4-pro:cloud`
+on `EnhancedVinylPlayerView.swift`.
+
+**Fix:** parse failure now flags `grounding_parse_failed` + logs WARNING;
+the watcher degrades to `extract_findings_legacy` on the prose via the
+pure `_should_run_legacy_extractor` predicate. Commits `9b239a1`,
+`4482b02`. Plan:
+`docs/superpowers/plans/2026-05-17-grounding-graceful-degrade.md`.
+
+**Residual:** prompt-level JSON instruction injection still unaddressed
+(out of scope here; lower priority now that the degrade exists).
