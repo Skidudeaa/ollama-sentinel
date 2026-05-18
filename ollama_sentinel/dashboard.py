@@ -449,7 +449,7 @@ def _patterns_panel(rows: List[ViolationRow]) -> Panel:
     table.add_column(justify="right", style="bold", no_wrap=True)
     table.add_column(no_wrap=True)
     table.add_column(no_wrap=True)
-    table.add_column(overflow="ellipsis")
+    table.add_column(no_wrap=True, overflow="ellipsis")
     for r in rows:
         sev_style = _SEVERITY_STYLE.get(r.severity.lower(), "white")
         table.add_row(
@@ -914,7 +914,7 @@ def _patterns_panel_interactive(
     table.add_column(justify="right", style="bold", no_wrap=True)
     table.add_column(no_wrap=True)
     table.add_column(no_wrap=True)
-    table.add_column(overflow="ellipsis")
+    table.add_column(no_wrap=True, overflow="ellipsis")
     for i, r in enumerate(visible):
         abs_idx = scroll + i
         if abs_idx == selection:
