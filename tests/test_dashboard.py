@@ -400,6 +400,26 @@ class TestControlCenterPanels:
         assert "unknown" in _render(panel)
         assert "no DB" in _render(panel)
 
+    def test_severity_banner_shows_counts_and_action(self):
+        from ollama_sentinel.dashboard import _severity_banner
+        stats = OverviewStats(
+            total_reviews=59, newest_review_age_s=30.0, total_unresolved=1230,
+            severity_counts={"critical": 74, "high": 104,
+                             "medium": 576, "low": 476},
+            hottest_file="ErasZoneView.swift", hottest_count=239,
+            db_exists=True,
+        )
+        text = _render(_severity_banner(stats))
+        assert "74" in text and "104" in text and "576" in text and "476" in text
+        assert "ErasZoneView.swift" in text and "239" in text
+        assert "critical" in text.lower()       # from suggested_action
+
+    def test_severity_banner_empty_placeholder(self):
+        from ollama_sentinel.dashboard import _severity_banner
+        stats = OverviewStats(total_reviews=0, newest_review_age_s=None,
+                              total_unresolved=0, db_exists=False)
+        assert "no findings" in _render(_severity_banner(stats)).lower()
+
 
 class TestRenderLayoutBackwardsCompat:
     def test_old_signature_produces_legacy_layout(self, tmp_path):
