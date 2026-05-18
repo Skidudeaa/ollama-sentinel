@@ -437,6 +437,24 @@ class TestControlCenterPanels:
         assert "—" in text          # 🔥 — fallback rendered
         assert "ErasZoneView" not in text
 
+    def test_reviews_rail_compact_and_selection(self):
+        from ollama_sentinel.dashboard import _reviews_rail
+        now = time.time()
+        rows = [ReviewRow(rel_path="Sources/Vinyl/VinylAudioSourceSelector.md",
+                          mtime=now - 2760),
+                ReviewRow(rel_path="a/b/Left.md", mtime=now - 3000)]
+        panel = _reviews_rail(rows, now, selection=0, scroll=0)
+        text = _render(panel, width=40)
+        assert "46m" in text                         # 2760s -> 46m ago
+        assert "VinylAudioSourceSelector" in text    # basename kept
+        assert panel.border_style == "blue"
+        assert all(len(ln) <= 40 for ln in text.splitlines())
+
+    def test_reviews_rail_empty(self):
+        from ollama_sentinel.dashboard import _reviews_rail
+        panel = _reviews_rail([], time.time(), selection=-1, scroll=0)
+        assert "no reviews" in _render(panel).lower()
+
 
 class TestRenderLayoutBackwardsCompat:
     def test_old_signature_produces_legacy_layout(self, tmp_path):

@@ -349,6 +349,35 @@ def _severity_banner(stats: OverviewStats) -> Panel:
                  border_style=border, padding=(0, 1))
 
 
+def _reviews_rail(
+    rows: List[ReviewRow], now: float, selection: int, scroll: int,
+) -> Panel:
+    """Narrow Recent-Reviews rail: '{ago}  {basename}', one line each.
+
+    Selection highlight preserved (REVIEWS panel stays focusable). Path
+    is basename-biased so the rail stays readable when narrow.
+    """
+    if not rows:
+        return Panel(Text("no reviews yet", style="dim"),
+                     title="Recent", border_style="blue")
+    visible = rows[scroll:scroll + 15]
+    table = Table.grid(padding=(0, 1), expand=True)
+    table.add_column(justify="right", no_wrap=True)
+    table.add_column(no_wrap=True, overflow="ellipsis")
+    for i, r in enumerate(visible):
+        sel = (scroll + i) == selection
+        name = r.rel_path.rsplit("/", 1)[-1]
+        table.add_row(
+            Text(_format_ago(r.mtime, now), style="reverse" if sel else "dim"),
+            Text(name, style="reverse" if sel else ""),
+        )
+    count = len(rows)
+    title = f"Recent ({count})"
+    if scroll > 0 or scroll + 15 < count:
+        title += f" [{scroll + 1}-{min(scroll + 15, count)}]"
+    return Panel(table, title=title, border_style="blue")
+
+
 def watcher_status_from_age(age_s: Optional[float]) -> tuple:
     """Derive watcher status from the newest review's age in seconds."""
     if age_s is None:
