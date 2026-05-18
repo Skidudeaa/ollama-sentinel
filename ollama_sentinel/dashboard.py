@@ -316,6 +316,39 @@ def _vitals_strip(stats: OverviewStats, now: float) -> Panel:
                  padding=(0, 1))
 
 
+def _severity_banner(stats: OverviewStats) -> Panel:
+    """Bold severity scoreboard + hottest-file / next-action callout.
+
+    Line 1: per-severity counts (descending severity), each styled by
+    _SEVERITY_STYLE. Line 2: hottest file + suggested action. Empty /
+    no-DB state shows a muted placeholder; never raises.
+    """
+    if not stats.db_exists or stats.total_unresolved == 0:
+        msg = ("[dim]no findings yet — save a watched file[/]"
+               if stats.total_reviews == 0
+               else "[bold green]All clear — no open findings[/]")
+        return Panel(Text.from_markup(msg), border_style="green",
+                     padding=(0, 1))
+
+    cells = []
+    for sev in ("critical", "high", "medium", "low"):
+        count = stats.severity_counts.get(sev, 0)
+        style = _SEVERITY_STYLE[sev]
+        cells.append(f"[{style}]{sev[:4].upper()} {count}[/]")
+    line1 = "   ".join(cells)
+
+    if stats.hottest_file:
+        hot = (f"[red]🔥[/] [white]{stats.hottest_file}[/]"
+               f" [dim]({stats.hottest_count})[/]")
+    else:
+        hot = "[dim]🔥 —[/]"
+    line2 = f"{hot}   [dim]▸[/] [italic]{suggested_action(stats)}[/]"
+
+    border = "red" if stats.severity_counts.get("critical", 0) else "yellow"
+    return Panel(Text.from_markup(f"{line1}\n{line2}"),
+                 border_style=border, padding=(0, 1))
+
+
 def watcher_status_from_age(age_s: Optional[float]) -> tuple:
     """Derive watcher status from the newest review's age in seconds."""
     if age_s is None:
