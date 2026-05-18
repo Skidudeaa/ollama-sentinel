@@ -292,6 +292,30 @@ def _header_panel_v2(stats: OverviewStats, now: float) -> Panel:
     return Panel(Text.from_markup(body), border_style="bold cyan", padding=(0, 1))
 
 
+def _vitals_strip(stats: OverviewStats, now: float) -> Panel:
+    """One-line vitals: status dot, model, open count, update clock.
+
+    Triage replacement for the old three-line v2 header. Status dot
+    color tracks watcher staleness. Never raises on empty stats.
+    """
+    ts = _dt.datetime.fromtimestamp(now).strftime("%H:%M:%S")
+    status_label, status_key = watcher_status_from_age(stats.newest_review_age_s)
+    status_style = _STATUS_STYLE.get(status_key, "dim")
+    model = stats.model_name or "unknown"
+    if stats.db_exists:
+        db_info = f"[white]{stats.total_unresolved}[/] open"
+    else:
+        db_info = "[dim]no DB[/]"
+    body = (
+        f"[{status_style}]●[/] [{status_style}]{status_label}[/]"
+        f"  [dim]│[/]  [white]{model}[/]"
+        f"  [dim]│[/]  {db_info}"
+        f"  [dim]│[/]  [dim]rev[/] [white]{ts}[/]"
+    )
+    return Panel(Text.from_markup(body), border_style="bold cyan",
+                 padding=(0, 1))
+
+
 def watcher_status_from_age(age_s: Optional[float]) -> tuple:
     """Derive watcher status from the newest review's age in seconds."""
     if age_s is None:
