@@ -379,6 +379,26 @@ class TestControlCenterPanels:
         panel = _footer_panel_v2()
         assert panel.border_style == "dim"
 
+    def test_vitals_strip_renders(self):
+        from ollama_sentinel.dashboard import _vitals_strip
+        stats = OverviewStats(
+            total_reviews=5, newest_review_age_s=30.0, total_unresolved=8,
+            config_path="test.yaml", model_name="gemma3",
+            watch_dir="/code", db_exists=True,
+        )
+        panel = _vitals_strip(stats, time.time())
+        text = _render(panel)
+        assert "gemma3" in text
+        assert "Active" in text                 # age 30s -> Active
+        assert panel.border_style == "bold cyan"
+
+    def test_vitals_strip_handles_empty(self):
+        from ollama_sentinel.dashboard import _vitals_strip
+        stats = OverviewStats(total_reviews=0, newest_review_age_s=None,
+                              total_unresolved=0)
+        panel = _vitals_strip(stats, time.time())   # must not raise
+        assert "unknown" in _render(panel)
+
 
 class TestRenderLayoutBackwardsCompat:
     def test_old_signature_produces_legacy_layout(self, tmp_path):
