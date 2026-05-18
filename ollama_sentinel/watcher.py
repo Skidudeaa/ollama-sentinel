@@ -97,6 +97,19 @@ def _is_likely_binary(path: pathlib.Path, peek_bytes: int = 8192) -> bool:
         return False
 
 
+def _should_run_legacy_extractor(grounding: bool, review: dict) -> bool:
+    """Decide whether the legacy regex finding extractor should run.
+
+    Runs when grounding is off (model emits free-form prose by design) OR
+    when a grounded review failed JSON parse (`grounding_parse_failed`),
+    so a model that ignored Ollama's `format` schema still yields findings
+    instead of silently persisting none.
+    """
+    if not grounding:
+        return True
+    return bool(review.get("grounding_parse_failed"))
+
+
 class FileSentinel:
     """Main sentinel class that watches for file changes and coordinates processing."""
     
@@ -238,8 +251,13 @@ class FileSentinel:
                         valid_findings = await validate_findings(
                             findings_list, str(rel_path), file_content,
                         )
-                    elif not self.config.processing.grounding:
-                        # Ungrounded path: regex-extract findings from free-form prose.
+                    elif _should_run_legacy_extractor(
+                        self.config.processing.grounding, review,
+                    ):
+                        # Ungrounded by config, OR grounded but the model
+                        # ignored the schema and returned prose — regex-extract
+                        # findings from the free-form text instead of dropping
+                        # them.
                         summary_text = review.get("summary", "")
                         valid_findings = extract_findings_legacy(summary_text, str(rel_path))
                     if valid_findings:

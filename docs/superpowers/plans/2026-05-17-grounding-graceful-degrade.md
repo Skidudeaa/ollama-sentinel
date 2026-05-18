@@ -23,7 +23,7 @@ Ollama's `format` parameter — every `:cloud` model, and any local model whose
 `system_prompt` asks for markdown — return prose, not JSON. `json.loads("## …")`
 raises `JSONDecodeError: Expecting value: line 1 column 1 (char 0)`, which is
 logged at **ERROR** and the review is returned as
-`{"summary": <prose>, "findings": []}`. Back in `watcher._process_file`, the
+`{"summary": <prose>, "findings": []}`. Back in `watcher.process_change`, the
 legacy regex extractor only runs `elif not self.config.processing.grounding:`
 — so under grounding it never runs, and **every review for such a model
 persists zero findings**, silently killing violation memory / semantic recall.
@@ -45,9 +45,9 @@ Two surgical changes plus one extracted predicate:
    review)` in `ollama_sentinel/watcher.py` returns `True` when grounding is
    off **or** the review carries `grounding_parse_failed`. This isolates the
    testable logic (confirmed unit mechanism) from the hard-to-exercise
-   `_process_file` wiring (guarded by a source grep — the documented
+   `process_change` wiring (guarded by a source grep — the documented
    closure-testing pattern).
-3. `watcher._process_file` replaces the inline `elif not
+3. `watcher.process_change` replaces the inline `elif not
    self.config.processing.grounding:` condition with a call to the predicate.
 
 The legacy-extracted findings continue to flow **only to `ViolationDB`**
@@ -70,7 +70,7 @@ ungrounded behavior — no change to saved-review output.
 | File | Responsibility | Change |
 |------|----------------|--------|
 | `ollama_sentinel/processor.py` | `_parse_review_response` | add flag on parse failure; `log.error`→`log.warning` |
-| `ollama_sentinel/watcher.py` | `_should_run_legacy_extractor` (new, module-level) + `_process_file` wiring | new pure predicate; one-line condition swap |
+| `ollama_sentinel/watcher.py` | `_should_run_legacy_extractor` (new, module-level) + `process_change` wiring | new pure predicate; one-line condition swap |
 | `tests/test_extractor.py` | `_parse_review_response` behavior | update 1 existing test; add 2 |
 | `tests/test_watcher.py` | predicate + wiring guard | add predicate unit tests + source grep guard |
 | `docs/superpowers/followups.md` | close-out note | append resolution entry |
@@ -102,10 +102,15 @@ post-call assertions (lines 386-391) with:
         assert not [r for r in caplog.records if r.levelname == "ERROR"]
 ```
 
-> **Execution correction (2026-05-17):** the original plan asserted the
-> substring with mismatched casing vs. the `log.warning` sentence case.
-> The log message keeps correct sentence case (`"Grounded review …"`);
-> the assertion is case-insensitive on the stable substring instead.
+> **Execution corrections (2026-05-17):**
+> 1. The original plan asserted the WARNING substring with mismatched
+>    casing vs. the `log.warning` sentence case. The log keeps correct
+>    sentence case (`"Grounded review …"`); the assertion is now
+>    case-insensitive on the stable substring.
+> 2. The plan/CLAUDE.md called the watcher method `_process_file`; the
+>    real method is `FileSentinel.process_change`. All references in this
+>    doc and the wiring-guard test were corrected to `process_change`.
+>    (The stale name originated in the CLAUDE.md architecture note.)
 
 - [ ] **Step 2: Add a test that valid-JSON-empty does NOT set the flag**
 
@@ -201,7 +206,7 @@ of silently dropping all findings. Follow-up to 2026-05-09 grounding."
 ## Task 2: Degrade to legacy extractor in the watcher
 
 **Files:**
-- Modify: `ollama_sentinel/watcher.py` (add module-level predicate; rewire `_process_file:241`)
+- Modify: `ollama_sentinel/watcher.py` (add module-level predicate; rewire `process_change:241`)
 - Test: `tests/test_watcher.py`
 
 - [ ] **Step 1: Write predicate unit tests (failing)**
@@ -227,10 +232,10 @@ class TestShouldRunLegacyExtractor:
         assert _should_run_legacy_extractor(True, review) is True
 
     def test_wiring_calls_predicate(self):
-        """Source guard: _process_file must route through the predicate,
+        """Source guard: process_change must route through the predicate,
         not an inline grounding-only check (closure-testing pattern)."""
         import inspect, ollama_sentinel.watcher as w
-        src = inspect.getsource(w.FileSentinel._process_file)
+        src = inspect.getsource(w.FileSentinel.process_change)
         assert "_should_run_legacy_extractor(" in src
         assert "elif not self.config.processing.grounding:" not in src
 ```
@@ -259,7 +264,7 @@ def _should_run_legacy_extractor(grounding: bool, review: dict) -> bool:
     return bool(review.get("grounding_parse_failed"))
 ```
 
-- [ ] **Step 4: Rewire `_process_file`**
+- [ ] **Step 4: Rewire `process_change`**
 
 In `ollama_sentinel/watcher.py:241`, replace:
 
@@ -295,7 +300,7 @@ Expected: all PASS, including the existing `grounding_override` tests.
 git add ollama_sentinel/watcher.py tests/test_watcher.py
 git commit -m "fix(grounding): degrade to legacy extractor on parse failure
 
-_process_file now routes the legacy-extractor decision through the pure
+process_change now routes the legacy-extractor decision through the pure
 _should_run_legacy_extractor predicate, which also fires when a grounded
 review failed JSON parse. Models that ignore Ollama's format schema now
 still yield persisted findings. Closes the silent-zero-findings path."
@@ -322,7 +327,7 @@ Append to `docs/superpowers/followups.md`:
 ### RESOLVED 2026-05-17 — grounding silent-zero-findings on schema-ignoring models
 
 **Files:** `ollama_sentinel/processor.py` (_parse_review_response),
-`ollama_sentinel/watcher.py` (_should_run_legacy_extractor + _process_file).
+`ollama_sentinel/watcher.py` (_should_run_legacy_extractor + process_change).
 
 **Was:** grounded reviews from models that ignore Ollama's `format`
 schema (all `:cloud` models; markdown-instructed system prompts) failed
@@ -372,4 +377,4 @@ Parse failure now flags \`grounding_parse_failed\` + WARNING; the watcher degrad
 - **Mechanism confidence:** Task 1 uses the confirmed `httpx_mock` +
   `generate_review` pattern (`tests/test_extractor.py:291-353`). Task 2 tests
   a pure function + a source grep — both confirmed-trivial mechanisms; no
-  unverified `_process_file` integration harness is assumed. ✓
+  unverified `process_change` integration harness is assumed. ✓
