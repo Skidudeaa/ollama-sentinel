@@ -529,7 +529,7 @@ def render_layout(
         layout["footer"].update(_footer_panel())
         return layout
 
-    # Control Center layout
+    # Control Center triage layout
     stats = compute_overview(
         reviews=reviews,
         severity_counts=severity_counts or {},
@@ -542,25 +542,23 @@ def render_layout(
         now=now,
         research_latest=research_latest,
     )
+    ranked = blended_rank(violations)
 
     layout = Layout()
     layout.split_column(
-        Layout(name="header", size=5),
+        Layout(name="header", size=3),
+        Layout(name="banner", size=4),
         Layout(name="body", ratio=1),
         Layout(name="footer", size=3),
     )
-    layout["header"].update(_header_panel_v2(stats, now))
+    layout["header"].update(_vitals_strip(stats, now))
+    layout["banner"].update(_severity_banner(stats))
     layout["body"].split_row(
-        Layout(name="left", ratio=2),
-        Layout(name="right", ratio=3),
+        Layout(name="left", ratio=3),
+        Layout(name="right", ratio=1),
     )
-    layout["body"]["left"].split_column(
-        Layout(name="overview", size=8),
-        Layout(name="reviews", ratio=1),
-    )
-    layout["body"]["left"]["overview"].update(_overview_panel(stats))
-    layout["body"]["left"]["reviews"].update(_reviews_panel(reviews, now))
-    layout["body"]["right"].update(_patterns_panel(violations))
+    layout["body"]["left"].update(_patterns_panel(ranked))
+    layout["body"]["right"].update(_reviews_rail(reviews, now, -1, 0))
     layout["footer"].update(_footer_panel_v2())
     return layout
 

@@ -467,18 +467,19 @@ class TestRenderLayoutBackwardsCompat:
         assert layout["body"] is not None
         assert layout["footer"] is not None
 
-    def test_new_signature_produces_control_center(self, tmp_path):
+    def test_new_signature_produces_triage_layout(self, tmp_path):
         now = time.time()
         layout = render_layout(
             str(tmp_path), tmp_path, tmp_path / "memory.db",
             [], [], now,
-            config_path="test.yaml",
-            model_name="gemma3",
+            config_path="test.yaml", model_name="gemma3",
             severity_counts={"high": 2},
         )
         assert layout["header"] is not None
-        assert layout["body"]["left"]["overview"] is not None
+        assert layout["banner"] is not None
+        assert layout["body"]["left"] is not None
         assert layout["body"]["right"] is not None
+        assert layout["footer"] is not None
 
 
 class TestViolationDBNewHelpers:
