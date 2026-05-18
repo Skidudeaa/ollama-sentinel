@@ -459,6 +459,17 @@ class TestViolationDBNewHelpers:
             db.close()
 
 
+class TestSeverityPalette:
+    def test_palette_is_bold_saturated_and_distinct(self):
+        from ollama_sentinel.dashboard import _SEVERITY_STYLE
+        s = _SEVERITY_STYLE
+        assert s["critical"] == "bold red"
+        assert s["high"] == "bold yellow"
+        assert s["medium"] == "cyan"
+        assert s["low"] == "dim"
+        assert len(set(s.values())) == 4
+
+
 class TestBlendedRank:
     def _vr(self, sev, count, fp="f.py", line=1):
         return ViolationRow(count=count, severity=sev, category="bug",

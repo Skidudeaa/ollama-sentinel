@@ -34,8 +34,8 @@ log = logging.getLogger(__name__)
 
 _SEVERITY_STYLE = {
     "critical": "bold red",
-    "high": "red",
-    "medium": "yellow",
+    "high": "bold yellow",
+    "medium": "cyan",
     "low": "dim",
 }
 
