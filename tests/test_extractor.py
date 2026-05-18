@@ -385,10 +385,39 @@ class TestParseReviewResponse:
 
         assert result["summary"] == "This is free-form prose review."
         assert result["findings"] == []
+        # Parse failure is now a recoverable degrade, not an error.
+        assert result["grounding_parse_failed"] is True
 
-        # ERROR log was emitted
-        error_messages = [r.message for r in caplog.records if r.levelname == "ERROR"]
-        assert any("Schema validation failed" in m for m in error_messages)
+        warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        assert any("review did not parse as json" in m.lower() for m in warnings)
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    async def test_valid_json_empty_findings_has_no_parse_failed_flag(
+        self, sentinel_config, tmp_path, httpx_mock, caplog
+    ):
+        """Valid JSON with findings: [] must NOT set grounding_parse_failed."""
+        from ollama_sentinel.processor import FileProcessor, FileChange
+        from watchfiles import Change
+        import json
+
+        source = tmp_path / "clean.py"
+        source.write_text("print('ok')\n")
+        httpx_mock.add_response(
+            url="http://localhost:11434/api/chat",
+            json={"message": {"content": json.dumps(
+                {"summary": "Clean.", "findings": []})}},
+        )
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified)
+        try:
+            result = await fp.generate_review(fc)
+        finally:
+            await fp.ollama_client.close()
+
+        assert result["findings"] == []
+        assert "grounding_parse_failed" not in result
+        assert not [r for r in caplog.records
+                    if r.levelname in ("WARNING", "ERROR")]
 
 
 # ---------------------------------------------------------------------------
