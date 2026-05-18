@@ -608,7 +608,9 @@ class TestPatternsSingleLine:
         assert "…" in out                     # it was ellipsised
 
     def test_static_patterns_row_stays_one_line(self):
+        from ollama_sentinel.dashboard import _patterns_panel
         panel = _patterns_panel([self._row()])
-        body = [l for l in _render(panel, width=80).splitlines()
-                if "ErasZoneView.swift" in l]
+        out = _render(panel, width=80)
+        body = [l for l in out.splitlines() if "ErasZoneView.swift" in l]
         assert len(body) == 1
+        assert "…" in out
