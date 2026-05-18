@@ -718,7 +718,7 @@ async def run_dashboard(
                 str(watch_dir), reviews_dir, db_path, reviews, violations, now,
             )
 
-        # Interactive Control Center layout
+        # Interactive Control Center triage layout
         stats = compute_overview(
             reviews=reviews,
             severity_counts=data["severity_counts"],
@@ -731,55 +731,50 @@ async def run_dashboard(
             now=now,
             research_latest=data["research_latest"],
         )
+        ranked = blended_rank(violations)
 
         layout = Layout()
         layout.split_column(
-            Layout(name="header", size=5),
+            Layout(name="header", size=3),
+            Layout(name="banner", size=4),
             Layout(name="body", ratio=1),
             Layout(name="footer", size=3),
         )
-        layout["header"].update(_header_panel_v2(stats, now))
+        layout["header"].update(_vitals_strip(stats, now))
 
-        # Detail mode: replace body with full-width detail panel
+        # Detail mode: keep banner, replace body full-width
         if state.mode == Mode.DETAIL:
-            detail_panel = _detail_panel(state, reviews, violations, now)
-            layout["body"].update(detail_panel)
+            layout["banner"].update(_severity_banner(stats))
+            layout["body"].update(_detail_panel(state, reviews, ranked, now))
             layout["footer"].update(_footer_interactive(state))
             return layout
 
-        # Panel focus styling
-        overview_border = "bold cyan" if state.focused_panel == PanelId.OVERVIEW else "green"
+        # OVERVIEW focus highlights the banner region border.
+        banner_p = _severity_banner(stats)
+        if state.focused_panel == PanelId.OVERVIEW:
+            banner_p.border_style = "bold cyan"
+        layout["banner"].update(banner_p)
+
         reviews_border = "bold cyan" if state.focused_panel == PanelId.REVIEWS else "blue"
         patterns_border = "bold cyan" if state.focused_panel == PanelId.PATTERNS else "magenta"
 
-        # Build panels with selection awareness
-        overview_p = _overview_panel(stats)
-        overview_p.border_style = overview_border
-
-        # Reviews panel with selection
-        sel_idx = state.selection.get(PanelId.REVIEWS, 0) if state.focused_panel == PanelId.REVIEWS else -1
-        scroll = state.scroll_offset.get(PanelId.REVIEWS, 0)
-        reviews_p = _reviews_panel_interactive(reviews, now, sel_idx, scroll)
-        reviews_p.border_style = reviews_border
-
-        # Patterns panel with selection and filter
         sel_idx_p = state.selection.get(PanelId.PATTERNS, 0) if state.focused_panel == PanelId.PATTERNS else -1
         scroll_p = state.scroll_offset.get(PanelId.PATTERNS, 0)
         title_suffix = f" [filter: {state.filter_text}]" if state.filter_active else ""
-        patterns_p = _patterns_panel_interactive(violations, sel_idx_p, scroll_p, title_suffix)
+        patterns_p = _patterns_panel_interactive(ranked, sel_idx_p, scroll_p, title_suffix)
         patterns_p.border_style = patterns_border
 
+        sel_idx_r = state.selection.get(PanelId.REVIEWS, 0) if state.focused_panel == PanelId.REVIEWS else -1
+        scroll_r = state.scroll_offset.get(PanelId.REVIEWS, 0)
+        reviews_p = _reviews_rail(reviews, now, sel_idx_r, scroll_r)
+        reviews_p.border_style = reviews_border
+
         layout["body"].split_row(
-            Layout(name="left", ratio=2),
-            Layout(name="right", ratio=3),
+            Layout(name="left", ratio=3),
+            Layout(name="right", ratio=1),
         )
-        layout["body"]["left"].split_column(
-            Layout(name="overview", size=8),
-            Layout(name="reviews", ratio=1),
-        )
-        layout["body"]["left"]["overview"].update(overview_p)
-        layout["body"]["left"]["reviews"].update(reviews_p)
-        layout["body"]["right"].update(patterns_p)
+        layout["body"]["left"].update(patterns_p)
+        layout["body"]["right"].update(reviews_p)
 
         if interactive:
             layout["footer"].update(_footer_interactive(state))
