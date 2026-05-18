@@ -587,3 +587,28 @@ class TestBlendedRank:
     def test_empty_returns_empty(self):
         from ollama_sentinel.dashboard import blended_rank
         assert blended_rank([]) == []
+
+
+class TestPatternsSingleLine:
+    LONG = ("Fragile auto-collapse on timeout: the timeout collapses "
+            "detailExpanded unconditionally and will incorrectly collapse "
+            "a different era's detail opened during the override window.")
+
+    def _row(self):
+        return ViolationRow(count=11, severity="high", category="bug",
+                            file_path="ErasZoneView.swift", line_start=183,
+                            line_end=190, description=self.LONG)
+
+    def test_interactive_row_stays_one_line(self):
+        from ollama_sentinel.dashboard import _patterns_panel_interactive
+        panel = _patterns_panel_interactive([self._row()], selection=-1, scroll=0)
+        out = _render(panel, width=80)
+        body = [l for l in out.splitlines() if "ErasZoneView.swift" in l]
+        assert len(body) == 1                 # description did NOT wrap
+        assert "…" in out                     # it was ellipsised
+
+    def test_static_patterns_row_stays_one_line(self):
+        panel = _patterns_panel([self._row()])
+        body = [l for l in _render(panel, width=80).splitlines()
+                if "ErasZoneView.swift" in l]
+        assert len(body) == 1
