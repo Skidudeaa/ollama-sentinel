@@ -266,32 +266,6 @@ def _violations_panel(rows: List[ViolationRow]) -> Panel:
 # Control Center v2 panels
 # ---------------------------------------------------------------------------
 
-def _header_panel_v2(stats: OverviewStats, now: float) -> Panel:
-    """Rich header with title, config/model line, and status badges."""
-    ts = _dt.datetime.fromtimestamp(now).strftime("%H:%M:%S")
-    status_label, status_key = watcher_status_from_age(stats.newest_review_age_s)
-    status_style = _STATUS_STYLE.get(status_key, "dim")
-
-    line1 = "[bold white]OLLAMA SENTINEL[/] [dim]·[/] [bold cyan]CONTROL CENTER[/]"
-    line2 = (
-        f"[dim]Watching:[/] [white]{stats.watch_dir}[/]"
-        f"   [dim]Model:[/] [white]{stats.model_name or 'unknown'}[/]"
-    )
-    db_info = ""
-    if stats.db_exists:
-        db_info = f"[green]●[/] {stats.total_unresolved} open"
-    else:
-        db_info = "[dim]● no DB yet[/]"
-    line3 = (
-        f"[dim]Status:[/] [{status_style}]● {status_label}[/]"
-        f"   [dim]DB:[/] {db_info}"
-        f"   [dim]Updated:[/] [white]{ts}[/]"
-    )
-
-    body = f"{line1}\n{line2}\n{line3}"
-    return Panel(Text.from_markup(body), border_style="bold cyan", padding=(0, 1))
-
-
 def _vitals_strip(stats: OverviewStats, now: float) -> Panel:
     """One-line vitals: status dot, model, open count, update clock.
 
@@ -387,55 +361,6 @@ def watcher_status_from_age(age_s: Optional[float]) -> tuple:
     if age_s < 300:
         return ("Idle", "idle")
     return ("Stale", "stale")
-
-
-def _overview_panel(stats: OverviewStats) -> Panel:
-    """Overview card with severity breakdown, hottest file, and next action."""
-    table = Table.grid(padding=(0, 2), expand=True)
-    table.add_column(no_wrap=True)
-    table.add_column(no_wrap=True)
-
-    # Row 1: counts
-    new_badge = f"  [green]+{stats.new_this_week}/7d[/]" if stats.new_this_week else ""
-    table.add_row(
-        f"[dim]Open:[/] [bold white]{stats.total_unresolved}[/]{new_badge}",
-        f"[dim]Reviews:[/] [bold white]{stats.total_reviews}[/]",
-    )
-
-    # Row 2: severity breakdown
-    sev_parts = []
-    for sev in ("critical", "high", "medium", "low"):
-        count = stats.severity_counts.get(sev, 0)
-        if count > 0:
-            style = _SEVERITY_STYLE[sev]
-            label = sev[:4].upper()
-            sev_parts.append(f"[{style}]{label} {count}[/]")
-    sev_line = "  ".join(sev_parts) if sev_parts else "[dim]—[/]"
-    table.add_row(sev_line, "")
-
-    # Row 3: hottest file
-    if stats.hottest_file:
-        table.add_row(
-            f"[dim]Hottest:[/] [white]{stats.hottest_file}[/] ({stats.hottest_count})",
-            "",
-        )
-    else:
-        table.add_row("[dim]Hottest:[/] [dim]—[/]", "")
-
-    # Row 4: suggested action
-    action = suggested_action(stats)
-    table.add_row(f"[dim]Action:[/] [italic]{action}[/]", "")
-
-    # Row 5: latest research (conditional, null-safe)
-    if stats.research_latest:
-        r = stats.research_latest
-        q = (r.get("query") or "")[:35]
-        conf = r.get("confidence") or 0
-        ts = r.get("timestamp")
-        ago = _format_ago(ts, time.time()) if ts else ""
-        table.add_row(f"[dim]Research:[/] [white]{q}[/] ({conf:.0%}) [dim]{ago}[/]", "")
-
-    return Panel(table, title="Overview", border_style="green", padding=(0, 1))
 
 
 def _patterns_panel(rows: List[ViolationRow]) -> Panel:
@@ -868,31 +793,6 @@ async def run_dashboard(
 # ---------------------------------------------------------------------------
 # Interactive panel variants
 # ---------------------------------------------------------------------------
-
-def _reviews_panel_interactive(
-    rows: List[ReviewRow], now: float, selection: int, scroll: int,
-) -> Panel:
-    """Reviews panel with selection highlighting."""
-    if not rows:
-        return Panel(Text("no reviews yet — save a watched file", style="dim"),
-                     title="Recent Reviews", border_style="blue")
-    visible = rows[scroll:scroll + 15]
-    table = Table.grid(padding=(0, 1), expand=True)
-    table.add_column(justify="right", style="dim", no_wrap=True)
-    table.add_column(no_wrap=True, overflow="ellipsis")
-    for i, r in enumerate(visible):
-        abs_idx = scroll + i
-        style = "reverse" if abs_idx == selection else ""
-        table.add_row(
-            Text(_format_ago(r.mtime, now), style=style or "dim"),
-            Text(r.rel_path, style=style),
-        )
-    count = len(rows)
-    title = f"Recent Reviews ({count})"
-    if scroll > 0 or scroll + 15 < count:
-        title += f" [{scroll + 1}-{min(scroll + 15, count)}]"
-    return Panel(table, title=title, border_style="blue")
-
 
 def _patterns_panel_interactive(
     rows: List[ViolationRow], selection: int, scroll: int, title_suffix: str = "",
