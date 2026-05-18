@@ -615,3 +615,25 @@ class TestPatternsSingleLine:
         body = [l for l in out.splitlines() if "ErasZoneView.swift" in l]
         assert len(body) == 1
         assert "…" in out
+
+
+class TestBuildLayoutWiring:
+    def _src(self):
+        import inspect
+        from ollama_sentinel.dashboard import run_dashboard
+        return inspect.getsource(run_dashboard)
+
+    def test_live_path_uses_triage_tree_and_blended_rank(self):
+        src = self._src()
+        assert "blended_rank(" in src
+        assert 'Layout(name="banner"' in src
+        assert "_vitals_strip(" in src
+        assert "_severity_banner(" in src
+        assert "_reviews_rail(" in src
+        assert "_overview_panel(" not in src
+        assert "_header_panel_v2(" not in src
+        assert "_reviews_panel_interactive(" not in src
+
+    def test_detail_mode_path_preserved(self):
+        src = self._src()
+        assert "Mode.DETAIL" in src and "_detail_panel(" in src
