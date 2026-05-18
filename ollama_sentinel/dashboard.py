@@ -304,11 +304,12 @@ def _severity_banner(stats: OverviewStats) -> Panel:
         return Panel(Text.from_markup(msg), border_style="green",
                      padding=(0, 1))
 
+    _ABBR = {"critical": "CRIT", "high": "HIGH", "medium": "MED", "low": "LOW"}
     cells = []
     for sev in ("critical", "high", "medium", "low"):
         count = stats.severity_counts.get(sev, 0)
         style = _SEVERITY_STYLE[sev]
-        cells.append(f"[{style}]{sev[:4].upper()} {count}[/]")
+        cells.append(f"[{style}]{_ABBR[sev]} {count}[/]")
     line1 = "   ".join(cells)
 
     if stats.hottest_file:

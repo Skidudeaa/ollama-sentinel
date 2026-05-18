@@ -392,6 +392,9 @@ class TestControlCenterPanels:
         assert "74" in text and "104" in text and "576" in text and "476" in text
         assert "ErasZoneView.swift" in text and "239" in text
         assert "critical" in text.lower()       # from suggested_action
+        assert "MED 576" in text
+        assert "MEDI" not in text
+        assert "CRIT 74" in text and "HIGH 104" in text and "LOW 476" in text
 
     def test_severity_banner_empty_placeholder(self):
         from ollama_sentinel.dashboard import _severity_banner
