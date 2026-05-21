@@ -364,6 +364,30 @@ def watcher_status_from_age(age_s: Optional[float]) -> tuple:
     return ("Stale", "stale")
 
 
+def _format_pattern_row(r: ViolationRow, *, selected: bool = False) -> Text:
+    """Build a single Patterns row as a fixed-width Text, ellipsised by Rich.
+
+    Bypasses Rich's column auto-sizer (which silently drops min_width columns
+    when total constraints don't fit) by manually padding count/severity/
+    category to fixed widths inside one Text. The description is appended and
+    Rich's no_wrap=True/overflow="ellipsis" trims it cleanly. The visible
+    layout is predictable at every terminal width.
+    """
+    sev_style = "reverse" if selected else _SEVERITY_STYLE.get(r.severity.lower(), "white")
+    base_style = "reverse" if selected else ""
+    bold_style = "reverse" if selected else "bold"
+    t = Text(no_wrap=True, overflow="ellipsis")
+    t.append(f"{r.count}x".rjust(5), style=bold_style)          # 5 chars (fits "9999x")
+    t.append(" ")
+    t.append(f"{r.severity:<8}", style=sev_style)               # 8 chars (fits "critical")
+    t.append(" ")
+    t.append(f"{r.category:<11}", style=base_style)             # 11 chars (fits "performance")
+    t.append(" ")
+    t.append(f"{r.file_path}:{r.line_start} — {r.description}",
+             style=base_style)
+    return t
+
+
 def _patterns_panel(rows: List[ViolationRow]) -> Panel:
     """Patterns panel — renamed from 'Top Recurring' for clearer mental model."""
     if not rows:
@@ -371,19 +395,10 @@ def _patterns_panel(rows: List[ViolationRow]) -> Panel:
             Text("no patterns detected yet — run some reviews first", style="dim"),
             title="Patterns", border_style="magenta",
         )
-    table = Table.grid(padding=(0, 1), expand=True)
-    table.add_column(justify="right", style="bold", no_wrap=True)
-    table.add_column(no_wrap=True)
-    table.add_column(no_wrap=True)
+    table = Table.grid(padding=(0, 0), expand=True)
     table.add_column(no_wrap=True, overflow="ellipsis")
     for r in rows:
-        sev_style = _SEVERITY_STYLE.get(r.severity.lower(), "white")
-        table.add_row(
-            f"{r.count}x",
-            Text(r.severity, style=sev_style),
-            r.category,
-            f"{r.file_path}:{r.line_start} — {r.description}",
-        )
+        table.add_row(_format_pattern_row(r))
     return Panel(table, title=f"Patterns ({len(rows)})", border_style="magenta")
 
 
@@ -804,28 +819,11 @@ def _patterns_panel_interactive(
         return Panel(Text(msg, style="dim"),
                      title=f"Patterns{title_suffix}", border_style="magenta")
     visible = rows[scroll:scroll + 15]
-    table = Table.grid(padding=(0, 1), expand=True)
-    table.add_column(justify="right", style="bold", no_wrap=True)
-    table.add_column(no_wrap=True)
-    table.add_column(no_wrap=True)
+    table = Table.grid(padding=(0, 0), expand=True)
     table.add_column(no_wrap=True, overflow="ellipsis")
     for i, r in enumerate(visible):
         abs_idx = scroll + i
-        if abs_idx == selection:
-            table.add_row(
-                Text(f"{r.count}x", style="reverse"),
-                Text(r.severity, style="reverse"),
-                Text(r.category, style="reverse"),
-                Text(f"{r.file_path}:{r.line_start} — {r.description}", style="reverse"),
-            )
-        else:
-            sev_style = _SEVERITY_STYLE.get(r.severity.lower(), "white")
-            table.add_row(
-                f"{r.count}x",
-                Text(r.severity, style=sev_style),
-                r.category,
-                f"{r.file_path}:{r.line_start} — {r.description}",
-            )
+        table.add_row(_format_pattern_row(r, selected=(abs_idx == selection)))
     count = len(rows)
     title = f"Patterns ({count}){title_suffix}"
     return Panel(table, title=title, border_style="magenta")

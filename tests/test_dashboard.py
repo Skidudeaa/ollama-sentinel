@@ -632,6 +632,19 @@ class TestPatternsSingleLine:
         assert len(body) == 1
         assert "…" in out
 
+    def test_count_and_category_columns_survive_long_description(self):
+        """Production-width regression: with a long description, the count and
+        category columns must NOT be starved to zero width by Rich's auto-sizer,
+        and severity must render its full word (not truncated to 'hi…')."""
+        from ollama_sentinel.dashboard import _patterns_panel_interactive
+        panel = _patterns_panel_interactive([self._row()], selection=-1, scroll=0)
+        out = _render(panel, width=215)        # the user's live terminal width
+        row_line = next(l for l in out.splitlines() if "ErasZoneView.swift" in l)
+        assert "11x" in row_line               # count column visible
+        assert "high" in row_line              # severity full word, not "hi…"
+        assert "hi…" not in row_line           # not truncated
+        assert "bug" in row_line               # category column visible
+
 
 class TestBuildLayoutWiring:
     def _src(self):
