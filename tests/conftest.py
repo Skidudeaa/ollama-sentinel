@@ -4,6 +4,9 @@ import pathlib
 import pytest
 import yaml
 
+# Enable the bundled `pytester` fixture for the pytest-plugin integration tests.
+pytest_plugins = ["pytester"]
+
 from ollama_sentinel.models import (
     OllamaConfig,
     OllamaModelConfig,

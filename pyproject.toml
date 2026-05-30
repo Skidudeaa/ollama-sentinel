@@ -56,6 +56,9 @@ dev = [
 [project.scripts]
 ollama-sentinel = "ollama_sentinel.cli:app"
 
+[project.entry-points.pytest11]
+ollama_sentinel = "ollama_sentinel.pytest_plugin"
+
 [tool.setuptools.packages.find]
 include = ["ollama_sentinel*", "research_agent*"]
 
