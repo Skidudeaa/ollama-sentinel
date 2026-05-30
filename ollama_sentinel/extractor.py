@@ -40,10 +40,29 @@ def _parse_finding(raw: dict, file_path: str) -> Finding | None:
         return None
 
 
+# Matches a line reference in either the pre-grounding free-form style
+# ("line 5", "lines 5-10") or the grounded-prose degrade style the prompt
+# asks for ("Line Range: `line_start..line_end`", e.g. "Line Range: `1..2`").
+# After the label, markdown punctuation (** ` : =) may sit between the label
+# and the first number; the range separator may be ``..``, a hyphen/dash, or
+# the word "to".
 _LINE_REF_PATTERN = re.compile(
-    r"(?:line|lines?)\s*(\d+)(?:\s*[-–]\s*(\d+))?",
+    r"(?:line[\s_]*range|line[\s_]*start|lines?)"
+    r"[\s:=*`'\"]*(\d+)"
+    r"(?:\s*(?:\.\.|[-–—]|to)\s*[`'\"]*(\d+))?",
     re.IGNORECASE,
 )
+
+# Splits review text into per-issue blocks at the start of each markdown
+# heading ("### N."), bullet ("- ", "* "), or numbered item ("1. ", "1) ").
+# Lookahead keeps the marker with its block. Bold spans like ``**Claim:**``
+# are not boundaries: ``[-*]\s`` needs whitespace after the marker, which
+# ``**`` does not have.
+_ISSUE_BOUNDARY_PATTERN = re.compile(r"\n(?=\s*(?:#{1,6}\s|[-*]\s|\d+[.)]\s))")
+
+# Pulls the claim text out of a grounded-prose block, dropping the
+# ``**Claim:**`` scaffolding so the Finding description reads cleanly.
+_CLAIM_PATTERN = re.compile(r"\bclaim\b\s*[:*`]*\s*(.+)", re.IGNORECASE | re.DOTALL)
 
 _SEVERITY_KEYWORDS = {
     "critical": "critical",
@@ -119,45 +138,62 @@ def extract_findings_legacy(review_text: str, file_path: str) -> List[Finding]:
     for debug comparison). Returns Findings with empty ``verbatim_excerpt``.
     """
     findings: List[Finding] = []
-    # Split into bullet/numbered items
-    items = re.split(r"\n\s*(?:[-*]|\d+\.)\s+", review_text)
+    # One block per issue: heading ("### N."), bullet, or numbered item. The
+    # grounded-prose format keeps each issue's Line Range / Excerpt / Claim
+    # together under one heading, so splitting on issue boundaries (not on
+    # every bullet) is what lets the per-issue Claim become the description.
+    blocks = _ISSUE_BOUNDARY_PATTERN.split(review_text)
 
-    for item in items:
-        item = item.strip()
-        if not item or len(item) < 15:
+    for block in blocks:
+        block = block.strip()
+        if not block or len(block) < 15:
             continue
 
-        line_match = _LINE_REF_PATTERN.search(item)
+        line_match = _LINE_REF_PATTERN.search(block)
         if not line_match:
             continue
 
         line_start = int(line_match.group(1))
         line_end = int(line_match.group(2)) if line_match.group(2) else line_start
 
-        item_lower = item.lower()
+        block_lower = block.lower()
         severity = "medium"
         for kw, sev in _SEVERITY_KEYWORDS.items():
-            if kw in item_lower:
+            if kw in block_lower:
                 severity = sev
                 break
 
         category = "style"
         for kw, cat in _CATEGORY_KEYWORDS.items():
-            if kw in item_lower:
+            if kw in block_lower:
                 category = cat
                 break
 
-        description = item[:200].replace("\n", " ").strip()
         findings.append(Finding(
             file_path=file_path,
             line_start=line_start,
             line_end=line_end,
             category=category,
             severity=severity,
-            description=description,
+            description=_block_description(block),
         ))
 
     return findings
+
+
+def _block_description(block: str) -> str:
+    """Derive a clean Finding description from one issue block.
+
+    Prefers the ``**Claim:**`` text when present (the grounded-prose format),
+    stripping the markdown label. Otherwise falls back to the whole block.
+    Markdown emphasis/heading markers are trimmed and whitespace collapsed,
+    then truncated to 200 chars.
+    """
+    claim = _CLAIM_PATTERN.search(block)
+    text = claim.group(1) if claim else block
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.lstrip("#*-: `").strip()
+    return text[:200]
 
 
 async def validate_findings(

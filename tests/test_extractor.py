@@ -3,6 +3,7 @@ import pytest
 
 from ollama_sentinel.extractor import (
     _validate_verbatim,
+    extract_findings_legacy,
     validate_findings,
 )
 from ollama_sentinel.violation_db import Finding
@@ -278,6 +279,110 @@ class TestValidateFindingsMalformed:
         assert len(result) == 2
         assert result[0].description == "Off-by-one error"
         assert result[1].description == "Consider extracting a method"
+
+
+# ---------------------------------------------------------------------------
+# extract_findings_legacy — the prose-parsing degrade path
+#
+# This is the path that runs when a model ignores Ollama's `format` schema and
+# returns markdown prose instead of JSON (every `:cloud` model, and reasoning
+# models like qwen3.6 that emit a thinking preamble). The prompt asks for a
+# per-issue block carrying `Line Range: line_start..line_end`, a verbatim
+# excerpt, and a claim — so the extractor must parse THAT canonical format, not
+# only the pre-grounding `line 5` / `lines 5-10` style.
+# ---------------------------------------------------------------------------
+
+
+# Captured verbatim from a real `ollama-sentinel review` run whose grounded
+# review degraded to prose (qwen3.6:35b). Do not "clean up" — the whole point
+# is that the extractor handles the format models actually emit.
+_GROUNDED_PROSE = """Here is the code review for `_smoke/buggy.py`:
+
+### 1. Missing Input Validation in `divide`
+**Line Range:** `1..2`
+**Excerpt:**
+```python
+def divide(a, b):
+    return a / b
+```
+**Claim:** The function lacks validation for division by zero. If `b` is `0`, \
+this will raise an unhandled `ZeroDivisionError`, a common runtime bug.
+
+### 2. Off-by-One Error in `get_user`
+**Line Range:** `5..5`
+**Excerpt:**
+```python
+    return users[idx + 1]
+```
+**Claim:** The index calculation `idx + 1` is likely an off-by-one error and \
+risks an `IndexError`. It should likely be `users[idx]`.
+
+### 3. Missing Type Hints and Docstrings
+**Line Range:** `1..6`
+**Excerpt:**
+```python
+def divide(a, b):
+    return a / b
+```
+**Claim:** The functions lack type hints and docstrings, reducing readability.
+"""
+
+
+class TestExtractFindingsLegacyGroundedProse:
+    """The degrade path must parse the grounded per-issue markdown format."""
+
+    def test_multi_issue_grounded_prose(self):
+        """Three `### N.` issue blocks → three findings with correct line ranges."""
+        findings = extract_findings_legacy(_GROUNDED_PROSE, "_smoke/buggy.py")
+        ranges = [(f.line_start, f.line_end) for f in findings]
+        assert ranges == [(1, 2), (5, 5), (1, 6)]
+        assert all(f.file_path == "_smoke/buggy.py" for f in findings)
+
+    def test_description_comes_from_claim(self):
+        """The Finding description carries the claim text, not the scaffolding."""
+        findings = extract_findings_legacy(_GROUNDED_PROSE, "_smoke/buggy.py")
+        assert findings[0].description.startswith("The function lacks validation")
+        # No leftover markdown label/scaffolding leaks into the description.
+        assert "Line Range" not in findings[0].description
+        assert "**" not in findings[0].description
+
+    def test_line_range_double_dot_and_backticks(self):
+        """`Line Range: \\`A..B\\`` (double-dot, backtick-wrapped) parses."""
+        block = "### 1. Thing\n**Line Range:** `12..20`\n**Claim:** A problem."
+        findings = extract_findings_legacy(block, "x.py")
+        assert len(findings) == 1
+        assert (findings[0].line_start, findings[0].line_end) == (12, 20)
+
+    def test_preamble_without_line_refs_yields_nothing(self):
+        """Prose with no line references produces no findings (no false positives)."""
+        text = "Here is the code review for `x.py`:\n\nLooks clean overall."
+        assert extract_findings_legacy(text, "x.py") == []
+
+
+class TestExtractFindingsLegacyClassicFormat:
+    """Regression guard: the pre-grounding `line N` / bullet format still parses."""
+
+    def test_bullet_line_single(self):
+        text = "- Line 5: missing null check before dereference (bug)."
+        findings = extract_findings_legacy(text, "a.py")
+        assert len(findings) == 1
+        assert (findings[0].line_start, findings[0].line_end) == (5, 5)
+        assert findings[0].category == "bug"
+
+    def test_bullet_lines_hyphen_range(self):
+        text = "- Lines 12-15: slow nested loop, a performance concern."
+        findings = extract_findings_legacy(text, "a.py")
+        assert len(findings) == 1
+        assert (findings[0].line_start, findings[0].line_end) == (12, 15)
+        assert findings[0].category == "performance"
+
+    def test_numbered_items_multiple(self):
+        text = (
+            "1. Line 3: unchecked index is a bug.\n"
+            "2. Line 8: naming is unclear, a style nit.\n"
+        )
+        findings = extract_findings_legacy(text, "a.py")
+        assert [(f.line_start, f.line_end) for f in findings] == [(3, 3), (8, 8)]
 
 
 # ---------------------------------------------------------------------------
