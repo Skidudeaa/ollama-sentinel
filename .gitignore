@@ -55,3 +55,7 @@ phind.*/
 /config copy/
 /reviews
 /reviews copy
+
+# Sentinel review output + violation memory (configured output.directory)
+.ollama_reviews/
+.ollama_violations.db*

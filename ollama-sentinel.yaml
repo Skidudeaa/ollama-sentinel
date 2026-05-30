@@ -13,7 +13,7 @@ ollama:
   request_timeout: 600
   models:
     default:
-      name: deepseek-v4-pro:cloud
+      name: qwen3.6:35b
       think: false
       system_prompt: 'You are a senior code reviewer. Return constructive, actionable
         feedback for each file: identify bugs (with line numbers), design smells,
@@ -23,7 +23,7 @@ ollama:
       context_window: 8192
       output_reserve_tokens: 2000
     triage:
-      name: deepseek-v4-pro:cloud
+      name: qwen3.6:35b
       think: false
       system_prompt: "You are a senior developer helping triage a failing build or\
         \ test run.\nGiven the tool output and referenced source code, respond with:\n\
