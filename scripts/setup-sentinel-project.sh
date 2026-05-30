@@ -18,7 +18,7 @@
 #
 set -euo pipefail
 
-MODEL="qwen3.6:35b"
+MODEL="qwen3-coder:30b"   # returns schema-valid JSON -> grounded path + verbatim validation
 EMBED_MODEL="qwen3-embedding:4b"
 AUTO_YES=0
 START_RUN=0
