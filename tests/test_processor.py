@@ -372,6 +372,49 @@ class TestFormatPrompt:
 
 
 # ---------------------------------------------------------------------------
+# Line-numbered prompts — so models cite accurate line ranges
+# ---------------------------------------------------------------------------
+
+
+class TestLineNumbering:
+    """Prompts show `N: ` line prefixes; the raw file stays un-numbered."""
+
+    def test_number_lines_prefixes_each_line(self):
+        from ollama_sentinel.processor import _number_lines
+        assert _number_lines("alpha\nbeta\ngamma") == "1: alpha\n2: beta\n3: gamma"
+
+    def test_number_lines_empty_is_unchanged(self):
+        from ollama_sentinel.processor import _number_lines
+        assert _number_lines("") == ""
+
+    async def test_generate_review_prompt_is_line_numbered(
+        self, sentinel_config, tmp_path, httpx_mock: HTTPXMock
+    ):
+        """generate_review sends line-numbered content + a prefix instruction,
+        while file_change.content stays raw (verbatim validation depends on it).
+        """
+        import json as _json
+        f = tmp_path / "app.py"
+        f.write_text("alpha = 1\nbeta = 2\ngamma = 3\n")
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": '{"summary": "ok", "findings": []}'}},
+        )
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=f, change_type=Change.modified)
+        try:
+            await fp.generate_review(fc)
+        finally:
+            await fp.ollama_client.close()
+
+        user_msg = _json.loads(httpx_mock.get_requests()[0].content)["messages"][-1]["content"]
+        assert "1: alpha = 1" in user_msg
+        assert "2: beta = 2" in user_msg
+        assert "N: " in user_msg                       # instruction explains the prefix
+        assert fc.content == "alpha = 1\nbeta = 2\ngamma = 3\n"   # raw, un-numbered
+
+
+# ---------------------------------------------------------------------------
 # FileProcessor.generate_review tests
 # ---------------------------------------------------------------------------
 
@@ -419,7 +462,9 @@ class TestFileProcessorGenerateReview:
         source.write_text("\n".join(lines))
 
         # Register more responses than needed; the marker above permits leftovers.
-        for i in range(10):
+        # (Line numbering lengthens each line, so the small token budget yields
+        # more chunks — register generously so every chunk request is matched.)
+        for i in range(30):
             chunk_response = json.dumps({
                 "summary": f"Review chunk {i}",
                 "findings": [],

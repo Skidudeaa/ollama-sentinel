@@ -70,9 +70,13 @@ async def build_review_context(
         sections.append(Section(
             name="INSTRUCTIONS",
             items=[
+                "Each source line below is prefixed with its line number as "
+                "`N: `.\n\n"
                 "For each issue you flag, provide:\n"
-                "1. The exact line range (line_start..line_end).\n"
-                "2. The verbatim excerpt from those lines (no paraphrasing).\n"
+                "1. The exact line range (line_start..line_end), read from the "
+                "`N: ` prefixes.\n"
+                "2. The verbatim excerpt of those lines — the code text ONLY, "
+                "copied exactly WITHOUT the `N: ` prefix (no paraphrasing).\n"
                 "3. Your claim about that excerpt.\n\n"
                 "If you cannot quote verbatim from the file, do not flag the issue.\n"
                 "The excerpt and claim are required; the schema will reject findings\n"

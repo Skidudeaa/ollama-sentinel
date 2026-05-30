@@ -78,6 +78,23 @@ def _is_retryable_ollama_error(exc: BaseException) -> bool:
     )
 
 
+def _number_lines(content: str) -> str:
+    """Prefix each line with its 1-based number as ``N: `` for the prompt.
+
+    Models quote real code accurately but cannot reliably *count* lines from
+    bare source, so they mis-number findings and verbatim validation drops
+    them. Showing the line numbers lets the model cite correct
+    line_start/line_end. The raw file (no prefixes) is what verbatim
+    validation checks against, so the grounding instructions tell the model to
+    quote excerpts WITHOUT the ``N: `` prefix.
+    """
+    if not content:
+        return content
+    return "\n".join(
+        f"{i}: {line}" for i, line in enumerate(content.splitlines(), 1)
+    )
+
+
 @dataclass
 class FileChange:
     """Represents a changed file to be processed."""
@@ -576,6 +593,9 @@ class FileProcessor:
             )
             return self._parse_review_response(raw, grounding=self.config.processing.grounding)
 
+        # Number lines for the prompt so the model cites accurate line ranges.
+        # file_change.content stays raw — verbatim validation checks against it.
+        content = _number_lines(content)
         chunks = self.chunk_content(content, file_change.file_type)
 
         if len(chunks) == 1:
