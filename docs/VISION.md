@@ -45,7 +45,7 @@ opinions** — the LLM said something is concerning, and the LLM keeps saying it
 on every re-read of the same span. Recurrence count over LLM opinion is the
 model agreeing with itself N times. That's not knowledge. That's an echo.
 
-The schema cannot today represent:
+The v0.1 schema could not represent (all resolved in v0.2 — see below):
 
 - The commit that introduced a finding.
 - The commit that resolved it.
@@ -54,47 +54,62 @@ The schema cannot today represent:
   flagged.
 - The test gap — what ran and passed despite the failure.
 
-`Finding.resolved` is a single bit. When it flips, all knowledge of the fix
-vaporizes.
+In v0.1, `Finding.resolved` was a single bit: when it flipped, all knowledge of
+the fix vaporized. v0.2's Incident schema is what closes these gaps.
 
-## Next state — v0.2: the Finding/Incident split
+## v0.2 — the Finding/Incident split (shipped)
 
-The next architectural move splits the schema into two nouns:
+v0.2 splits the schema into two nouns:
 
 **Finding** — what the model says. LLM hypothesis. Cheap to produce, plentiful,
-unverified. Current schema, kept as-is.
+unverified. The v0.1 schema, kept as-is.
 
-**Incident** — what objectively happened. A failing test, a runtime exception,
-a manual confirmation, a fix-shaped commit linked to a Finding. Each Incident
-references the Finding(s) it corroborates and carries the artifacts that prove
-it: triggering commit SHA, surfaced symptom location, blast radius file list,
-fix commit SHA, fix shape.
+**Incident** — what objectively happened. A failing test, a manual
+confirmation, a fix-shaped commit linked to a Finding. Each Incident
+references exactly one Finding and carries the artifacts that prove the
+corroboration: the confirming signal and artifact, a best-guess triggering
+commit plus a ranked `suspect_commits` list when attribution is ambiguous, the
+surfaced symptom location, an optional blast-radius file list, and (for fixes)
+the fix commit and fix shape. Incidents are never upserted — each row is a
+distinct event, so one Finding can accrue several independent corroborations.
 
 The promotion path is the product:
 
 ```
 Finding (model opinion)
    ↓ [pytest plugin: a test fails on file:line that has an open Finding]
-   ↓ [post-test hook: walk recent commits in import-graph neighborhood, attribute]
+   ↓ [post-commit hook: link the commit to open Findings in touched files]
    ↓ [manual: ollama-sentinel confirm <finding_id>]
-Incident (corroborated event)
+Incident (corroborated event)        ← inspect with `ollama-sentinel incidents`
    ↓ [≥3 incidents with same shape]
-Pattern (project-specific guardrail)
+Pattern (project-specific guardrail) ← still aspirational (v0.3)
 ```
 
-The watcher stops being the canonical signal source. Git events become
-canonical:
+What shipped in v0.2:
 
-- `post-commit` — snapshot diff, link findings to commit SHA.
-- `pre-commit` — surface incidents touching files in the staged change.
-- `post-test` — on test failure, run reverse import-graph traversal to
-  attribute blame.
+- **Incident schema + migration.** `incidents` table and two nullable
+  `findings` columns, added idempotently on open. Populated DBs upgrade with
+  no data loss or required user action.
+- **pytest plugin.** Opt-in (`ollama_sentinel = true` in the project's pytest
+  config); on a test failure it matches the crash location to open Findings
+  within a ±tolerance window and records a `test_failure` Incident. Zero-cost
+  when inactive.
+- **`confirm` verb.** Manual corroboration — records a `manual_confirm`
+  Incident; the Finding stays open.
+- **post-commit hook** (`install-hooks` / `record-commit`). Links a commit to
+  open Findings in the files it touched, recording the triggering SHA.
+- **`incidents` verb.** Lists corroborated events (table or JSON), optionally
+  scoped to one Finding.
 
-The file watcher remains for streaming commentary as you type, but it's no
-longer where memory comes from.
+The watcher is no longer the only signal source — git and test events now feed
+memory too. The file watcher remains for streaming commentary as you type.
 
-`gitpython` is already a core dependency. The infrastructure cost of this
-pivot is near zero.
+Deferred past v0.2: `pre-commit` surfacing of incidents on staged files
+(v0.2.1), reverse import-graph blame traversal beyond the simple
+`suspect_commits` heuristic (v0.2.1), and ≥3-incident Pattern promotion (v0.3).
+
+`gitpython` was already a core dependency, so the infrastructure cost of this
+pivot was near zero.
 
 ## Next state — v0.3: shared substrate between modules
 

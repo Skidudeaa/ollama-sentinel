@@ -87,11 +87,15 @@ The "I always forget what to run" table.
 | See recurring violations | `ollama-sentinel report` | Rich table ranked by occurrence count |
 | Same, machine-readable | `ollama-sentinel report -f json` | JSON array on stdout |
 | Diagnose a failing log | `ollama-sentinel triage < pytest.log`<br>or `ollama-sentinel triage some.log -o out.md` | Markdown diagnosis with file:line references |
+| Corroborate a finding | `ollama-sentinel confirm 42` | Records a `manual_confirm` Incident; the Finding stays open |
+| See corroborated events | `ollama-sentinel incidents`<br>or `ollama-sentinel incidents -f json` | Incidents (test failures, confirmations, fix commits) as a table or JSON |
+| Link commits to findings | `ollama-sentinel install-hooks` | Installs a git post-commit hook that records which commit touched each open Finding |
+| Auto-link test failures | add `ollama_sentinel = true` to your pytest config | A failing test on a flagged line becomes a `test_failure` Incident |
 | Create a config file | `ollama-sentinel init` | Writes `ollama-sentinel.yaml` in the current dir |
 | Research a question | `ollama-sentinel research "is SQLAlchemy 2.0 safe to upgrade?"` | Synthesized answer with confidence score, persisted to Control Center |
 | Research with code context | `ollama-sentinel research "what breaks?" --context src/db.py` | Answer grounded in your actual code |
 | Interactive research | `ollama-sentinel research -i` | REPL prompt — ask follow-up questions in the same session |
-| Run all tests | `pytest tests/ -q` | `413 passed, 15 skipped` (the 15 skips are intentional — fallback paths covered by the other CI runner) |
+| Run all tests | `pytest tests/ -q` | `529 passed, 15 skipped` (the 15 skips are intentional — fallback paths covered by the other CI runner) |
 
 ## When something looks wrong
 

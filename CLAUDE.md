@@ -33,6 +33,10 @@ ollama-sentinel init                # create config file
 ollama-sentinel triage < pytest.log # diagnose tool output via local model
 ollama-sentinel triage log.txt -o out.md   # triage a saved log, save result
 ollama-sentinel dashboard           # live TUI: recent reviews + recurring violations
+ollama-sentinel confirm 42          # manually corroborate a Finding -> Incident
+ollama-sentinel incidents           # list corroborated events (table or -f json)
+ollama-sentinel install-hooks       # install the git post-commit hook
+ollama-sentinel record-commit       # link HEAD to open Findings (called by the hook)
 
 python -m research_agent.main query "question" --context file.py --output result.md
 python -m research_agent.main interactive
@@ -78,6 +82,27 @@ CLI (Typer) -> FileSentinel -> awatch loop (debounce)
                              |- versioned output with history cleanup
 ```
 
+### Incident corroboration (v0.2: Finding -> Incident)
+
+Findings are model opinions; Incidents are objective events that corroborate
+them. Three independent paths promote an open Finding into an Incident — none
+auto-creates a Finding (no matching Finding -> no Incident):
+
+```
+open Finding (from the review path above)
+   |
+   |- pytest_plugin: test fails on file:line within +/-tolerance of a Finding
+   |     -> persist_incident(confirming_signal="test_failure", node id as artifact)
+   |- hooks.record_commit (post-commit): commit touches a flagged file
+   |     -> link_commit_to_findings() sets triggering_commit_sha
+   |- cli.confirm <finding_id>: manual corroboration
+   |     -> persist_incident(confirming_signal="manual_confirm")
+   |- ViolationDB.mark_resolved(*, fix_commit=): a fix lands
+   |     -> persist_incident(confirming_signal="fix_commit")
+   v
+incidents table  -- inspect with `ollama-sentinel incidents` (table / JSON)
+```
+
 ### Research agent data flow (with impact analysis)
 
 ```
@@ -100,7 +125,9 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 | `ollama_sentinel/extractor.py` | LLM JSON extraction + regex fallback for parsing review findings |
 | `ollama_sentinel/watcher.py` | FileSentinel, file watching, ignore logic, pipeline orchestration |
 | `ollama_sentinel/models.py` | Pydantic v2 config models: Ollama/Embedding/Memory/Processing with validators |
-| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard |
+| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard, confirm, incidents, install-hooks, record-commit |
+| `ollama_sentinel/pytest_plugin.py` | Opt-in pytest plugin: matches test failures to open Findings, records `test_failure` Incidents (`pytest11` entry point) |
+| `ollama_sentinel/hooks.py` | Git post-commit hook installer + `record_commit` (links commits to open Findings) |
 | `ollama_sentinel/dashboard.py` | Live Rich TUI for `ollama-sentinel dashboard` — polls reviews dir + ViolationDB read-only |
 | `ollama_sentinel/context/assembler.py` | `Section` / `Priority` / `ContextItem` dataclasses + `assemble()` + `chunk_by_lines` — pure, token-budgeted |
 | `ollama_sentinel/context/tokens.py` | `TokenCounter` (tiktoken `cl100k_base` with char-based fallback) |
@@ -196,6 +223,15 @@ Skip TR-3 — deliberate spec deviation, documented in followups.md.
 
 ### Recent landings
 
+- 2026-05-30: **v0.2 Incident schema complete (Pieces 1-5).** Pieces 1-3
+  (schema + migration + CRUD, post-commit hook + `install-hooks`/
+  `record-commit`, `confirm` verb) merged to master as stacked PRs #8/#9/#10.
+  Piece 4 — opt-in pytest plugin (`ollama_sentinel/pytest_plugin.py`, `pytest11`
+  entry point) that turns a matching test failure into a `test_failure`
+  Incident — and Piece 5 — `incidents` CLI verb (table/JSON, `--finding`
+  scope) + these docs — landed as branches `feat/v02-piece-4-pytest-plugin`
+  and `feat/v02-piece-5-incidents-cli`. Findings are model opinions; Incidents
+  are corroborated events. Plan: `docs/superpowers/plans/2026-05-02-v02-incident-schema.md`.
 - 2026-05-03: `run_dashboard` main loop hardened. Three bugs fixed: DB
   connection churn (open/close every tick → single persistent connection,
   reset on failure), blocking event loop (`_snapshot` now runs via

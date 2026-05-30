@@ -5,7 +5,7 @@ import yaml
 from typer.testing import CliRunner
 
 from ollama_sentinel.cli import app
-from ollama_sentinel.violation_db import Finding, ViolationDB
+from ollama_sentinel.violation_db import Finding, Incident, ViolationDB
 
 
 runner = CliRunner()
@@ -413,3 +413,106 @@ class TestConfirmCommand:
             assert "hit in prod" in artifact
         finally:
             db.close()
+
+
+# ---------------------------------------------------------------------------
+# v0.2 Piece 5 — `ollama-sentinel incidents`
+# ---------------------------------------------------------------------------
+
+
+def _seed_incident(db_path, *, finding_id, signal="test_failure",
+                   artifact="test_auth.py::test_login", symptom_file="src/app.py",
+                   symptom_line=11):
+    """Insert one Incident on an existing finding; return its row id."""
+    db = ViolationDB(str(db_path))
+    try:
+        return db.persist_incident(
+            Incident(
+                finding_id=finding_id,
+                confirming_signal=signal,
+                confirming_artifact=artifact,
+                symptom_file=symptom_file,
+                symptom_line=symptom_line,
+            )
+        )
+    finally:
+        db.close()
+
+
+class TestIncidentsCommand:
+    """Tests for 'ollama-sentinel incidents' (corroborated events view)."""
+
+    def test_incidents_shows_recent(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("COLUMNS", "200")  # widen so Rich doesn't truncate columns
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        fid = _seed_one_finding_id(db_path)
+        _seed_incident(db_path, finding_id=fid, artifact="test_auth.py::test_login")
+
+        result = runner.invoke(app, ["incidents", "--config", str(cfg)])
+        assert result.exit_code == 0, result.output
+        assert "test_failure" in result.output
+        assert "test_login" in result.output
+        assert "src/app.py" in result.output
+
+    def test_incidents_json_format(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        fid = _seed_one_finding_id(db_path)
+        _seed_incident(db_path, finding_id=fid)
+
+        result = runner.invoke(
+            app, ["incidents", "--config", str(cfg), "-f", "json"]
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["finding_id"] == fid
+        assert data[0]["confirming_signal"] == "test_failure"
+
+    def test_incidents_filter_by_finding(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        # Two distinct findings, each with its own incident.
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = ViolationDB(str(db_path))
+        try:
+            db.persist_findings("a.py", [Finding("a.py", 1, 2, "bug", "high", "A")])
+            db.persist_findings("b.py", [Finding("b.py", 5, 6, "bug", "high", "B")])
+            rows = db.get_all_unresolved()
+            fid_a = next(r["id"] for r in rows if r["file_path"] == "a.py")
+            fid_b = next(r["id"] for r in rows if r["file_path"] == "b.py")
+        finally:
+            db.close()
+        _seed_incident(db_path, finding_id=fid_a, artifact="test_a.py::ta")
+        _seed_incident(db_path, finding_id=fid_b, artifact="test_b.py::tb")
+
+        result = runner.invoke(
+            app, ["incidents", "--config", str(cfg), "--finding", str(fid_a), "-f", "json"]
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert {d["finding_id"] for d in data} == {fid_a}
+
+    def test_incidents_empty(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        ViolationDB(str(db_path)).close()  # empty DB, no incidents
+
+        result = runner.invoke(app, ["incidents", "--config", str(cfg)])
+        assert result.exit_code == 0
+        assert "No incidents" in result.output
+
+    def test_incidents_no_db(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        # No DB file created.
+        result = runner.invoke(app, ["incidents", "--config", str(cfg)])
+        assert result.exit_code == 0
+        assert "No violation database" in result.output

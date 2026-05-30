@@ -441,6 +441,88 @@ def confirm(
 
 
 @app.command()
+def incidents(
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+    days: int = typer.Option(
+        30, "--days", "-d", help="Look back this many days (ignored with --finding)",
+    ),
+    finding_id: Optional[int] = typer.Option(
+        None, "--finding", help="Show only incidents for this Finding id",
+    ),
+    output_format: str = typer.Option(
+        "table", "--format", "-f", help="Output format: table or json",
+    ),
+):
+    """Show recent Incidents — corroborated events linked to Findings.
+
+    Incidents are objective events (test failures, manual confirmations,
+    fix commits) that corroborate a model Finding. Pass --finding to scope
+    to one Finding; otherwise the most recent incidents within --days show.
+    """
+    import json as json_mod
+
+    from rich.table import Table
+
+    from .violation_db import ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    db_path = pathlib.Path(config.watch.directory).resolve() / config.memory.db_path
+    if not db_path.exists():
+        console.print(
+            "[yellow]No violation database found. Run some reviews first.[/yellow]"
+        )
+        raise typer.Exit()
+
+    db = ViolationDB(str(db_path))
+    try:
+        if finding_id is not None:
+            records = db.get_incidents_for_finding(finding_id)
+        else:
+            records = db.get_recent_incidents(days=days, limit=50)
+    finally:
+        db.close()
+
+    if not records:
+        console.print("[green]No incidents recorded yet.[/green]")
+        raise typer.Exit()
+
+    if output_format == "json":
+        console.print(json_mod.dumps(records, indent=2))
+        return
+
+    scope = (
+        f"finding {finding_id}" if finding_id is not None
+        else f"last {days}d"
+    )
+    table = Table(title=f"Incidents ({scope})")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("Finding", style="bold", width=8)
+    table.add_column("Signal", width=14)
+    table.add_column("Symptom", style="cyan")
+    table.add_column("Artifact")
+    table.add_column("When", style="dim", width=12)
+
+    for i, inc in enumerate(records, 1):
+        symptom = (
+            f"{inc['symptom_file']}:{inc['symptom_line']}"
+            if inc.get("symptom_file") else "—"
+        )
+        when = (inc.get("created_at") or "")[:10]
+        table.add_row(
+            str(i),
+            str(inc["finding_id"]),
+            inc["confirming_signal"],
+            symptom,
+            (inc.get("confirming_artifact") or "")[:50],
+            when,
+        )
+    console.print(table)
+
+
+@app.command()
 def triage(
     input_path: Optional[str] = typer.Argument(
         None,
