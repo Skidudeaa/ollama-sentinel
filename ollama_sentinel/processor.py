@@ -143,6 +143,7 @@ class OllamaClient:
         max_tokens = _get("max_tokens", None)
         if max_tokens is None:
             max_tokens = _get("output_reserve_tokens", None)
+        context_window = _get("context_window", None)
 
         url = f"{self.config['host']}/api/chat"
         options = {
@@ -151,6 +152,14 @@ class OllamaClient:
         }
         if max_tokens is not None:
             options["num_predict"] = max_tokens
+        # Pin Ollama's context window to the configured size. Without this,
+        # Ollama loads the model at its native context length (262144 for
+        # qwen3.6:35b), sizing the KV cache to match — gigabytes of extra
+        # memory beyond the prompt budget, which slows and destabilizes cold
+        # loads. The sentinel already budgets its prompt to context_window, so
+        # this is the window it actually needs.
+        if context_window is not None:
+            options["num_ctx"] = context_window
 
         payload = {
             "model": name,

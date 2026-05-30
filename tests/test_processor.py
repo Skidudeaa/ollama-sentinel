@@ -165,6 +165,29 @@ class TestOllamaClient:
         body = json.loads(httpx_mock.get_requests()[0].content)
         assert body["options"]["num_predict"] == 2000
 
+    async def test_context_window_sent_as_num_ctx(
+        self, ollama_config, httpx_mock: HTTPXMock
+    ):
+        """The model's context_window is sent to Ollama as num_ctx.
+
+        Without this, Ollama loads the model at its native context length
+        (e.g. 262144 for qwen3.6:35b), allocating a KV cache far larger than
+        the prompt budget — wasting GB of memory and destabilizing cold loads.
+        """
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": "bounded review"}},
+        )
+
+        client = OllamaClient(ollama_config)
+        try:
+            await client.generate_review("default", "review this")
+        finally:
+            await client.close()
+
+        body = json.loads(httpx_mock.get_requests()[0].content)
+        assert body["options"]["num_ctx"] == 8192
+
     async def test_max_tokens_overrides_output_reserve(
         self, ollama_config, httpx_mock: HTTPXMock
     ):
