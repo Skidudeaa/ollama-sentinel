@@ -720,6 +720,27 @@ class TestDismissCommand:
         finally:
             db.close()
 
+    def test_close_already_resolved_is_idempotent(self, tmp_path, monkeypatch):
+        """Closing an already-closed finding reports the existing closure and
+        leaves the recorded resolution unchanged (resolve then dismiss must not
+        flip 'fixed' to 'dismissed')."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        fid = _seed_one_finding_id(db_path)
+        r1 = runner.invoke(app, ["resolve", str(fid), "--config", str(cfg)])
+        assert r1.exit_code == 0, r1.output
+        r2 = runner.invoke(app, ["dismiss", str(fid), "--config", str(cfg)])
+        assert r2.exit_code == 0, r2.output
+        assert "already" in r2.output.lower()
+        db = ViolationDB(str(db_path))
+        try:
+            row = db.get_finding(fid)
+            assert row["resolved"] == 1
+            assert row["resolution"] == "fixed"  # NOT flipped to dismissed
+        finally:
+            db.close()
+
     def test_dismiss_missing_id(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         cfg = _make_report_config(tmp_path)

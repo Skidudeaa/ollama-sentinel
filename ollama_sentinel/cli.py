@@ -460,12 +460,20 @@ def _close_finding(
 
     db = ViolationDB(str(db_path))
     try:
-        if db.get_finding(finding_id) is None:
+        row = db.get_finding(finding_id)
+        if row is None:
             console.print(
                 f"[red]No finding with id {finding_id}; "
                 f"nothing to {action}.[/red]"
             )
             raise typer.Exit(code=1)
+        if row["resolved"]:
+            prior = row["resolution"] or "closed"
+            console.print(
+                f"[yellow]Finding {finding_id} is already closed "
+                f"({prior}); leaving it unchanged.[/yellow]"
+            )
+            return
         db.mark_resolved(finding_id, resolution=resolution)
     finally:
         db.close()
