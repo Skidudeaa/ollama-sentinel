@@ -653,3 +653,75 @@ class TestFindingsCommand:
         result = runner.invoke(app, ["findings", "--config", str(cfg)])
         assert result.exit_code == 0, result.output
         assert "✓" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Task 3.1 — `ollama-sentinel resolve` / `dismiss`
+# ---------------------------------------------------------------------------
+
+
+class TestResolveCommand:
+    """Tests for 'ollama-sentinel resolve'."""
+
+    def test_resolve_marks_fixed(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        fid = _seed_one_finding_id(db_path)
+        result = runner.invoke(app, ["resolve", str(fid), "--config", str(cfg)])
+        assert result.exit_code == 0, result.output
+        db = ViolationDB(str(db_path))
+        try:
+            row = db.get_finding(fid)
+            assert row["resolved"] == 1
+            assert row["resolution"] == "fixed"
+            assert db.get_open_findings() == []
+        finally:
+            db.close()
+
+    def test_resolve_missing_id(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        ViolationDB(str(db_path)).close()
+        result = runner.invoke(app, ["resolve", "99999", "--config", str(cfg)])
+        assert result.exit_code == 1
+        assert "No finding with id" in result.output
+
+    def test_resolve_no_db(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        result = runner.invoke(app, ["resolve", "1", "--config", str(cfg)])
+        assert result.exit_code == 1
+        assert "No violation database" in result.output
+
+
+class TestDismissCommand:
+    """Tests for 'ollama-sentinel dismiss'."""
+
+    def test_dismiss_marks_dismissed(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        fid = _seed_one_finding_id(db_path)
+        result = runner.invoke(app, ["dismiss", str(fid), "--config", str(cfg)])
+        assert result.exit_code == 0, result.output
+        db = ViolationDB(str(db_path))
+        try:
+            row = db.get_finding(fid)
+            assert row["resolved"] == 1
+            assert row["resolution"] == "dismissed"
+            assert db.get_open_findings() == []
+        finally:
+            db.close()
+
+    def test_dismiss_missing_id(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        ViolationDB(str(db_path)).close()
+        result = runner.invoke(app, ["dismiss", "99999", "--config", str(cfg)])
+        assert result.exit_code == 1
+        assert "No finding with id" in result.output
