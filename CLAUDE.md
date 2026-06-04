@@ -37,6 +37,7 @@ ollama-sentinel confirm 42          # manually corroborate a Finding -> Incident
 ollama-sentinel incidents           # list corroborated events (table or -f json)
 ollama-sentinel install-hooks       # install the git post-commit hook
 ollama-sentinel record-commit       # link HEAD to open Findings (called by the hook)
+ollama-sentinel surface             # emit open Findings to .ollama_reviews/findings.sarif (editor Problems panel + CI)
 
 python -m research_agent.main query "question" --context file.py --output result.md
 python -m research_agent.main interactive
@@ -125,10 +126,11 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 | `ollama_sentinel/extractor.py` | LLM JSON extraction + regex fallback for parsing review findings |
 | `ollama_sentinel/watcher.py` | FileSentinel, file watching, ignore logic, pipeline orchestration |
 | `ollama_sentinel/models.py` | Pydantic v2 config models: Ollama/Embedding/Memory/Processing with validators |
-| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard, confirm, incidents, install-hooks, record-commit |
+| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard, confirm, incidents, install-hooks, record-commit, surface |
 | `ollama_sentinel/pytest_plugin.py` | Opt-in pytest plugin: matches test failures to open Findings, records `test_failure` Incidents (`pytest11` entry point) |
 | `ollama_sentinel/hooks.py` | Git post-commit hook installer + `record_commit` (links commits to open Findings) |
 | `ollama_sentinel/dashboard.py` | Live Rich TUI for `ollama-sentinel dashboard` — polls reviews dir + ViolationDB read-only |
+| `ollama_sentinel/sarif.py` | SARIF 2.1.0 surface: excerpt-based `relocate_finding`, `build_sarif` document, `generate_sarif_file` (read-only orchestration) — backs the `surface` command + watcher auto-refresh |
 | `ollama_sentinel/context/assembler.py` | `Section` / `Priority` / `ContextItem` dataclasses + `assemble()` + `chunk_by_lines` — pure, token-budgeted |
 | `ollama_sentinel/context/tokens.py` | `TokenCounter` (tiktoken `cl100k_base` with char-based fallback) |
 | `ollama_sentinel/context/embeddings.py` | `OllamaEmbedder` — async `/api/embeddings` client, cache-backed, `EmbeddingUnavailable` on failure |
