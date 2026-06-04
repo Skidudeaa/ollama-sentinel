@@ -635,9 +635,12 @@ def findings(
         corroborated: set = set()
         if rows:
             paths = sorted({r["file_path"] for r in rows})
-            corroborated = {
-                r["id"] for r in db.get_findings_with_incidents(paths)
-            }
+            try:
+                corroborated = {
+                    r["id"] for r in db.get_findings_with_incidents(paths)
+                }
+            except Exception as e:  # corroboration is enrichment; never fatal
+                log.warning("Corroboration lookup failed (%s); marking none.", e)
     finally:
         db.close()
 
