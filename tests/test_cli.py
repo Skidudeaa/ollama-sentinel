@@ -643,6 +643,25 @@ class TestFindingsCommand:
         assert result.exit_code == 0
         assert len(json.loads(result.output)) == 2
 
+    def test_corroboration_failure_does_not_abort_listing(self, tmp_path, monkeypatch):
+        """Corroboration is best-effort enrichment (as in surface/sarif): if the
+        incident lookup raises, findings still lists the open findings."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_db(db_path, [
+            Finding("src/app.py", 10, 12, "bug", "high", "Null deref risk"),
+        ])
+
+        def _boom(self, *a, **k):
+            raise RuntimeError("corroboration query failed")
+
+        monkeypatch.setattr(ViolationDB, "get_findings_with_incidents", _boom)
+        result = runner.invoke(app, ["findings", "--config", str(cfg)])
+        assert result.exit_code == 0, result.output
+        assert "Open findings" in result.output
+        assert "Null" in result.output
+
     def test_corroborated_mark_renders(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("COLUMNS", "200")
