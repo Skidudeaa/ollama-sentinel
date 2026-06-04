@@ -802,6 +802,36 @@ class TestResolution:
         assert "resolution" in row
         assert row["resolution"] is None
 
+    def test_mark_resolved_already_resolved_rowcount_stays_one(self, tmp_path):
+        """Re-resolving an already-resolved finding reports rowcount 1 (SQLite
+        updates the row even when the value is unchanged). Documents this
+        semantics so callers aren't surprised.
+        """
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [_make_finding(file_path="a.py")])
+            fid = db.get_unresolved("a.py")[0]["id"]
+            db.mark_resolved(fid, resolution="fixed")
+            n2 = db.mark_resolved(fid, resolution="dismissed")
+        finally:
+            db.close()
+        assert n2 == 1  # row found; SQLite reports rowcount=1 even if already resolved
+
+    def test_mark_resolved_missing_id_with_fix_commit_returns_zero_no_incident(
+        self, tmp_path
+    ):
+        """fix_commit on a nonexistent finding_id must return 0, not raise IntegrityError,
+        and must not create a dangling Incident row.
+        """
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            n = db.mark_resolved(424242, fix_commit="abc123")
+            incidents = db.get_incidents_for_finding(424242)
+        finally:
+            db.close()
+        assert n == 0
+        assert incidents == []
+
 
 # ---------------------------------------------------------------------------
 # Task 1.2: get_finding + get_open_findings
@@ -827,6 +857,20 @@ class TestGetFinding:
             assert db.get_finding(424242) is None
         finally:
             db.close()
+
+    def test_returns_resolved_finding_too(self, tmp_path):
+        """get_finding must return the row regardless of resolved state."""
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [_make_finding(file_path="a.py")])
+            fid = db.get_unresolved("a.py")[0]["id"]
+            db.mark_resolved(fid, resolution="stale")
+            row = db.get_finding(fid)
+        finally:
+            db.close()
+        assert row is not None
+        assert row["resolved"] == 1
+        assert row["resolution"] == "stale"
 
 
 class TestGetOpenFindings:
@@ -933,3 +977,43 @@ class TestGetOpenFindings:
         finally:
             db.close()
         assert len(rows) == 2
+
+    def test_both_filters_together(self, tmp_path):
+        """severity= and file_substr= both applied simultaneously."""
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("src/auth.py", [
+                _make_finding(file_path="src/auth.py", line_start=1,
+                              severity="critical", description="auth-critical"),
+            ])
+            db.persist_findings("src/auth.py", [
+                _make_finding(file_path="src/auth.py", line_start=2,
+                              severity="low", description="auth-low", category="style"),
+            ])
+            db.persist_findings("other/util.py", [
+                _make_finding(file_path="other/util.py", line_start=1,
+                              severity="critical", description="util-critical"),
+            ])
+            rows = db.get_open_findings(severity="critical", file_substr="src")
+        finally:
+            db.close()
+        assert len(rows) == 1
+        assert rows[0]["description"] == "auth-critical"
+
+    def test_unknown_severity_sorts_last(self, tmp_path):
+        """Severities not in the CASE expression (ELSE 0) rank below 'low'."""
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [
+                _make_finding(file_path="a.py", line_start=1, severity="low",
+                              description="known-low"),
+            ])
+            db.persist_findings("a.py", [
+                _make_finding(file_path="a.py", line_start=2, severity="custom",
+                              description="unknown-sev"),
+            ])
+            rows = db.get_open_findings()
+        finally:
+            db.close()
+        assert rows[0]["severity"] == "low"
+        assert rows[-1]["severity"] == "custom"
