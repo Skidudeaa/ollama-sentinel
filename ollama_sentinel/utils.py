@@ -4,7 +4,10 @@ Utility functions for Ollama Sentinel.
 import difflib
 import gzip
 import logging
+import os
 import pathlib
+import shutil
+import tempfile
 from typing import List
 
 log = logging.getLogger("ollama-sentinel")
@@ -42,6 +45,75 @@ def safe_read(path: pathlib.Path, watch_dir: pathlib.Path) -> str:
     except Exception as e:
         log.error(f"Failed to read {path}: {e}")
         return ""
+
+
+def read_strict(path: pathlib.Path, watch_dir: pathlib.Path) -> str:
+    """Read a UTF-8 file with the same containment as :func:`safe_read`, but
+    **raise** on any failure instead of degrading to ``""``.
+
+    The read counterpart for the write path: refuses symlinks and path
+    traversal (``ValueError``) and decodes with ``errors="strict"``, so a
+    non-UTF-8 file raises ``UnicodeDecodeError`` rather than being silently
+    corrupted to U+FFFD. That matters because the ``fix`` command writes the
+    result back — a lossy decode would persist replacement characters into the
+    file's untouched regions.
+    """
+    if path.is_symlink():
+        raise ValueError(f"refusing to read symlink {path}")
+
+    abs_path = path.resolve()
+    watch_dir_abs = watch_dir.resolve()
+    try:
+        abs_path.relative_to(watch_dir_abs)
+    except ValueError as e:
+        raise ValueError(f"path traversal: {path} -> {abs_path}") from e
+
+    return abs_path.read_text(encoding="utf-8", errors="strict")
+
+
+def safe_write(path: pathlib.Path, content: str, watch_dir: pathlib.Path) -> None:
+    """Atomically write *content* to *path*, contained within *watch_dir*.
+
+    The write counterpart of :func:`safe_read`, but it **raises** rather than
+    degrading — a failed or unsafe write must never appear to succeed:
+
+    - rejects symlinks (``ValueError``);
+    - enforces ``watch_dir`` containment via ``relative_to`` **before** any
+      directory creation (a traversing path is rejected, never created);
+    - writes UTF-8 to a temporary file in the same directory, then
+      ``os.replace`` (same-filesystem atomic rename), cleaning up the temp on
+      failure;
+    - preserves the original file's permission mode — ``os.replace`` carries
+      the temp inode, whose mode would otherwise leak (a ``0o755`` file would
+      silently become ``0o600``);
+    - creates missing parent directories within ``watch_dir``.
+    """
+    if path.is_symlink():
+        raise ValueError(f"refusing to write through symlink {path}")
+
+    abs_path = path.resolve()
+    watch_dir_abs = watch_dir.resolve()
+    try:
+        abs_path.relative_to(watch_dir_abs)
+    except ValueError as e:
+        raise ValueError(f"path traversal: {path} -> {abs_path}") from e
+
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existed = abs_path.exists()
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(abs_path.parent), prefix=".ollama_sw_", suffix=".tmp"
+    )
+    tmp_path = pathlib.Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        if existed:
+            shutil.copymode(abs_path, tmp_path)
+        os.replace(tmp_path, abs_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 _CHUNK_BY_LINES_WARNED = False

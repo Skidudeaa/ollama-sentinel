@@ -10,7 +10,9 @@ import pytest
 from ollama_sentinel.utils import (
     chunk_content_by_lines,
     generate_diff,
+    read_strict,
     safe_read,
+    safe_write,
     save_compressed,
 )
 
@@ -119,6 +121,126 @@ class TestSafeRead:
         result = safe_read(f, watch_dir)
         assert "hello" in result
         assert result != ""
+
+
+# ---------------------------------------------------------------------------
+# read_strict
+# ---------------------------------------------------------------------------
+
+
+class TestReadStrict:
+    """read_strict: containment like safe_read, but raises on failure and
+    refuses non-UTF-8 (never lossy-decodes)."""
+
+    def test_reads_utf8_file(self, tmp_path):
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        f = watch_dir / "u.py"
+        f.write_text("x = 'café'\n", encoding="utf-8")
+        assert read_strict(f, watch_dir) == "x = 'café'\n"
+
+    def test_non_utf8_file_raises(self, tmp_path):
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        f = watch_dir / "data.py"
+        f.write_bytes(b"x = 1  # \x80\x81\xff not utf-8\n")
+        with pytest.raises((UnicodeDecodeError, ValueError)):
+            read_strict(f, watch_dir)
+
+    def test_symlink_raises(self, tmp_path):
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        target = watch_dir / "real.py"
+        target.write_text("secret")
+        link = watch_dir / "link.py"
+        os.symlink(target, link)
+        with pytest.raises(ValueError):
+            read_strict(link, watch_dir)
+
+    def test_traversal_raises(self, tmp_path):
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("password")
+        traversal = watch_dir / ".." / "outside" / "secret.txt"
+        with pytest.raises(ValueError):
+            read_strict(traversal, watch_dir)
+
+
+# ---------------------------------------------------------------------------
+# safe_write
+# ---------------------------------------------------------------------------
+
+
+class TestSafeWrite:
+    """safe_write: atomic, contained, UTF-8, mode-preserving, symlink-rejecting."""
+
+    def test_writes_and_reads_back(self, tmp_path):
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        f = watch_dir / "out.py"
+        f.write_text("old\n")
+        safe_write(f, "new content\n", watch_dir)
+        assert f.read_text(encoding="utf-8") == "new content\n"
+
+    def test_replaces_existing_file_atomically(self, tmp_path):
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        f = watch_dir / "mod.py"
+        f.write_text("v1\n")
+        safe_write(f, "v2\n", watch_dir)
+        assert f.read_text(encoding="utf-8") == "v2\n"
+        # no leftover temp files in the directory
+        assert [p.name for p in watch_dir.iterdir()] == ["mod.py"]
+
+    def test_preserves_mode(self, tmp_path):
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        f = watch_dir / "script.py"
+        f.write_text("#!/usr/bin/env python\n")
+        f.chmod(0o755)
+        safe_write(f, "#!/usr/bin/env python\nprint('hi')\n", watch_dir)
+        assert (os.stat(f).st_mode & 0o777) == 0o755
+
+    def test_writes_utf8(self, tmp_path):
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        f = watch_dir / "u.py"
+        f.write_text("x\n")
+        safe_write(f, "y = 'café'\n", watch_dir)
+        assert f.read_bytes() == "y = 'café'\n".encode("utf-8")
+
+    def test_symlink_target_raises(self, tmp_path):
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        target = watch_dir / "real.py"
+        target.write_text("x")
+        link = watch_dir / "link.py"
+        os.symlink(target, link)
+        with pytest.raises(ValueError):
+            safe_write(link, "nope", watch_dir)
+        # target untouched
+        assert target.read_text() == "x"
+
+    def test_traversal_raises(self, tmp_path):
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        victim = outside / "secret.txt"
+        victim.write_text("password")
+        traversal = watch_dir / ".." / "outside" / "secret.txt"
+        with pytest.raises(ValueError):
+            safe_write(traversal, "owned", watch_dir)
+        assert victim.read_text() == "password"
+
+    def test_creates_parent_dirs_within_watch_dir(self, tmp_path):
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        f = watch_dir / "pkg" / "sub" / "new.py"
+        safe_write(f, "x = 1\n", watch_dir)
+        assert f.read_text(encoding="utf-8") == "x = 1\n"
 
 
 # ---------------------------------------------------------------------------
