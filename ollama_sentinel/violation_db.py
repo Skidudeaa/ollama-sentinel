@@ -378,6 +378,62 @@ class ViolationDB:
             )
             return self._rows_to_dicts(cur)
 
+    def get_finding(self, finding_id: int) -> Optional[dict]:
+        """Return the single findings row for *finding_id*, or None.
+
+        Returns the row regardless of resolved state — callers use it to detect
+        a bad id before mutating.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM findings WHERE id = ?", (finding_id,)
+            )
+            rows = self._rows_to_dicts(cur)
+        return rows[0] if rows else None
+
+    def get_open_findings(
+        self,
+        *,
+        severity: Optional[str] = None,
+        file_substr: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[dict]:
+        """Return unresolved findings, filtered and ranked for triage.
+
+        Ordered by severity (critical → low) then ``occurrence_count`` DESC.
+        ``severity`` is an exact match; ``file_substr`` is a case-insensitive
+        substring of ``file_path``. ``limit`` caps the rows returned.
+        """
+        clauses = ["resolved = 0"]
+        params: list = []
+        if severity is not None:
+            clauses.append("severity = ?")
+            params.append(severity)
+        if file_substr is not None:
+            clauses.append("LOWER(file_path) LIKE ?")
+            params.append(f"%{file_substr.lower()}%")
+        where = " AND ".join(clauses)
+        params.append(limit)
+        with self._lock:
+            cur = self._conn.execute(
+                f"""
+                SELECT * FROM findings
+                WHERE {where}
+                ORDER BY
+                    CASE severity
+                        WHEN 'critical' THEN 4
+                        WHEN 'high'     THEN 3
+                        WHEN 'medium'   THEN 2
+                        WHEN 'low'      THEN 1
+                        ELSE 0
+                    END DESC,
+                    occurrence_count DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            )
+            return self._rows_to_dicts(cur)
+
     def get_all_unresolved(self) -> List[dict]:
         """Return every unresolved finding across all files."""
         with self._lock:
