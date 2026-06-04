@@ -511,6 +511,156 @@ def dismiss(
     )
 
 
+def _print_diff(diff: str) -> None:
+    """Print a unified diff — syntax-highlighted on a terminal, plain otherwise.
+
+    Never routed through Rich markup (diff text can contain ``[...]`` that Rich
+    would mis-parse)."""
+    if console.is_terminal:
+        try:
+            from rich.syntax import Syntax
+            console.print(Syntax(diff, "diff", theme="ansi_dark", word_wrap=False))
+            return
+        except Exception:
+            pass
+    print(diff, end="")
+
+
+@app.command()
+def fix(
+    finding_id: int = typer.Argument(..., help="ID of the Finding to fix"),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Apply the fix without the interactive confirmation prompt",
+    ),
+):
+    """Generate a localized fix for a Finding, preview a diff, and — on
+    confirmation — write it into the watched file and resolve the finding.
+
+    The first code path that writes into watched source: it edits only the
+    finding's excerpt-verified whole-line span, never writes without an
+    interactive yes or --yes, and always shows the diff first.
+    """
+    import difflib
+
+    from .processor import OllamaClient
+    from .remediate import propose_fix
+    from .sarif import relocate_finding
+    from .utils import read_strict, safe_write
+    from .violation_db import ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    watch_dir = pathlib.Path(config.watch.directory).resolve()
+    db_path = watch_dir / config.memory.db_path
+    if not db_path.exists():
+        console.print("[red]No violation database found.[/red]")
+        raise typer.Exit(code=1)
+
+    db = ViolationDB(str(db_path))
+    try:
+        finding = db.get_finding(finding_id)
+        if finding is None:
+            console.print(f"[red]No finding with id {finding_id}.[/red]")
+            raise typer.Exit(code=1)
+        if finding["resolved"]:
+            console.print(f"[red]Finding {finding_id} is already resolved.[/red]")
+            raise typer.Exit(code=1)
+
+        rel = finding["file_path"]
+        target = watch_dir / rel
+        try:
+            content = read_strict(target, watch_dir)
+        except (ValueError, OSError) as e:
+            console.print(
+                f"[red]Cannot read {rel} as UTF-8; refusing to edit "
+                f"(would corrupt non-text bytes): {e}[/red]"
+            )
+            raise typer.Exit(code=1)
+        before = target.stat()
+        before_sig = (before.st_mtime_ns, before.st_size)
+
+        reloc = relocate_finding(content, finding)
+        if not (reloc.status == "relocated" and reloc.exact):
+            if reloc.status == "stale":
+                console.print(
+                    f"[red]Finding {finding_id}: excerpt no longer in {rel}; "
+                    f"cannot locate — nothing to fix.[/red]"
+                )
+            elif reloc.status == "stored":
+                console.print(
+                    f"[red]Finding {finding_id} has no usable excerpt to locate "
+                    f"by; cannot fix safely.[/red]"
+                )
+            else:  # relocated but not exact (fuzzy word-sequence match)
+                console.print(
+                    f"[red]Finding {finding_id}: excerpt only matches across line "
+                    f"boundaries; cannot fix safely (would clobber surrounding "
+                    f"code).[/red]"
+                )
+            raise typer.Exit(code=1)
+
+        async def _generate():
+            client = OllamaClient(config.ollama.model_dump())
+            try:
+                return await propose_fix(
+                    content, finding, reloc, client, model_role="fix"
+                )
+            finally:
+                await client.close()
+
+        try:
+            proposed = asyncio.run(_generate())
+        except Exception as e:
+            console.print(f"[red]Fix generation failed: {e}[/red]")
+            raise typer.Exit(code=1)
+
+        if proposed.status == "no_change":
+            console.print("[yellow]Model proposed no change.[/yellow]")
+            raise typer.Exit(code=0)
+
+        diff = "".join(difflib.unified_diff(
+            content.splitlines(keepends=True),
+            proposed.new_content.splitlines(keepends=True),
+            fromfile=rel, tofile=rel,
+        ))
+        _print_diff(diff)
+
+        if not yes:
+            if _is_stdin_tty():
+                if not typer.confirm(f"Apply this fix to {rel}?"):
+                    console.print(
+                        f"[yellow]Aborted; finding {finding_id} left open.[/yellow]"
+                    )
+                    raise typer.Exit(code=0)
+            else:
+                console.print("[dim](preview only; pass --yes to apply)[/dim]")
+                raise typer.Exit(code=0)
+
+        after = target.stat()
+        if (after.st_mtime_ns, after.st_size) != before_sig:
+            console.print(
+                f"[red]{rel} changed since it was read; re-run fix.[/red]"
+            )
+            raise typer.Exit(code=1)
+
+        try:
+            safe_write(target, proposed.new_content, watch_dir)
+        except (ValueError, OSError) as e:
+            console.print(f"[red]Failed to write {rel}: {e}[/red]")
+            raise typer.Exit(code=1)
+        db.mark_resolved(finding_id, resolution="fixed")
+    finally:
+        db.close()
+
+    console.print(
+        f"[green]Applied fix to {rel}; finding {finding_id} resolved (fixed).[/green]"
+    )
+
+
 @app.command()
 def incidents(
     config_path: str = typer.Option(

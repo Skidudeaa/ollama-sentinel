@@ -41,6 +41,7 @@ ollama-sentinel surface             # emit open Findings to .ollama_reviews/find
 ollama-sentinel findings            # list open Findings with ids (filter: --severity/--file)
 ollama-sentinel resolve 42          # close Finding 42 as fixed (resolution='fixed')
 ollama-sentinel dismiss 31          # close Finding 31 as false-positive (resolution='dismissed')
+ollama-sentinel fix 42              # localized fix for Finding 42: preview diff, write on confirm, resolve (fixed)
 
 python -m research_agent.main query "question" --context file.py --output result.md
 python -m research_agent.main interactive
@@ -129,7 +130,8 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 | `ollama_sentinel/extractor.py` | LLM JSON extraction + regex fallback for parsing review findings |
 | `ollama_sentinel/watcher.py` | FileSentinel, file watching, ignore logic, pipeline orchestration |
 | `ollama_sentinel/models.py` | Pydantic v2 config models: Ollama/Embedding/Memory/Processing with validators |
-| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard, confirm, incidents, install-hooks, record-commit, surface, findings, resolve, dismiss |
+| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard, confirm, incidents, install-hooks, record-commit, surface, findings, resolve, dismiss, fix |
+| `ollama_sentinel/remediate.py` | Localized fix generation for `fix <id>`: `splice_lines`/`parse_fix_response`/`build_fix_prompt` (pure) + `propose_fix` (I/O); bounds the model edit to the finding's exact whole-line span |
 | `ollama_sentinel/pytest_plugin.py` | Opt-in pytest plugin: matches test failures to open Findings, records `test_failure` Incidents (`pytest11` entry point) |
 | `ollama_sentinel/hooks.py` | Git post-commit hook installer + `record_commit` (links commits to open Findings) |
 | `ollama_sentinel/dashboard.py` | Live Rich TUI for `ollama-sentinel dashboard` — polls reviews dir + ViolationDB read-only |
@@ -151,6 +153,9 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 ### Security boundaries
 
 - `safe_read()` uses `Path.relative_to()` for containment (not string prefix)
+- `read_strict()` / `safe_write()` back the `fix` write path: same containment as
+  `safe_read` but **raise** instead of degrading — strict UTF-8 (refuse, never
+  corrupt non-text bytes), atomic `os.replace`, original mode preserved
 - `OllamaConfig` validates host URL scheme (http/https only)
 - `OutputConfig` rejects `..` traversal and absolute paths
 - `BrowserTool._validate_url()` blocks private IPs and non-http schemes
