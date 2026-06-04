@@ -68,7 +68,11 @@ def read_strict(path: pathlib.Path, watch_dir: pathlib.Path) -> str:
     except ValueError as e:
         raise ValueError(f"path traversal: {path} -> {abs_path}") from e
 
-    return abs_path.read_text(encoding="utf-8", errors="strict")
+    # newline="" disables universal-newline translation, so a CRLF file's
+    # endings survive the read intact. Without it, every line ending would
+    # collapse to LF and be silently rewritten on write-back.
+    with open(abs_path, "r", encoding="utf-8", errors="strict", newline="") as fh:
+        return fh.read()
 
 
 def safe_write(path: pathlib.Path, content: str, watch_dir: pathlib.Path) -> None:
@@ -106,7 +110,10 @@ def safe_write(path: pathlib.Path, content: str, watch_dir: pathlib.Path) -> Non
     )
     tmp_path = pathlib.Path(tmp_name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # newline="" writes content verbatim — no '\n' → os.linesep translation
+        # — so the original line endings preserved by read_strict round-trip
+        # unchanged.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(content)
         if existed:
             shutil.copymode(abs_path, tmp_path)

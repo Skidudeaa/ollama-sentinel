@@ -167,6 +167,16 @@ class TestReadStrict:
         with pytest.raises(ValueError):
             read_strict(traversal, watch_dir)
 
+    def test_preserves_crlf_line_endings(self, tmp_path):
+        # Universal-newline translation would collapse CRLF to LF on read; the
+        # write path must preserve the file's original endings so a later
+        # write-back does not silently flip every line.
+        watch_dir = tmp_path / "project"
+        watch_dir.mkdir()
+        f = watch_dir / "win.py"
+        f.write_bytes(b"a = 1\r\nb = 2\r\n")
+        assert read_strict(f, watch_dir) == "a = 1\r\nb = 2\r\n"
+
 
 # ---------------------------------------------------------------------------
 # safe_write
