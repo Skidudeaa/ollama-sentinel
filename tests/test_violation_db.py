@@ -1017,3 +1017,24 @@ class TestGetOpenFindings:
             db.close()
         assert rows[0]["severity"] == "low"
         assert rows[-1]["severity"] == "custom"
+
+    def test_ties_broken_by_id_ascending(self, tmp_path):
+        """Full ties (same severity + occurrence_count) resolve deterministically
+        by id ascending, so --limit truncates a stable, specified subset rather
+        than an unspecified one."""
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            # Insert in DESCENDING line order so insertion order != natural id
+            # order would only coincide via the explicit id tiebreak.
+            for i in reversed(range(5)):
+                db.persist_findings("a.py", [
+                    _make_finding(file_path="a.py", line_start=i + 1,
+                                  severity="high", category=f"c{i}",
+                                  description=f"f{i}"),
+                ])
+            all_ids = [r["id"] for r in db.get_open_findings()]
+            limited = [r["id"] for r in db.get_open_findings(limit=3)]
+        finally:
+            db.close()
+        assert all_ids == sorted(all_ids)
+        assert limited == sorted(all_ids)[:3]
