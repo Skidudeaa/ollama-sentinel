@@ -440,6 +440,64 @@ def confirm(
     )
 
 
+def _close_finding(
+    finding_id: int, config_path: str, *, resolution: str, past: str, tail: str
+) -> None:
+    """Shared body for resolve/dismiss: validate id, mark_resolved, report.
+
+    ``resolution`` is the stored reason ('fixed'/'dismissed'); ``past`` and
+    ``tail`` shape the success line, e.g. "Resolved finding 42 (fixed)."
+    """
+    from .violation_db import ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    db_path = pathlib.Path(config.watch.directory).resolve() / config.memory.db_path
+    if not db_path.exists():
+        console.print("[red]No violation database found.[/red]")
+        raise typer.Exit(code=1)
+
+    db = ViolationDB(str(db_path))
+    try:
+        if db.get_finding(finding_id) is None:
+            console.print(f"[red]No finding with id {finding_id}.[/red]")
+            raise typer.Exit(code=1)
+        db.mark_resolved(finding_id, resolution=resolution)
+    finally:
+        db.close()
+
+    console.print(f"[green]{past} finding {finding_id} ({tail}).[/green]")
+
+
+@app.command()
+def resolve(
+    finding_id: int = typer.Argument(..., help="ID of the Finding to resolve"),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """Mark a Finding resolved (fixed). Records resolution='fixed'."""
+    _close_finding(
+        finding_id, config_path, resolution="fixed",
+        past="Resolved", tail="fixed",
+    )
+
+
+@app.command()
+def dismiss(
+    finding_id: int = typer.Argument(..., help="ID of the Finding to dismiss"),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """Dismiss a Finding as a false-positive / won't-fix. Records resolution='dismissed'."""
+    _close_finding(
+        finding_id, config_path, resolution="dismissed",
+        past="Dismissed", tail="false-positive",
+    )
+
+
 @app.command()
 def incidents(
     config_path: str = typer.Option(
