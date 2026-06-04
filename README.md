@@ -92,6 +92,7 @@ The "I always forget what to run" table.
 | Surface findings in your editor | `ollama-sentinel surface` | Writes `.ollama_reviews/findings.sarif`; open it in VS Code/Cursor (SARIF Viewer → Problems panel) or upload it in CI for GitHub code scanning. Findings are re-anchored to current lines by excerpt; `run` refreshes it automatically |
 | List open findings | `ollama-sentinel findings`<br>or `… --severity high --file foo.py` | Table with ids, ranked by severity then frequency; `-f json` for machine-readable |
 | Close a finding | `ollama-sentinel resolve 42` / `ollama-sentinel dismiss 31` | `resolve` = fixed, `dismiss` = false-positive; records why so the dismiss rate is a usable signal |
+| Apply a localized fix | `ollama-sentinel fix 42` / `… --yes` | Asks the local model for a fix to that finding's exact span, previews a unified diff, and on confirmation writes it into the file and resolves the finding (`fixed`). Never writes without an interactive yes or `--yes`; no commit |
 | Link commits to findings | `ollama-sentinel install-hooks` | Installs a git post-commit hook that records which commit touched each open Finding |
 | Auto-link test failures | add `ollama_sentinel = true` to your pytest config | A failing test on a flagged line becomes a `test_failure` Incident |
 | Create a config file | `ollama-sentinel init` | Writes `ollama-sentinel.yaml` in the current dir |

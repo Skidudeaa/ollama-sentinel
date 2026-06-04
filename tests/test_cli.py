@@ -776,3 +776,254 @@ class TestDismissCommand:
         result = runner.invoke(app, ["dismiss", "99999", "--config", str(cfg)])
         assert result.exit_code == 1
         assert "No finding with id" in result.output
+
+
+# ---------------------------------------------------------------------------
+# fix (remediate)
+# ---------------------------------------------------------------------------
+
+
+def _seed_fix_finding(db_path, *, file_path, excerpt, line_start=2, line_end=2):
+    """Seed one finding (security/high) with a verbatim excerpt; return its id."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = ViolationDB(str(db_path))
+    try:
+        db.persist_findings(file_path, [
+            Finding(file_path, line_start, line_end, "security", "high",
+                    "eval on untrusted input", verbatim_excerpt=excerpt),
+        ])
+        fid = db._conn.execute(
+            "SELECT id FROM findings ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+    finally:
+        db.close()
+    return fid
+
+
+def _mock_model(monkeypatch, response, *, side_effect=None):
+    """Patch OllamaClient.generate_review to return `response` (no network)."""
+    import ollama_sentinel.processor as proc
+
+    async def fake_gen(self, role, prompt, **kwargs):
+        if side_effect is not None:
+            side_effect()
+        return response
+
+    monkeypatch.setattr(proc.OllamaClient, "generate_review", fake_gen)
+
+
+class TestFixCommand:
+    """Tests for 'ollama-sentinel fix' — the first write-to-source path."""
+
+    def test_happy_path_applies_and_resolves(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+        _mock_model(monkeypatch, "    x = safe(data)")
+
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 0, result.output
+        assert src.read_text() == "def f():\n    x = safe(data)\n    return x\n"
+        db = ViolationDB(str(db_path))
+        try:
+            row = db.get_finding(fid)
+            assert row["resolved"] == 1
+            assert row["resolution"] == "fixed"
+            assert db.get_incidents_for_finding(fid) == []  # no commit → no Incident
+        finally:
+            db.close()
+
+    def test_stale_excerpt_refused(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    return safe(data)\n")
+        original = src.read_text()
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+        _mock_model(monkeypatch, "whatever")
+
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 1
+        assert src.read_text() == original
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_finding(fid)["resolved"] == 0
+        finally:
+            db.close()
+
+    def test_empty_excerpt_stored_refused(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n")
+        original = src.read_text()
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="")
+        _mock_model(monkeypatch, "x = safe(data)")
+
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 1
+        assert src.read_text() == original
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_finding(fid)["resolved"] == 0
+        finally:
+            db.close()
+
+    def test_fuzzy_only_relocation_refused(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        # Excerpt only matches via the flattened word-sequence fallback (spans
+        # lines), so relocation is non-exact and must be refused.
+        src.write_text("import os\n\ndef f():\n    a = 1\n    return secret(a)\n")
+        original = src.read_text()
+        fid = _seed_fix_finding(
+            db_path, file_path="app.py",
+            excerpt="def f(): a = 1 return secret(a)",
+            line_start=3, line_end=5,
+        )
+        _mock_model(monkeypatch, "fixed")
+
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 1
+        assert src.read_text() == original
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_finding(fid)["resolved"] == 0
+        finally:
+            db.close()
+
+    def test_non_utf8_target_refused(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_bytes(b"def f():\n    x = eval(data)  # \x80\xff\n")
+        original = src.read_bytes()
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+        _mock_model(monkeypatch, "x = safe(data)")
+
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 1
+        assert src.read_bytes() == original  # not corrupted
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_finding(fid)["resolved"] == 0
+        finally:
+            db.close()
+
+    def test_mode_preserved_after_fix(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("#!/usr/bin/env python\nx = eval(data)\n")
+        src.chmod(0o755)
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+        _mock_model(monkeypatch, "x = safe(data)")
+
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 0, result.output
+        assert (src.stat().st_mode & 0o777) == 0o755
+
+    def test_file_changed_between_read_and_write_aborts(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+
+        # The model "generation" mutates the file underneath us (simulating a
+        # concurrent editor save / watcher rewrite) so the pre-write re-stat
+        # detects the change and aborts.
+        def _mutate():
+            src.write_text("def f():\n    x = eval(data)\n    return x\n# edited\n")
+        _mock_model(monkeypatch, "    x = safe(data)", side_effect=_mutate)
+
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 1
+        assert "changed since it was read" in result.output
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_finding(fid)["resolved"] == 0
+        finally:
+            db.close()
+
+    def test_no_change_leaves_finding_open(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+        original = src.read_text()
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+        # Model returns the original span unchanged.
+        _mock_model(monkeypatch, "    x = eval(data)")
+
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 0, result.output
+        assert src.read_text() == original
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_finding(fid)["resolved"] == 0
+        finally:
+            db.close()
+
+    def test_missing_id_refused(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        ViolationDB(str(db_path)).close()
+        result = runner.invoke(app, ["fix", "99999", "--config", str(cfg), "--yes"])
+        assert result.exit_code == 1
+
+    def test_already_resolved_refused(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n")
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+        db = ViolationDB(str(db_path))
+        db.mark_resolved(fid, resolution="fixed")
+        db.close()
+        _mock_model(monkeypatch, "x = safe(data)")
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 1
+        assert "already resolved" in result.output.lower()
+
+    def test_non_tty_without_yes_previews_only(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+        original = src.read_text()
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+        _mock_model(monkeypatch, "    x = safe(data)")
+        # CliRunner's stdin is non-tty, so without --yes the command must
+        # preview and write nothing.
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg)])
+        assert result.exit_code == 0, result.output
+        assert src.read_text() == original
+        assert "safe(data)" in result.output  # the diff was printed
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_finding(fid)["resolved"] == 0
+        finally:
+            db.close()
+
+    def test_no_db_refused(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        result = runner.invoke(app, ["fix", "1", "--config", str(cfg), "--yes"])
+        assert result.exit_code == 1
+        assert "No violation database" in result.output
