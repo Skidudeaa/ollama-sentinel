@@ -516,3 +516,38 @@ class TestIncidentsCommand:
         result = runner.invoke(app, ["incidents", "--config", str(cfg)])
         assert result.exit_code == 0
         assert "No violation database" in result.output
+
+
+class TestSurfaceCommand:
+    """Tests for 'ollama-sentinel surface'."""
+
+    def test_surface_writes_sarif(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text(
+            "def f():\n    x = eval(data)\n"
+        )
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_db(db_path, [])  # creates the DB
+        db = ViolationDB(str(db_path))
+        db.persist_findings("src/app.py", [
+            Finding("src/app.py", 2, 2, "security", "high", "eval",
+                    verbatim_excerpt="x = eval(data)"),
+        ])
+        db.close()
+
+        result = runner.invoke(app, ["surface", "--config", str(cfg)])
+        assert result.exit_code == 0
+        sarif = tmp_path / ".ollama_reviews" / "findings.sarif"
+        assert sarif.exists()
+        doc = json.loads(sarif.read_text())
+        assert doc["version"] == "2.1.0"
+        assert "Wrote 1 findings" in result.output
+
+    def test_surface_no_db(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        result = runner.invoke(app, ["surface", "--config", str(cfg)])
+        assert result.exit_code == 0
+        assert "No violation database" in result.output
