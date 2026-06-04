@@ -676,6 +676,8 @@ class TestResolveCommand:
             assert row["resolved"] == 1
             assert row["resolution"] == "fixed"
             assert db.get_open_findings() == []
+            # CRITICAL invariant: manual close must NOT create an Incident
+            assert db.get_incidents_for_finding(fid) == []
         finally:
             db.close()
 
@@ -713,6 +715,8 @@ class TestDismissCommand:
             assert row["resolved"] == 1
             assert row["resolution"] == "dismissed"
             assert db.get_open_findings() == []
+            # CRITICAL invariant: manual close must NOT create an Incident
+            assert db.get_incidents_for_finding(fid) == []
         finally:
             db.close()
 
