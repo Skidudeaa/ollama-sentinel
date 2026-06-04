@@ -50,6 +50,16 @@ class TestSpliceLines:
         content = "a\nb\nc\n"
         assert splice_lines(content, 2, 2, "B\n") == "a\nB\nc\n"
 
+    def test_preserves_crlf_terminator_on_replaced_line(self):
+        # The replaced line must keep the file's CRLF terminator, not get a bare
+        # LF that leaves the file with mixed endings.
+        content = "a\r\nb\r\nc\r\n"
+        assert splice_lines(content, 2, 2, "B") == "a\r\nB\r\nc\r\n"
+
+    def test_normalizes_replacement_newlines_to_crlf_file(self):
+        content = "a\r\nb\r\nc\r\nd\r\n"
+        assert splice_lines(content, 2, 3, "B\nC") == "a\r\nB\r\nC\r\nd\r\n"
+
 
 # ---------------------------------------------------------------------------
 # parse_fix_response
