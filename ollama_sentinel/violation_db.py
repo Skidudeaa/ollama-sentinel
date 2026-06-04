@@ -94,7 +94,7 @@ class ViolationDB:
         self._migrate()
 
     def _migrate(self) -> None:
-        """Idempotent migration: add columns introduced after the initial schema (embed_text backfill, triggering_commit_sha, fix_commit_sha, verbatim_excerpt)."""
+        """Idempotent migration: add columns introduced after the initial schema (embed_text backfill, triggering_commit_sha, fix_commit_sha, verbatim_excerpt, resolution)."""
         try:
             with self._lock:
                 cur = self._conn.execute("PRAGMA table_info(findings)")
@@ -237,7 +237,7 @@ class ViolationDB:
             self._conn.commit()
             rowcount = cur.rowcount
 
-        if fix_commit is not None:
+        if fix_commit is not None and rowcount > 0:
             self.persist_incident(
                 Incident(
                     finding_id=finding_id,
