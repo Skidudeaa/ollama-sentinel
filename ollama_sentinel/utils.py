@@ -68,10 +68,16 @@ def read_strict(path: pathlib.Path, watch_dir: pathlib.Path) -> str:
     except ValueError as e:
         raise ValueError(f"path traversal: {path} -> {abs_path}") from e
 
-    # newline="" disables universal-newline translation, so a CRLF file's
-    # endings survive the read intact. Without it, every line ending would
-    # collapse to LF and be silently rewritten on write-back.
-    with open(abs_path, "r", encoding="utf-8", errors="strict", newline="") as fh:
+    # O_NOFOLLOW makes the open atomically refuse a final-component symlink,
+    # closing the race where the path is swapped to a symlink after the
+    # is_symlink() check but before the open. newline="" disables
+    # universal-newline translation so a CRLF file's endings survive the read.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(abs_path, flags)
+    except OSError as e:
+        raise ValueError(f"refusing to read {path}: {e}") from e
+    with os.fdopen(fd, "r", encoding="utf-8", errors="strict", newline="") as fh:
         return fh.read()
 
 
@@ -90,7 +96,11 @@ def safe_write(path: pathlib.Path, content: str, watch_dir: pathlib.Path) -> Non
     - preserves the original file's permission mode — ``os.replace`` carries
       the temp inode, whose mode would otherwise leak (a ``0o755`` file would
       silently become ``0o600``);
-    - creates missing parent directories within ``watch_dir``.
+    - creates missing parent directories within ``watch_dir``;
+    - re-validates parent containment immediately before the rename as
+      defense-in-depth against a parent component being swapped to a symlink
+      during the window (full openat/O_NOFOLLOW-per-component hardening is out
+      of scope for a local single-user tool).
     """
     if path.is_symlink():
         raise ValueError(f"refusing to write through symlink {path}")
@@ -104,19 +114,37 @@ def safe_write(path: pathlib.Path, content: str, watch_dir: pathlib.Path) -> Non
 
     abs_path.parent.mkdir(parents=True, exist_ok=True)
 
-    existed = abs_path.exists()
     fd, tmp_name = tempfile.mkstemp(
         dir=str(abs_path.parent), prefix=".ollama_sw_", suffix=".tmp"
     )
     tmp_path = pathlib.Path(tmp_name)
     try:
+        # If os.fdopen raises before taking ownership of fd, close the raw fd
+        # so it does not leak.
+        try:
+            fh = os.fdopen(fd, "w", encoding="utf-8", newline="")
+        except Exception:
+            os.close(fd)
+            raise
         # newline="" writes content verbatim — no '\n' → os.linesep translation
-        # — so the original line endings preserved by read_strict round-trip
-        # unchanged.
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+        # — so line endings preserved by read_strict round-trip unchanged.
+        with fh:
             fh.write(content)
-        if existed:
+        # Preserve the original mode unconditionally; FileNotFoundError means
+        # the target did not exist (a fresh write), which is fine.
+        try:
             shutil.copymode(abs_path, tmp_path)
+        except FileNotFoundError:
+            pass
+        # Defense-in-depth: a parent component could have been swapped to a
+        # symlink pointing outside watch_dir during the window. Re-resolve and
+        # re-check before committing the rename.
+        try:
+            abs_path.parent.resolve().relative_to(watch_dir_abs)
+        except ValueError as e:
+            raise ValueError(
+                f"parent moved outside watch_dir before write: {path}"
+            ) from e
         os.replace(tmp_path, abs_path)
     except Exception:
         tmp_path.unlink(missing_ok=True)
