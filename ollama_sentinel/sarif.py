@@ -56,6 +56,22 @@ def _strip_blank_edges(lines: List[str]) -> List[str]:
     return lines[start:end]
 
 
+def _word_linemap(text: str) -> Tuple[List[str], List[int]]:
+    """Whitespace-split *text* into words, tracking each word's source line.
+
+    Returns (words, line_per_word) where line_per_word[i] is the 1-based line
+    that words[i] came from. Used by the relocation fallback to match a
+    newline-flattened excerpt against the file and map back to a line span.
+    """
+    words: List[str] = []
+    line_per_word: List[int] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for w in line.split():
+            words.append(w)
+            line_per_word.append(lineno)
+    return words, line_per_word
+
+
 def relocate_finding(content: str, finding: dict) -> Relocation:
     """Re-anchor a finding to its current line by its verbatim excerpt.
 
@@ -79,11 +95,31 @@ def relocate_finding(content: str, finding: dict) -> Relocation:
     for i in range(len(file_lines) - n + 1):
         if file_lines[i:i + n] == excerpt_lines:
             matches.append(i + 1)
-    if not matches:
+    if matches:
+        best = min(matches, key=lambda ln: abs(ln - stored_start))
+        return Relocation(best, best + n - 1, "relocated")
+
+    # Fallback: the excerpt may have been flattened (newlines collapsed to
+    # spaces) by the upstream verbatim-validation gate, so line-block matching
+    # misses a genuinely-present multi-line excerpt. Match the excerpt's word
+    # sequence against the file's and map the span back to line numbers.
+    file_words, file_word_lines = _word_linemap(content)
+    excerpt_words = excerpt.split()
+    word_matches: List[Tuple[int, int]] = []  # (start_line, end_line) per match
+    if excerpt_words:
+        m = len(excerpt_words)
+        for i in range(len(file_words) - m + 1):
+            if file_words[i:i + m] == excerpt_words:
+                word_matches.append(
+                    (file_word_lines[i], file_word_lines[i + m - 1])
+                )
+    if not word_matches:
         return Relocation(stored_start, stored_end, "stale")
 
-    best = min(matches, key=lambda ln: abs(ln - stored_start))
-    return Relocation(best, best + n - 1, "relocated")
+    best_start, best_end = min(
+        word_matches, key=lambda se: abs(se[0] - stored_start)
+    )
+    return Relocation(best_start, best_end, "relocated")
 
 
 def _fingerprint(file_path: str, category: str, excerpt: str,
