@@ -827,6 +827,10 @@ class TestFixCommand:
         result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
         assert result.exit_code == 0, result.output
         assert src.read_text() == "def f():\n    x = safe(data)\n    return x\n"
+        # The diff is always printed before any write, including under --yes (it
+        # is the record of what landed).
+        assert "x = eval(data)" in result.output
+        assert "x = safe(data)" in result.output
         db = ViolationDB(str(db_path))
         try:
             row = db.get_finding(fid)
@@ -1027,3 +1031,76 @@ class TestFixCommand:
         result = runner.invoke(app, ["fix", "1", "--config", str(cfg), "--yes"])
         assert result.exit_code == 1
         assert "No violation database" in result.output
+
+    def test_file_deleted_between_read_and_write_aborts_cleanly(self, tmp_path, monkeypatch):
+        # A delete (not just an edit) during the generation window must abort
+        # with the clean 'changed since it was read' message, not an uncaught
+        # traceback from the pre-write re-stat.
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+
+        def _delete():
+            src.unlink()
+        _mock_model(monkeypatch, "    x = safe(data)", side_effect=_delete)
+
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 1
+        assert "changed since it was read" in result.output
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_finding(fid)["resolved"] == 0
+        finally:
+            db.close()
+
+    def test_interactive_tty_decline_then_accept(self, tmp_path, monkeypatch):
+        # The primary human-driven gate: with a real TTY and no --yes, 'n'
+        # aborts without writing; 'y' applies. This pins the "never writes
+        # unprompted" property's interactive branch.
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+        original = src.read_text()
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+        _mock_model(monkeypatch, "    x = safe(data)")
+        monkeypatch.setattr("ollama_sentinel.cli._is_stdin_tty", lambda: True)
+
+        declined = runner.invoke(app, ["fix", str(fid), "--config", str(cfg)], input="n\n")
+        assert declined.exit_code == 0, declined.output
+        assert "Aborted" in declined.output
+        assert src.read_text() == original
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_finding(fid)["resolved"] == 0
+        finally:
+            db.close()
+
+        accepted = runner.invoke(app, ["fix", str(fid), "--config", str(cfg)], input="y\n")
+        assert accepted.exit_code == 0, accepted.output
+        assert src.read_text() == "def f():\n    x = safe(data)\n    return x\n"
+        db = ViolationDB(str(db_path))
+        try:
+            row = db.get_finding(fid)
+            assert row["resolved"] == 1 and row["resolution"] == "fixed"
+        finally:
+            db.close()
+
+    def test_preserves_crlf_endings_end_to_end(self, tmp_path, monkeypatch):
+        # A fix on a CRLF file must leave every line ending intact (read → splice
+        # → write), not silently flip the whole file to LF.
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_bytes(b"def f():\r\n    x = eval(data)\r\n    return x\r\n")
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+        _mock_model(monkeypatch, "    x = safe(data)")
+
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 0, result.output
+        assert src.read_bytes() == b"def f():\r\n    x = safe(data)\r\n    return x\r\n"

@@ -640,8 +640,11 @@ def fix(
                 console.print("[dim](preview only; pass --yes to apply)[/dim]")
                 raise typer.Exit(code=0)
 
-        after = target.stat()
-        if (after.st_mtime_ns, after.st_size) != before_sig:
+        try:
+            after = target.stat()
+        except OSError:
+            after = None
+        if after is None or (after.st_mtime_ns, after.st_size) != before_sig:
             console.print(
                 f"[red]{rel} changed since it was read; re-run fix.[/red]"
             )
