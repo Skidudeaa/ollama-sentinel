@@ -38,6 +38,9 @@ ollama-sentinel incidents           # list corroborated events (table or -f json
 ollama-sentinel install-hooks       # install the git post-commit hook
 ollama-sentinel record-commit       # link HEAD to open Findings (called by the hook)
 ollama-sentinel surface             # emit open Findings to .ollama_reviews/findings.sarif (editor Problems panel + CI)
+ollama-sentinel findings            # list open Findings with ids (filter: --severity/--file)
+ollama-sentinel resolve 42          # close Finding 42 as fixed (resolution='fixed')
+ollama-sentinel dismiss 31          # close Finding 31 as false-positive (resolution='dismissed')
 
 python -m research_agent.main query "question" --context file.py --output result.md
 python -m research_agent.main interactive
@@ -126,7 +129,7 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 | `ollama_sentinel/extractor.py` | LLM JSON extraction + regex fallback for parsing review findings |
 | `ollama_sentinel/watcher.py` | FileSentinel, file watching, ignore logic, pipeline orchestration |
 | `ollama_sentinel/models.py` | Pydantic v2 config models: Ollama/Embedding/Memory/Processing with validators |
-| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard, confirm, incidents, install-hooks, record-commit, surface |
+| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard, confirm, incidents, install-hooks, record-commit, surface, findings, resolve, dismiss |
 | `ollama_sentinel/pytest_plugin.py` | Opt-in pytest plugin: matches test failures to open Findings, records `test_failure` Incidents (`pytest11` entry point) |
 | `ollama_sentinel/hooks.py` | Git post-commit hook installer + `record_commit` (links commits to open Findings) |
 | `ollama_sentinel/dashboard.py` | Live Rich TUI for `ollama-sentinel dashboard` — polls reviews dir + ViolationDB read-only |

@@ -90,6 +90,8 @@ The "I always forget what to run" table.
 | Corroborate a finding | `ollama-sentinel confirm 42` | Records a `manual_confirm` Incident; the Finding stays open |
 | See corroborated events | `ollama-sentinel incidents`<br>or `ollama-sentinel incidents -f json` | Incidents (test failures, confirmations, fix commits) as a table or JSON |
 | Surface findings in your editor | `ollama-sentinel surface` | Writes `.ollama_reviews/findings.sarif`; open it in VS Code/Cursor (SARIF Viewer → Problems panel) or upload it in CI for GitHub code scanning. Findings are re-anchored to current lines by excerpt; `run` refreshes it automatically |
+| List open findings | `ollama-sentinel findings`<br>or `… --severity high --file foo.py` | Table with ids, ranked by severity then frequency; `-f json` for machine-readable |
+| Close a finding | `ollama-sentinel resolve 42` / `ollama-sentinel dismiss 31` | `resolve` = fixed, `dismiss` = false-positive; records why so the dismiss rate is a usable signal |
 | Link commits to findings | `ollama-sentinel install-hooks` | Installs a git post-commit hook that records which commit touched each open Finding |
 | Auto-link test failures | add `ollama_sentinel = true` to your pytest config | A failing test on a flagged line becomes a `test_failure` Incident |
 | Create a config file | `ollama-sentinel init` | Writes `ollama-sentinel.yaml` in the current dir |
