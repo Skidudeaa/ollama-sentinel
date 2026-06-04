@@ -53,7 +53,7 @@ python -m research_agent.main setup
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v                    # 336 tests, ~3 seconds
+pytest tests/ -v                    # full suite (~10s); run `pytest tests/ -q` for the live pass/skip count
 pytest tests/ -k "security"         # run security-specific tests
 pytest tests/test_violation_db.py   # run one module's tests
 ```
@@ -179,30 +179,45 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 ## Known Issues / Next Session Breadcrumbs
 
-### Repo state as of 2026-05-01 (last session)
+### Repo state as of 2026-06-04 (last session)
 
-- **v0.1.1 shipped** on `harden-ollama-sentinel-processing` (merged to master this session).
-  Repo is public at <https://github.com/Skidudeaa/ollama-sentinel>.
-- **Test suite:** 355 passed, 15 skipped, ~2.4s on `pytest tests/ -q`.
+- **v0.1.1 shipped**; repo public at <https://github.com/Skidudeaa/ollama-sentinel>.
+- **Test suite:** run `pytest tests/ -q` for the live count (this session it was
+  620 passed / 15 skipped, ~10s). Do **not** hardcode the number here again — it
+  drifts every time tests land. Quote the command, not the count.
+- **The "make findings actionable" arc** is the live thread: surface → triage →
+  remediate → stale-prune. Slices 1-2 (surface #14, triage #15) are merged.
+  Slice 3 (remediate `fix <id>`) and slice 4 (stale-prune `prune`) have specs;
+  remediate implementation is underway (see Recent landings).
 - **Working tree should be clean.** If it isn't, `git status` first.
 - **The visual guide (`docs/index.html`) is the canonical pitch surface.**
   Linked from README, GUIDE.md, and the v0.1.0 release notes.
 
 ### Resume here next time
 
-All open backlog items from the last two sessions are closed. Remaining
-deferred work is low-priority and not blocking anything:
+1. **Sanity check.** `pytest tests/ -q` should be green.
+2. **Finish the remediate arc.** Spec (revised for safety):
+   `docs/superpowers/specs/2026-06-03-remediate-fix-design.md`. It builds as a
+   4-piece stack: `0` relocation-exactness (sarif) → `1` write-primitives
+   (utils: `read_strict`/`safe_write`) → `2` `remediate.py` core → `3` `fix` CLI.
+   This is the first code path that writes into watched source — the spec's
+   safety properties (strict-UTF8 read, mode preservation, exact-span-only,
+   TOCTOU re-read) are load-bearing; keep them.
+3. **Then stale-prune.** Spec: `docs/superpowers/specs/2026-06-04-stale-prune-design.md`
+   (slice 4, spec-only so far).
 
-1. **Sanity check first.** `pytest tests/ -q` should report 378 / 15 skip.
-2. **Remaining open items** (from `docs/superpowers/followups.md`):
-   - CB-1 — dedupe impact-report formatters (harmless until `build_research_context` is reachable for impact data)
 ### Pickable next moves (ordered by leverage)
 
 | # | Item | Effort | Risk | Notes |
 |---|---|---|---|---|
-| 1 | CB-1 — dedupe impact-report formatter between `recipes.py:_format_impact_report` and `synthesis.py:format_impact_report` | ~30-45 min | low | Harmless today (mutually exclusive paths); only triggers if `build_research_context` ever gets impact data. |
+| 1 | Build remediate `fix <id>` (4-piece stack, per revised spec) | M | med | First write-to-source path; spec carries the safety design. |
+| 2 | Build stale-prune `prune` (per spec) | S-M | low | Closes the stranded-stale-finding leak; read-only on source. |
+| 3 | OP-1 — SIGHUP hot-reload of `ollama-sentinel.yaml` (`docs/superpowers/followups.md`) | M | med | Real DX pain on long-running watchers. |
+| 4 | CB-1 — dedupe impact-report formatter (`recipes.py` vs `synthesis.py`) | ~30-45 min | low | Dormant; only triggers if `build_research_context` gets impact data. |
 
-Skip TR-3 — deliberate spec deviation, documented in followups.md.
+Skip TR-3 — deliberate spec deviation, documented in followups.md. Qwen3
+Phases B/C stay parked (no demand; the Phase-A plan forbids pulling the models
+speculatively).
 
 ### Persistent gotchas (not session-specific)
 
@@ -228,6 +243,21 @@ Skip TR-3 — deliberate spec deviation, documented in followups.md.
 
 ### Recent landings
 
+- 2026-06-04: **"Make findings actionable" arc — slices 1-2 merged, 3-4 in
+  flight.** SURFACE (#14): `surface` command + `ollama_sentinel/sarif.py`
+  (SARIF 2.1.0, excerpt relocation) + watcher auto-refresh. TRIAGE (#15):
+  `findings` / `resolve` / `dismiss` verbs + `get_finding` / `get_open_findings`
+  / `mark_resolved(resolution=...)`. REMEDIATE (slice 3): spec revised for
+  safety after an adversarial readiness review (the 4-piece stack and its
+  write-path safety properties);
+  `docs/superpowers/specs/2026-06-03-remediate-fix-design.md`. STALE-PRUNE
+  (slice 4): spec drafted; `docs/superpowers/specs/2026-06-04-stale-prune-design.md`.
+  Same session landed four surgical polish branches off the merged slices:
+  `fix/findings-stable-tiebreak` (id ASC tiebreak in `get_open_findings`),
+  `fix/idempotent-close` (resolve/dismiss no longer flip an already-closed
+  finding's resolution), `fix/guard-findings-corroboration` (best-effort
+  corroboration lookup in `findings`), `test/dashboard-async-mock` (silence a
+  mis-attributed unawaited-coroutine warning).
 - 2026-05-30: **v0.2 Incident schema complete (Pieces 1-5).** Pieces 1-3
   (schema + migration + CRUD, post-commit hook + `install-hooks`/
   `record-commit`, `confirm` verb) merged to master as stacked PRs #8/#9/#10.
