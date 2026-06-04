@@ -60,6 +60,15 @@ class TestSpliceLines:
         content = "a\r\nb\r\nc\r\nd\r\n"
         assert splice_lines(content, 2, 3, "B\nC") == "a\r\nB\r\nC\r\nd\r\n"
 
+    def test_out_of_range_span_raises(self):
+        # A span starting beyond EOF must fail loudly, not silently append the
+        # replacement to the end of the file.
+        import pytest
+        with pytest.raises(ValueError):
+            splice_lines("a\nb\n", 5, 5, "X")
+        with pytest.raises(ValueError):
+            splice_lines("a\nb\n", 2, 1, "X")  # end < start
+
 
 # ---------------------------------------------------------------------------
 # parse_fix_response
@@ -129,16 +138,17 @@ class TestBuildFixPrompt:
         content = "a\nb\nc\n"
         # target line 1 with default ctx would request lines below 1
         prompt = build_fix_prompt(content, 1, 1, _finding(), ctx=15)
-        # no negative or zero line numbers in the rendered window
+        # no zero or negative line numbers in the rendered window
         for tok in prompt.split():
             if tok.lstrip("-").isdigit():
-                assert int(tok) >= 0
+                assert int(tok) >= 1
 
     def test_window_clamps_at_file_end(self):
         content = "a\nb\nc\n"
         prompt = build_fix_prompt(content, 3, 3, _finding(), ctx=15)
-        # the file has 3 lines; the window cannot render a line 4
-        assert "line4" not in prompt
+        # the file has 3 lines; the window cannot render a line-4 entry
+        # (rendered as "<num> | ", so check for the "4 |" line marker).
+        assert "4 |" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -182,3 +192,18 @@ class TestProposeFix:
         await propose_fix(content, _finding(), reloc, client)
         assert len(client.calls) == 1
         assert "response_format" not in client.calls[0]["kwargs"]
+
+    async def test_refuses_non_exact_relocation(self):
+        # Defense-in-depth: propose_fix must not splice a non-exact (fuzzy) or
+        # stale/stored relocation even if a caller forgets to gate on it.
+        import pytest
+        content = "def f():\n    x = eval(data)\n    return x\n"
+        client = _FakeClient("    x = safe(data)")
+        for reloc in (
+            Relocation(2, 2, "relocated", exact=False),  # fuzzy
+            Relocation(2, 2, "stored", exact=False),
+            Relocation(2, 2, "stale", exact=False),
+        ):
+            with pytest.raises(ValueError):
+                await propose_fix(content, _finding(), reloc, client)
+        assert client.calls == []  # never reached the model

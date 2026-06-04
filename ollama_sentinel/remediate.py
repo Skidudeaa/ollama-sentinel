@@ -29,10 +29,17 @@ def splice_lines(content: str, start: int, end: int, replacement: str) -> str:
     single trailing newline is present iff the original last replaced line ended
     with one — so a file with or without a final newline keeps that property,
     and seams never double or drop a newline.
+
+    Requires a valid in-file span ``1 <= start <= end`` with ``start`` no
+    further than the last line; an out-of-range span raises ``ValueError``
+    rather than silently appending the replacement to the end of the file.
     """
     lines = content.splitlines(keepends=True)
     n = len(lines)
-    start = max(1, start)
+    if start < 1 or end < start or start > n:
+        raise ValueError(
+            f"splice span [{start}..{end}] out of range for {n}-line file"
+        )
     end = min(end, n)
 
     prefix = lines[: start - 1]
@@ -53,9 +60,15 @@ def parse_fix_response(raw: str) -> str:
 
     A fence is removed only when the first non-blank line is a triple-backtick
     opener (with an optional language tag) and the last non-blank line is a bare
-    triple-backtick closer. Otherwise ``raw`` is returned unchanged — so a
-    legitimately fenced ``.md`` target, a docstring containing a fence, or a
-    dangling half-fence is never corrupted.
+    triple-backtick closer. Otherwise ``raw`` is returned unchanged — so an
+    embedded fence, a docstring containing a fence, or a dangling half-fence is
+    never touched.
+
+    This does NOT try to distinguish a model-added wrapper from a replacement
+    whose intended content is *itself* a fully fenced block: if the correct
+    replacement is exactly ```` ```...``` ````, its outer fences will be
+    stripped. That is acceptably rare — the model is instructed to emit bare
+    code — and the diff is always shown before any write.
     """
     lines = raw.splitlines()
     non_blank = [i for i, ln in enumerate(lines) if ln.strip()]
@@ -130,7 +143,17 @@ async def propose_fix(
     client, parse off any fence, splice into the file. ``status`` is
     ``"no_change"`` when the spliced result equals the original (the caller then
     writes nothing and leaves the finding open).
+
+    Refuses (``ValueError``) any relocation that is not an exact, whole-line
+    match — defense-in-depth so a fuzzy/stale/stored span never reaches the
+    model or ``splice_lines`` even if a caller forgets to gate on
+    ``relocation.exact``.
     """
+    if not (getattr(relocation, "exact", False) and relocation.status == "relocated"):
+        raise ValueError(
+            "propose_fix requires an exact relocation "
+            f"(got status={relocation.status!r}, exact={getattr(relocation, 'exact', None)!r})"
+        )
     start, end = relocation.start_line, relocation.end_line
     prompt = build_fix_prompt(content, start, end, finding)
     raw = await client.generate_review(model_role, prompt)
