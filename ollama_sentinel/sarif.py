@@ -185,11 +185,11 @@ class SurfaceSummary:
 
 def generate_sarif_file(
     db,
-    watch_dir,
-    output_dir,
+    watch_dir: "pathlib.Path | str",
+    output_dir: "pathlib.Path | str",
     *,
     tool_version: str,
-    out_path=None,
+    out_path: "pathlib.Path | str | None" = None,
 ) -> SurfaceSummary:
     """Read open findings, relocate by excerpt, write findings.sarif.
 
