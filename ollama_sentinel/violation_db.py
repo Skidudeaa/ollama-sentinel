@@ -59,7 +59,8 @@ class ViolationDB:
             occurrence_count INTEGER NOT NULL DEFAULT 1,
             resolved        INTEGER NOT NULL DEFAULT 0,
             embed_text      TEXT,
-            verbatim_excerpt TEXT
+            verbatim_excerpt TEXT,
+            resolution      TEXT
         )
     """
 
@@ -121,6 +122,10 @@ class ViolationDB:
                 if "verbatim_excerpt" not in cols:
                     self._conn.execute(
                         "ALTER TABLE findings ADD COLUMN verbatim_excerpt TEXT"
+                    )
+                if "resolution" not in cols:
+                    self._conn.execute(
+                        "ALTER TABLE findings ADD COLUMN resolution TEXT"
                     )
                 self._conn.commit()
         except sqlite3.DatabaseError as e:
@@ -199,36 +204,49 @@ class ViolationDB:
                 raise
 
     def mark_resolved(
-        self, finding_id: int, *, fix_commit: Optional[str] = None
-    ) -> None:
-        """Set ``resolved=1`` for the given finding.
+        self,
+        finding_id: int,
+        *,
+        fix_commit: Optional[str] = None,
+        resolution: Optional[str] = None,
+    ) -> int:
+        """Set ``resolved=1`` for the given finding; return rows updated.
 
-        Behavioral change (v0.2): when ``fix_commit`` is provided, also
-        records ``fix_commit_sha`` on the finding and inserts an Incident
-        with ``confirming_signal='fix_commit'``. The old single-argument
-        call shape is unchanged and creates no Incident.
+        Optionally records a ``resolution`` reason ('fixed' | 'dismissed' |
+        'stale') and/or a ``fix_commit``. When ``fix_commit`` is provided, also
+        sets ``fix_commit_sha`` and inserts an Incident with
+        ``confirming_signal='fix_commit'`` (unchanged from v0.2). ``fix_commit``
+        and ``resolution`` may both be supplied and both apply. Returns the
+        number of finding rows updated — 0 means no finding has that id.
         """
+        sets = ["resolved = 1"]
+        params: list = []
+        if resolution is not None:
+            sets.append("resolution = ?")
+            params.append(resolution)
+        if fix_commit is not None:
+            sets.append("fix_commit_sha = ?")
+            params.append(fix_commit)
+        params.append(finding_id)
+
         with self._lock:
-            if fix_commit is None:
-                self._conn.execute(
-                    "UPDATE findings SET resolved = 1 WHERE id = ?",
-                    (finding_id,),
-                )
-                self._conn.commit()
-                return
-            self._conn.execute(
-                "UPDATE findings SET resolved = 1, fix_commit_sha = ? WHERE id = ?",
-                (fix_commit, finding_id),
+            cur = self._conn.execute(
+                f"UPDATE findings SET {', '.join(sets)} WHERE id = ?",
+                tuple(params),
             )
             self._conn.commit()
-        self.persist_incident(
-            Incident(
-                finding_id=finding_id,
-                confirming_signal="fix_commit",
-                confirming_artifact=fix_commit,
-                fix_commit=fix_commit,
+            rowcount = cur.rowcount
+
+        if fix_commit is not None:
+            self.persist_incident(
+                Incident(
+                    finding_id=finding_id,
+                    confirming_signal="fix_commit",
+                    confirming_artifact=fix_commit,
+                    fix_commit=fix_commit,
+                )
             )
-        )
+        return rowcount
 
     def persist_incident(self, incident: Incident) -> int:
         """Insert an Incident row and return its new id. Never upserts."""
