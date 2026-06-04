@@ -271,6 +271,8 @@ class FileSentinel:
                 # Refresh the SARIF surface so editors/CI see current findings.
                 # Best-effort: a SARIF failure must never block review saving.
                 try:
+                    # Imported lazily so the watcher module stays cheap to import
+                    # and to keep the SARIF dependency off the module-load path.
                     from . import __version__
                     from .sarif import generate_sarif_file
                     await asyncio.to_thread(
