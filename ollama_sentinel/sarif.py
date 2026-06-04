@@ -75,3 +75,86 @@ def relocate_finding(content: str, finding: dict) -> Relocation:
 
     best = min(matches, key=lambda ln: abs(ln - stored_start))
     return Relocation(best, best + n - 1, "relocated")
+
+
+def _fingerprint(file_path: str, category: str, excerpt: str,
+                 description: str) -> str:
+    """Stable across line drift: hash path+category+excerpt (never lines)."""
+    basis = excerpt.strip() or description.strip()
+    raw = f"{file_path}\x00{category}\x00{basis}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def build_sarif(
+    located_findings: Iterable[Tuple[dict, Relocation]],
+    *,
+    tool_version: str,
+    corroborated_ids: FrozenSet[int] = frozenset(),
+) -> dict:
+    """Build a SARIF 2.1.0 document from (finding, Relocation) pairs.
+
+    Callers must filter out stale relocations first — every pair here is
+    emitted as a result.
+    """
+    rules_by_id: dict = {}
+    results: List[dict] = []
+    for finding, reloc in located_findings:
+        category = str(finding.get("category") or "general")
+        severity = str(finding.get("severity") or "").lower()
+        level = _SEVERITY_TO_LEVEL.get(severity, "warning")
+        rule_id = f"ollama-sentinel/{category}"
+        if rule_id not in rules_by_id:
+            rules_by_id[rule_id] = {
+                "id": rule_id,
+                "name": category,
+                "shortDescription": {
+                    "text": f"Ollama Sentinel {category} finding"
+                },
+                "defaultConfiguration": {"level": level},
+            }
+
+        file_path = str(finding.get("file_path") or "")
+        excerpt = finding.get("verbatim_excerpt") or ""
+        region: dict = {"startLine": reloc.start_line, "endLine": reloc.end_line}
+        if excerpt.strip():
+            region["snippet"] = {"text": excerpt}
+
+        results.append({
+            "ruleId": rule_id,
+            "level": level,
+            "message": {"text": str(finding.get("description") or "")},
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {"uri": file_path, "uriBaseId": "SRCROOT"},
+                    "region": region,
+                }
+            }],
+            "partialFingerprints": {
+                "ollamaSentinel/v1": _fingerprint(
+                    file_path, category, excerpt,
+                    str(finding.get("description") or ""),
+                )
+            },
+            "properties": {
+                "severity": severity,
+                "occurrence_count": int(finding.get("occurrence_count") or 1),
+                "corroborated": finding.get("id") in corroborated_ids,
+                "relocation": reloc.status,
+            },
+        })
+
+    return {
+        "$schema": SARIF_SCHEMA,
+        "version": SARIF_VERSION,
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "ollama-sentinel",
+                    "version": tool_version,
+                    "informationUri": INFORMATION_URI,
+                    "rules": list(rules_by_id.values()),
+                }
+            },
+            "results": results,
+        }],
+    }
