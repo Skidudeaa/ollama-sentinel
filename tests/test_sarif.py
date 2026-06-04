@@ -1,7 +1,7 @@
 """Tests for ollama_sentinel.sarif — relocation and SARIF construction."""
 import json
 
-from ollama_sentinel.sarif import Relocation, build_sarif, relocate_finding
+from ollama_sentinel.sarif import build_sarif, relocate_finding
 
 
 def _finding(**over):
@@ -135,8 +135,6 @@ class TestBuildSarif:
 
 import pathlib
 
-import pytest
-
 from ollama_sentinel.sarif import generate_sarif_file
 from ollama_sentinel.violation_db import Finding, ViolationDB
 
@@ -213,3 +211,66 @@ class TestGenerateSarifFile:
             db.close()
         assert summary.stale == 1
         assert summary.emitted == 0
+
+    def test_empty_excerpt_counts_as_unverified(self, tmp_path):
+        # Finding with no verbatim_excerpt on a present file → status "stored"
+        # → unverified += 1, still emitted.
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("def f():\n    pass\n")
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed(db_path, "src/app.py", [
+            Finding("src/app.py", 1, 1, "bug", "low", "no excerpt",
+                    verbatim_excerpt=""),
+        ])
+        db = ViolationDB(str(db_path))
+        try:
+            summary = generate_sarif_file(
+                db, tmp_path, tmp_path / ".ollama_reviews", tool_version="x",
+            )
+        finally:
+            db.close()
+        assert summary.emitted == 1
+        assert summary.unverified == 1
+        assert summary.relocated == 0
+        assert summary.stale == 0
+
+    def test_empty_db_writes_valid_sarif_with_zero_results(self, tmp_path):
+        # No findings at all → SARIF document is valid but contains no results.
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = ViolationDB(str(db_path))
+        try:
+            summary = generate_sarif_file(
+                db, tmp_path, tmp_path / ".ollama_reviews", tool_version="x",
+            )
+        finally:
+            db.close()
+        assert summary.emitted == 0
+        assert summary.stale == 0
+        doc = json.loads(summary.path.read_text())
+        assert doc["version"] == "2.1.0"
+        assert doc["runs"][0]["results"] == []
+
+    def test_out_path_override_honored(self, tmp_path):
+        # Passing out_path writes to the given location, not the default.
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text(
+            "def f():\n    x = eval(data)\n"
+        )
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed(db_path, "src/app.py", [
+            Finding("src/app.py", 2, 2, "security", "high", "eval",
+                    verbatim_excerpt="x = eval(data)"),
+        ])
+        custom_out = tmp_path / "custom" / "out.sarif"
+        db = ViolationDB(str(db_path))
+        try:
+            summary = generate_sarif_file(
+                db, tmp_path, tmp_path / ".ollama_reviews",
+                tool_version="x", out_path=custom_out,
+            )
+        finally:
+            db.close()
+        assert summary.path == custom_out
+        assert custom_out.exists()
+        assert not (tmp_path / ".ollama_reviews" / "findings.sarif").exists()
