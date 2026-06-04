@@ -615,3 +615,52 @@ class TestIncidents:
             assert tbl is not None
         finally:
             db2.close()
+
+
+class TestVerbatimExcerptPersistence:
+    """The finding's verbatim_excerpt must survive persist -> read."""
+
+    def test_persist_stores_verbatim_excerpt(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings(
+                "src/app.py",
+                [_make_finding(verbatim_excerpt="x = eval(data)")],
+            )
+            rows = db.get_unresolved("src/app.py")
+        finally:
+            db.close()
+        assert rows[0]["verbatim_excerpt"] == "x = eval(data)"
+
+    def test_migration_adds_column_to_legacy_db(self, tmp_path):
+        # A pre-existing DB created WITHOUT verbatim_excerpt (pre-this-feature).
+        p = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(
+            """
+            CREATE TABLE findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL, line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL, category TEXT NOT NULL,
+                severity TEXT NOT NULL, description TEXT NOT NULL,
+                first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                resolved INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO findings (file_path, line_start, line_end, category, "
+            "severity, description, first_seen, last_seen) "
+            "VALUES ('a.py', 1, 2, 'bug', 'low', 'd', 't', 't')"
+        )
+        conn.commit()
+        conn.close()
+
+        db = ViolationDB(str(p))  # __init__ runs _migrate
+        try:
+            rows = db.get_unresolved("a.py")
+        finally:
+            db.close()
+        assert "verbatim_excerpt" in rows[0]
+        assert rows[0]["verbatim_excerpt"] is None  # legacy row: no excerpt

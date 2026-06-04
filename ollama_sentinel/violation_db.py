@@ -58,7 +58,8 @@ class ViolationDB:
             last_seen       TEXT    NOT NULL,
             occurrence_count INTEGER NOT NULL DEFAULT 1,
             resolved        INTEGER NOT NULL DEFAULT 0,
-            embed_text      TEXT
+            embed_text      TEXT,
+            verbatim_excerpt TEXT
         )
     """
 
@@ -117,6 +118,10 @@ class ViolationDB:
                     self._conn.execute(
                         "ALTER TABLE findings ADD COLUMN fix_commit_sha TEXT"
                     )
+                if "verbatim_excerpt" not in cols:
+                    self._conn.execute(
+                        "ALTER TABLE findings ADD COLUMN verbatim_excerpt TEXT"
+                    )
                 self._conn.commit()
         except sqlite3.DatabaseError as e:
             import logging
@@ -171,8 +176,9 @@ class ViolationDB:
                             """
                             INSERT INTO findings
                                 (file_path, line_start, line_end, category,
-                                 severity, description, first_seen, last_seen, embed_text)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 severity, description, first_seen, last_seen,
+                                 embed_text, verbatim_excerpt)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 f.file_path,
@@ -184,6 +190,7 @@ class ViolationDB:
                                 now,
                                 now,
                                 embed_text,
+                                f.verbatim_excerpt,
                             ),
                         )
                 self._conn.commit()
