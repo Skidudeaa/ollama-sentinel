@@ -664,3 +664,22 @@ class TestVerbatimExcerptPersistence:
             db.close()
         assert "verbatim_excerpt" in rows[0]
         assert rows[0]["verbatim_excerpt"] is None  # legacy row: no excerpt
+
+    def test_upsert_keeps_first_excerpt(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings(
+                "src/app.py",
+                [_make_finding(verbatim_excerpt="first = excerpt()")],
+            )
+            # Re-persist the SAME finding location/category with a new excerpt.
+            db.persist_findings(
+                "src/app.py",
+                [_make_finding(verbatim_excerpt="second = excerpt()")],
+            )
+            rows = db.get_unresolved("src/app.py")
+        finally:
+            db.close()
+        assert len(rows) == 1  # upserted, not duplicated
+        assert rows[0]["occurrence_count"] == 2
+        assert rows[0]["verbatim_excerpt"] == "first = excerpt()"

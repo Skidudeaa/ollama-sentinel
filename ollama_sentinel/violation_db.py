@@ -93,7 +93,7 @@ class ViolationDB:
         self._migrate()
 
     def _migrate(self) -> None:
-        """Idempotent migration: add the embed_text column and backfill values."""
+        """Idempotent migration: add columns introduced after the initial schema (embed_text backfill, triggering_commit_sha, fix_commit_sha, verbatim_excerpt)."""
         try:
             with self._lock:
                 cur = self._conn.execute("PRAGMA table_info(findings)")
