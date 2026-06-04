@@ -523,6 +523,84 @@ def incidents(
 
 
 @app.command()
+def findings(
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+    severity: Optional[str] = typer.Option(
+        None, "--severity", help="Filter by exact severity (e.g. high)",
+    ),
+    file_substr: Optional[str] = typer.Option(
+        None, "--file", help="Filter by file-path substring (case-insensitive)",
+    ),
+    limit: int = typer.Option(
+        50, "--limit", "-l", help="Maximum number of findings to show",
+    ),
+    output_format: str = typer.Option(
+        "table", "--format", "-f", help="Output format: table or json",
+    ),
+):
+    """List open (unresolved) findings with their ids for resolve/dismiss."""
+    import json as json_mod
+
+    from rich.table import Table
+
+    from .violation_db import ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    db_path = pathlib.Path(config.watch.directory).resolve() / config.memory.db_path
+    if not db_path.exists():
+        console.print(
+            "[yellow]No violation database found. Run some reviews first.[/yellow]"
+        )
+        raise typer.Exit()
+
+    db = ViolationDB(str(db_path))
+    try:
+        rows = db.get_open_findings(
+            severity=severity, file_substr=file_substr, limit=limit,
+        )
+        corroborated: set = set()
+        if rows:
+            paths = sorted({r["file_path"] for r in rows})
+            corroborated = {
+                r["id"] for r in db.get_findings_with_incidents(paths)
+            }
+    finally:
+        db.close()
+
+    if not rows:
+        console.print("[green]No open findings.[/green]")
+        raise typer.Exit()
+
+    if output_format == "json":
+        console.print(json_mod.dumps(rows, indent=2))
+        return
+
+    table = Table(title=f"Open findings ({len(rows)})")
+    table.add_column("ID", style="bold", width=5)
+    table.add_column("Sev", width=9)
+    table.add_column("Cat", width=10)
+    table.add_column("Location", style="cyan")
+    table.add_column("Count", width=6)
+    table.add_column("Corr", width=5)
+    table.add_column("Description")
+
+    for r in rows:
+        table.add_row(
+            str(r["id"]),
+            r["severity"],
+            r["category"],
+            f"{r['file_path']}:{r['line_start']}",
+            str(r["occurrence_count"]),
+            "✓" if r["id"] in corroborated else "",
+            (r["description"] or "")[:60],
+        )
+    console.print(table)
+
+
+@app.command()
 def surface(
     config_path: str = typer.Option(
         "ollama-sentinel.yaml", "--config", "-c",

@@ -551,3 +551,75 @@ class TestSurfaceCommand:
         result = runner.invoke(app, ["surface", "--config", str(cfg)])
         assert result.exit_code == 0
         assert "No violation database" in result.output
+
+
+class TestFindingsCommand:
+    """Tests for 'ollama-sentinel findings'."""
+
+    def test_lists_open_findings_with_ids(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_db(db_path, [
+            Finding("src/app.py", 10, 12, "bug", "high", "Null deref risk"),
+        ])
+        result = runner.invoke(app, ["findings", "--config", str(cfg)])
+        assert result.exit_code == 0, result.output
+        assert "Null" in result.output and "deref" in result.output
+        assert "high" in result.output
+
+    def test_json_format(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_db(db_path, [Finding("src/app.py", 1, 2, "bug", "high", "d")])
+        result = runner.invoke(app, ["findings", "--config", str(cfg), "-f", "json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert data[0]["severity"] == "high"
+
+    def test_severity_filter(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = ViolationDB(str(db_path))
+        db.persist_findings("a.py", [Finding("a.py", 1, 1, "bug", "high", "HighOnly")])
+        db.persist_findings("b.py", [Finding("b.py", 2, 2, "style", "low", "LowOnly")])
+        db.close()
+        result = runner.invoke(app, ["findings", "--config", str(cfg), "--severity", "low"])
+        assert result.exit_code == 0
+        assert "LowOnly" in result.output
+        assert "HighOnly" not in result.output
+
+    def test_file_filter(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = ViolationDB(str(db_path))
+        db.persist_findings("src/app.py", [Finding("src/app.py", 1, 1, "bug", "high", "inApp")])
+        db.persist_findings("other.py", [Finding("other.py", 2, 2, "style", "low", "inOther")])
+        db.close()
+        result = runner.invoke(app, ["findings", "--config", str(cfg), "--file", "app"])
+        assert result.exit_code == 0
+        assert "inApp" in result.output
+        assert "inOther" not in result.output
+
+    def test_empty_db(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        ViolationDB(str(db_path)).close()
+        result = runner.invoke(app, ["findings", "--config", str(cfg)])
+        assert result.exit_code == 0
+        assert "No open findings" in result.output
+
+    def test_no_db_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        result = runner.invoke(app, ["findings", "--config", str(cfg)])
+        assert result.exit_code == 0
+        assert "No violation database" in result.output
