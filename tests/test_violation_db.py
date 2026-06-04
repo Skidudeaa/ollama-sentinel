@@ -801,3 +801,135 @@ class TestResolution:
             db.close()
         assert "resolution" in row
         assert row["resolution"] is None
+
+
+# ---------------------------------------------------------------------------
+# Task 1.2: get_finding + get_open_findings
+# ---------------------------------------------------------------------------
+
+
+class TestGetFinding:
+    def test_returns_row_for_real_id(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [_make_finding(file_path="a.py")])
+            fid = db.get_unresolved("a.py")[0]["id"]
+            row = db.get_finding(fid)
+        finally:
+            db.close()
+        assert row is not None
+        assert row["id"] == fid
+        assert row["file_path"] == "a.py"
+
+    def test_returns_none_for_missing_id(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            assert db.get_finding(424242) is None
+        finally:
+            db.close()
+
+
+class TestGetOpenFindings:
+    def test_orders_by_severity_critical_first(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [
+                _make_finding(file_path="a.py", line_start=1, severity="low",
+                              category="style"),
+            ])
+            db.persist_findings("a.py", [
+                _make_finding(file_path="a.py", line_start=2, severity="critical",
+                              category="security"),
+            ])
+            rows = db.get_open_findings()
+        finally:
+            db.close()
+        assert rows[0]["severity"] == "critical"
+        assert rows[-1]["severity"] == "low"
+
+    def test_orders_by_count_within_severity(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            # Same severity; finding A seen 3x, finding B seen 1x.
+            for _ in range(3):
+                db.persist_findings("a.py", [
+                    _make_finding(file_path="a.py", line_start=1, severity="high",
+                                  category="bug", description="A"),
+                ])
+            db.persist_findings("a.py", [
+                _make_finding(file_path="a.py", line_start=2, severity="high",
+                              category="bug", description="B"),
+            ])
+            rows = db.get_open_findings()
+        finally:
+            db.close()
+        assert rows[0]["occurrence_count"] == 3
+        assert rows[0]["description"] == "A"
+
+    def test_severity_filter(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [
+                _make_finding(file_path="a.py", line_start=1, severity="high",
+                              description="HighOnly"),
+            ])
+            db.persist_findings("b.py", [
+                _make_finding(file_path="b.py", line_start=2, severity="low",
+                              description="LowOnly", category="style"),
+            ])
+            rows = db.get_open_findings(severity="low")
+        finally:
+            db.close()
+        assert len(rows) == 1
+        assert rows[0]["description"] == "LowOnly"
+
+    def test_file_substr_filter_case_insensitive(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("src/App.py", [
+                _make_finding(file_path="src/App.py", line_start=1,
+                              description="inApp"),
+            ])
+            db.persist_findings("other.py", [
+                _make_finding(file_path="other.py", line_start=2,
+                              description="inOther", category="style"),
+            ])
+            rows = db.get_open_findings(file_substr="app")
+        finally:
+            db.close()
+        assert len(rows) == 1
+        assert rows[0]["description"] == "inApp"
+
+    def test_excludes_resolved(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [
+                _make_finding(file_path="a.py", line_start=1, description="open"),
+            ])
+            db.persist_findings("a.py", [
+                _make_finding(file_path="a.py", line_start=2, description="closed",
+                              category="style"),
+            ])
+            closed_id = next(
+                r["id"] for r in db.get_unresolved("a.py")
+                if r["description"] == "closed"
+            )
+            db.mark_resolved(closed_id, resolution="fixed")
+            rows = db.get_open_findings()
+        finally:
+            db.close()
+        descs = {r["description"] for r in rows}
+        assert descs == {"open"}
+
+    def test_limit_caps_rows(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            for i in range(3):
+                db.persist_findings("a.py", [
+                    _make_finding(file_path="a.py", line_start=i + 1,
+                                  category=f"c{i}"),
+                ])
+            rows = db.get_open_findings(limit=2)
+        finally:
+            db.close()
+        assert len(rows) == 2
