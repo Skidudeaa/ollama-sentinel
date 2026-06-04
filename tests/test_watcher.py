@@ -402,7 +402,6 @@ class TestShouldRunLegacyExtractor:
 # ---------------------------------------------------------------------------
 
 import json as _json
-import pathlib as _pathlib
 
 import yaml as _yaml
 
@@ -431,17 +430,15 @@ def _watcher_cfg(tmp_path):
     return p
 
 
-def _fake_review(*_a, **_k):
-    async def _run(file_change, model_role="default"):
-        return {
-            "summary": "review",
-            "findings": [{
-                "line_start": 2, "line_end": 2, "category": "security",
-                "severity": "high", "verbatim_excerpt": "x = eval(data)",
-                "description": "eval on untrusted input",
-            }],
-        }
-    return _run
+async def _fake_review(file_change, model_role="default"):
+    return {
+        "summary": "review",
+        "findings": [{
+            "line_start": 2, "line_end": 2, "category": "security",
+            "severity": "high", "verbatim_excerpt": "x = eval(data)",
+            "description": "eval on untrusted input",
+        }],
+    }
 
 
 class TestSarifAutoRefresh:
@@ -451,7 +448,7 @@ class TestSarifAutoRefresh:
         src.write_text("def f():\n    x = eval(data)\n    return x\n")
 
         sentinel = FileSentinel(cfg)
-        monkeypatch.setattr(sentinel.processor, "generate_review", _fake_review())
+        monkeypatch.setattr(sentinel.processor, "generate_review", _fake_review)
         try:
             await sentinel.process_change(
                 FileChange(path=src, change_type=Change.modified)
@@ -470,7 +467,7 @@ class TestSarifAutoRefresh:
         src.write_text("def f():\n    x = eval(data)\n    return x\n")
 
         sentinel = FileSentinel(cfg)
-        monkeypatch.setattr(sentinel.processor, "generate_review", _fake_review())
+        monkeypatch.setattr(sentinel.processor, "generate_review", _fake_review)
 
         import ollama_sentinel.sarif as sarif_mod
 
