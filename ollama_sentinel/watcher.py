@@ -268,6 +268,21 @@ class FileSentinel:
                 except Exception as e:
                     log.warning(f"Finding persistence failed for {rel_path}: {e}")
 
+                # Refresh the SARIF surface so editors/CI see current findings.
+                # Best-effort: a SARIF failure must never block review saving.
+                try:
+                    from . import __version__
+                    from .sarif import generate_sarif_file
+                    await asyncio.to_thread(
+                        generate_sarif_file,
+                        self.violation_db,
+                        self.processor.watch_dir,
+                        self.processor.output_dir,
+                        tool_version=__version__,
+                    )
+                except Exception as e:
+                    log.warning(f"SARIF refresh failed for {rel_path}: {e}")
+
             # Save review (sync I/O, run in thread to avoid blocking event loop)
             output_path = await asyncio.to_thread(self.processor.save_review, file_change, review)
             log.info(f"Saved review to {output_path}")

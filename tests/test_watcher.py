@@ -395,3 +395,96 @@ class TestShouldRunLegacyExtractor:
         src = inspect.getsource(w.FileSentinel.process_change)
         assert "_should_run_legacy_extractor(" in src
         assert "elif not self.config.processing.grounding:" not in src
+
+
+# ---------------------------------------------------------------------------
+# SARIF auto-refresh
+# ---------------------------------------------------------------------------
+
+import json as _json
+import pathlib as _pathlib
+
+import yaml as _yaml
+
+from watchfiles import Change
+from ollama_sentinel.processor import FileChange
+from ollama_sentinel.watcher import FileSentinel
+
+
+def _watcher_cfg(tmp_path):
+    """Config rooted at tmp_path: memory on, embeddings off (no network)."""
+    cfg = {
+        "watch": {"directory": str(tmp_path), "recursive": True},
+        "ollama": {
+            "host": "http://localhost:11434",
+            "models": {"default": {"name": "m", "system_prompt": "p"}},
+            "request_timeout": 30,
+        },
+        "processing": {"git_diff_mode": False, "grounding": True},
+        "output": {"directory": ".ollama_reviews", "console_output": False},
+        "memory": {"enabled": True, "db_path": ".ollama_reviews/memory.db",
+                   "semantic_recall": False, "structural_recall": False},
+        "embedding": {"enabled": False},
+    }
+    p = tmp_path / "ollama-sentinel.yaml"
+    p.write_text(_yaml.dump(cfg, sort_keys=False))
+    return p
+
+
+def _fake_review(*_a, **_k):
+    async def _run(file_change, model_role="default"):
+        return {
+            "summary": "review",
+            "findings": [{
+                "line_start": 2, "line_end": 2, "category": "security",
+                "severity": "high", "verbatim_excerpt": "x = eval(data)",
+                "description": "eval on untrusted input",
+            }],
+        }
+    return _run
+
+
+class TestSarifAutoRefresh:
+    async def test_process_change_writes_sarif(self, tmp_path, monkeypatch):
+        cfg = _watcher_cfg(tmp_path)
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+
+        sentinel = FileSentinel(cfg)
+        monkeypatch.setattr(sentinel.processor, "generate_review", _fake_review())
+        try:
+            await sentinel.process_change(
+                FileChange(path=src, change_type=Change.modified)
+            )
+        finally:
+            await sentinel.processor.close()
+
+        sarif = tmp_path / ".ollama_reviews" / "findings.sarif"
+        assert sarif.exists()
+        doc = _json.loads(sarif.read_text())
+        assert doc["runs"][0]["results"][0]["ruleId"] == "ollama-sentinel/security"
+
+    async def test_sarif_failure_does_not_break_review(self, tmp_path, monkeypatch):
+        cfg = _watcher_cfg(tmp_path)
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+
+        sentinel = FileSentinel(cfg)
+        monkeypatch.setattr(sentinel.processor, "generate_review", _fake_review())
+
+        import ollama_sentinel.sarif as sarif_mod
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("sarif blew up")
+
+        monkeypatch.setattr(sarif_mod, "generate_sarif_file", _boom)
+        try:
+            # Must NOT raise despite the SARIF failure.
+            await sentinel.process_change(
+                FileChange(path=src, change_type=Change.modified)
+            )
+        finally:
+            await sentinel.processor.close()
+
+        # The review itself still saved.
+        assert (tmp_path / ".ollama_reviews" / "app.md").exists()
