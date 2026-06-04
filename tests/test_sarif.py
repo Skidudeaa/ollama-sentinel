@@ -131,3 +131,85 @@ class TestBuildSarif:
         doc = build_sarif(self._located(verbatim_excerpt=""), tool_version="x")
         region = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"]
         assert "snippet" not in region
+
+
+import pathlib
+
+import pytest
+
+from ollama_sentinel.sarif import generate_sarif_file
+from ollama_sentinel.violation_db import Finding, ViolationDB
+
+
+def _seed(db_path: pathlib.Path, file_path: str, findings):
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = ViolationDB(str(db_path))
+    db.persist_findings(file_path, findings)
+    db.close()
+
+
+class TestGenerateSarifFile:
+    def test_writes_sarif_for_open_findings(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text(
+            "def f():\n    x = eval(data)\n    return x\n"
+        )
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed(db_path, "src/app.py", [
+            Finding("src/app.py", 2, 2, "security", "high",
+                    "eval on untrusted input",
+                    verbatim_excerpt="x = eval(data)"),
+        ])
+
+        db = ViolationDB(str(db_path))
+        try:
+            summary = generate_sarif_file(
+                db, tmp_path, tmp_path / ".ollama_reviews", tool_version="0.1.1",
+            )
+        finally:
+            db.close()
+
+        assert summary.emitted == 1
+        assert summary.relocated == 1
+        assert summary.stale == 0
+        doc = json.loads(summary.path.read_text())
+        assert doc["runs"][0]["results"][0]["ruleId"] == "ollama-sentinel/security"
+
+    def test_stale_finding_excluded_and_counted(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        # File no longer contains the excerpt.
+        (tmp_path / "src" / "app.py").write_text("def f():\n    return ok\n")
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed(db_path, "src/app.py", [
+            Finding("src/app.py", 2, 2, "security", "high", "gone",
+                    verbatim_excerpt="x = eval(data)"),
+        ])
+
+        db = ViolationDB(str(db_path))
+        try:
+            summary = generate_sarif_file(
+                db, tmp_path, tmp_path / ".ollama_reviews", tool_version="x",
+            )
+        finally:
+            db.close()
+
+        assert summary.emitted == 0
+        assert summary.stale == 1
+        doc = json.loads(summary.path.read_text())
+        assert doc["runs"][0]["results"] == []
+
+    def test_missing_file_counts_as_stale(self, tmp_path):
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed(db_path, "src/gone.py", [
+            Finding("src/gone.py", 1, 1, "bug", "low", "x",
+                    verbatim_excerpt="whatever"),
+        ])
+        db = ViolationDB(str(db_path))
+        try:
+            summary = generate_sarif_file(
+                db, tmp_path, tmp_path / ".ollama_reviews", tool_version="x",
+            )
+        finally:
+            db.close()
+        assert summary.stale == 1
+        assert summary.emitted == 0

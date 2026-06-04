@@ -6,8 +6,15 @@ those drift as files edit, so we re-anchor each finding by its verbatim
 excerpt rather than trusting the stored line range.
 """
 import hashlib
+import json
+import logging
+import pathlib
 from dataclasses import dataclass
 from typing import FrozenSet, Iterable, List, Tuple
+
+from .utils import safe_read
+
+log = logging.getLogger("ollama-sentinel")
 
 SARIF_SCHEMA = (
     "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/"
@@ -164,3 +171,88 @@ def build_sarif(
             "results": results,
         }],
     }
+
+
+@dataclass
+class SurfaceSummary:
+    """Counts from one SARIF generation pass."""
+    emitted: int
+    relocated: int
+    stale: int
+    unverified: int
+    path: pathlib.Path
+
+
+def generate_sarif_file(
+    db,
+    watch_dir,
+    output_dir,
+    *,
+    tool_version: str,
+    out_path=None,
+) -> SurfaceSummary:
+    """Read open findings, relocate by excerpt, write findings.sarif.
+
+    Read-only with respect to the DB and source: stale findings are excluded
+    from the document and counted, never auto-resolved. ``out_path`` overrides
+    the default ``output_dir/findings.sarif`` destination.
+    """
+    watch_dir = pathlib.Path(watch_dir)
+    output_dir = pathlib.Path(output_dir)
+    rows = db.get_all_unresolved()
+
+    corroborated_ids: set = set()
+    paths = sorted({r["file_path"] for r in rows})
+    if paths:
+        try:
+            corroborated_ids = {
+                r["id"] for r in db.get_findings_with_incidents(paths)
+            }
+        except Exception as e:  # corroboration is enrichment; never fatal
+            log.warning("Corroboration lookup failed (%s); marking none.", e)
+
+    content_cache: dict = {}
+
+    def _content(rel: str):
+        # safe_read returns "" (never raises) for missing/unreadable/symlink/
+        # traversal, so check existence explicitly: a gone file is stale, an
+        # empty-but-present file goes through relocation like any other.
+        if rel not in content_cache:
+            abs_path = watch_dir / rel
+            content_cache[rel] = (
+                safe_read(abs_path, watch_dir) if abs_path.is_file() else None
+            )
+        return content_cache[rel]
+
+    located: list = []
+    relocated = stale = unverified = 0
+    for r in rows:
+        content = _content(r["file_path"])
+        if content is None:
+            stale += 1
+            continue
+        reloc = relocate_finding(content, r)
+        if reloc.status == "stale":
+            stale += 1
+            continue
+        if reloc.status == "stored":
+            unverified += 1
+        else:
+            relocated += 1
+        located.append((r, reloc))
+
+    doc = build_sarif(
+        located, tool_version=tool_version,
+        corroborated_ids=frozenset(corroborated_ids),
+    )
+    sarif_path = pathlib.Path(out_path) if out_path else output_dir / "findings.sarif"
+    sarif_path.parent.mkdir(parents=True, exist_ok=True)
+    sarif_path.write_text(json.dumps(doc, indent=2))
+
+    return SurfaceSummary(
+        emitted=len(located),
+        relocated=relocated,
+        stale=stale,
+        unverified=unverified,
+        path=sarif_path,
+    )
