@@ -441,12 +441,14 @@ def confirm(
 
 
 def _close_finding(
-    finding_id: int, config_path: str, *, resolution: str, past: str, tail: str
+    finding_id: int, config_path: str, *,
+    resolution: str, action: str, past: str, tail: str,
 ) -> None:
     """Shared body for resolve/dismiss: validate id, mark_resolved, report.
 
-    ``resolution`` is the stored reason ('fixed'/'dismissed'); ``past`` and
-    ``tail`` shape the success line, e.g. "Resolved finding 42 (fixed)."
+    ``resolution`` is the stored reason ('fixed'/'dismissed'); ``action`` is the
+    bare verb for the not-found message; ``past`` and ``tail`` shape the success
+    line, e.g. "Resolved finding 42 (fixed)."
     """
     from .violation_db import ViolationDB
 
@@ -459,7 +461,10 @@ def _close_finding(
     db = ViolationDB(str(db_path))
     try:
         if db.get_finding(finding_id) is None:
-            console.print(f"[red]No finding with id {finding_id}.[/red]")
+            console.print(
+                f"[red]No finding with id {finding_id}; "
+                f"nothing to {action}.[/red]"
+            )
             raise typer.Exit(code=1)
         db.mark_resolved(finding_id, resolution=resolution)
     finally:
@@ -479,7 +484,7 @@ def resolve(
     """Mark a Finding resolved (fixed). Records resolution='fixed'."""
     _close_finding(
         finding_id, config_path, resolution="fixed",
-        past="Resolved", tail="fixed",
+        action="resolve", past="Resolved", tail="fixed",
     )
 
 
@@ -494,7 +499,7 @@ def dismiss(
     """Dismiss a Finding as a false-positive / won't-fix. Records resolution='dismissed'."""
     _close_finding(
         finding_id, config_path, resolution="dismissed",
-        past="Dismissed", tail="false-positive",
+        action="dismiss", past="Dismissed", tail="false-positive",
     )
 
 

@@ -402,7 +402,9 @@ class ViolationDB:
 
         Ordered by severity (critical → low) then ``occurrence_count`` DESC.
         ``severity`` is an exact match; ``file_substr`` is a case-insensitive
-        substring of ``file_path``. ``limit`` caps the rows returned.
+        substring of ``file_path`` (matched with SQL ``LIKE``, so any ``%`` or
+        ``_`` in the term act as wildcards — only ever broadening the match,
+        never missing one). ``limit`` caps the rows returned.
         """
         clauses = ["resolved = 0"]
         params: list = []
