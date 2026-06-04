@@ -523,6 +523,54 @@ def incidents(
 
 
 @app.command()
+def surface(
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o",
+        help="SARIF output path (default: <reviews-dir>/findings.sarif)",
+    ),
+):
+    """Emit open findings as SARIF for editor Problems panels and CI.
+
+    Findings are re-anchored to their current line by verbatim excerpt;
+    stale findings (excerpt no longer present) are reported but excluded.
+    Read-only: never edits source, never changes finding state.
+    """
+    from .sarif import generate_sarif_file
+    from .violation_db import ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    watch_dir = pathlib.Path(config.watch.directory).resolve()
+    db_path = watch_dir / config.memory.db_path
+    if not db_path.exists():
+        console.print(
+            "[yellow]No violation database found. Run some reviews first.[/yellow]"
+        )
+        raise typer.Exit()
+
+    output_dir = watch_dir / config.output.directory
+    out_path = pathlib.Path(output).resolve() if output else None
+
+    db = ViolationDB(str(db_path))
+    try:
+        summary = generate_sarif_file(
+            db, watch_dir, output_dir,
+            tool_version=__version__, out_path=out_path,
+        )
+    finally:
+        db.close()
+
+    console.print(
+        f"[green]Wrote {summary.emitted} findings → {summary.path}[/green] "
+        f"[dim]({summary.relocated} relocated, "
+        f"{summary.unverified} unverified, {summary.stale} stale)[/dim]"
+    )
+
+
+@app.command()
 def triage(
     input_path: Optional[str] = typer.Argument(
         None,
