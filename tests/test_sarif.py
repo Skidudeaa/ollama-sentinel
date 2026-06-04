@@ -77,6 +77,32 @@ class TestRelocateFinding:
         assert reloc.status == "relocated"
         assert (reloc.start_line, reloc.end_line) == (3, 5)
 
+    def test_exact_whole_line_match_sets_exact_true(self):
+        content = "def f():\n    x = eval(data)\n    return x\n"
+        reloc = relocate_finding(content, _finding(line_start=2, line_end=2))
+        assert reloc.status == "relocated"
+        assert reloc.exact is True
+
+    def test_flattened_word_match_sets_exact_false(self):
+        # The word-sequence fallback relocates but is NOT a whole-line block
+        # match — its span can straddle line boundaries, so it is not exact.
+        content = "import os\n\ndef f():\n    a = 1\n    return secret(a)\n"
+        f = _finding(
+            line_start=10, line_end=11,
+            verbatim_excerpt="def f(): a = 1 return secret(a)",
+        )
+        reloc = relocate_finding(content, f)
+        assert reloc.status == "relocated"
+        assert reloc.exact is False
+
+    def test_stale_and_stored_are_not_exact(self):
+        stale = relocate_finding("def f():\n    return safe(data)\n", _finding())
+        assert stale.status == "stale" and stale.exact is False
+        stored = relocate_finding(
+            "anything\n", _finding(verbatim_excerpt="", line_start=7, line_end=9)
+        )
+        assert stored.status == "stored" and stored.exact is False
+
 
 class TestBuildSarif:
     def _located(self, **over):
