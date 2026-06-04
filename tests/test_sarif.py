@@ -64,6 +64,19 @@ class TestRelocateFinding:
         assert reloc.status == "relocated"
         assert (reloc.start_line, reloc.end_line) == (3, 5)
 
+    def test_multiline_flattened_excerpt_relocates(self):
+        # The model emitted a multi-line region as a single flattened line
+        # (newlines collapsed to spaces). Line-block matching misses it; the
+        # word-sequence fallback finds it and maps back to the line span.
+        content = "import os\n\ndef f():\n    a = 1\n    return secret(a)\n"
+        f = _finding(
+            line_start=10, line_end=11,  # stale stored lines
+            verbatim_excerpt="def f(): a = 1 return secret(a)",
+        )
+        reloc = relocate_finding(content, f)
+        assert reloc.status == "relocated"
+        assert (reloc.start_line, reloc.end_line) == (3, 5)
+
 
 class TestBuildSarif:
     def _located(self, **over):
