@@ -8,14 +8,27 @@ whole file, and the rest of the file is spliced through untouched.
 from dataclasses import dataclass
 
 
+def _line_terminator(lines: list) -> str:
+    """The newline style of the last line that has one ('\\r\\n'/'\\n'/'\\r'), else ''."""
+    for ln in reversed(lines):
+        if ln.endswith("\r\n"):
+            return "\r\n"
+        if ln.endswith("\n"):
+            return "\n"
+        if ln.endswith("\r"):
+            return "\r"
+    return ""
+
+
 def splice_lines(content: str, start: int, end: int, replacement: str) -> str:
     """Replace 1-based inclusive lines ``[start..end]`` with ``replacement``.
 
     Every other line is preserved verbatim. The replacement is normalized onto
-    its own line(s): internal newlines are kept, and a single trailing newline
-    is present iff the original last replaced line ended with one — so a file
-    with or without a final newline keeps that property, and seams never double
-    or drop a newline.
+    its own line(s) using the file's own newline style (CRLF stays CRLF, so the
+    file is never left with mixed endings): internal newlines are kept, and a
+    single trailing newline is present iff the original last replaced line ended
+    with one — so a file with or without a final newline keeps that property,
+    and seams never double or drop a newline.
     """
     lines = content.splitlines(keepends=True)
     n = len(lines)
@@ -26,10 +39,11 @@ def splice_lines(content: str, start: int, end: int, replacement: str) -> str:
     target = lines[start - 1 : end]
     suffix = lines[end:]
 
+    nl = _line_terminator(target) or _line_terminator(prefix + suffix) or "\n"
     orig_had_newline = bool(target) and target[-1].endswith(("\n", "\r"))
-    repl_norm = "\n".join(replacement.splitlines())
+    repl_norm = nl.join(replacement.splitlines())
     if orig_had_newline:
-        repl_norm += "\n"
+        repl_norm += nl
 
     return "".join(prefix) + repl_norm + "".join(suffix)
 
