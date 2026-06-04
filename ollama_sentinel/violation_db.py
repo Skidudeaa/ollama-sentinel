@@ -400,7 +400,9 @@ class ViolationDB:
     ) -> List[dict]:
         """Return unresolved findings, filtered and ranked for triage.
 
-        Ordered by severity (critical → low) then ``occurrence_count`` DESC.
+        Ordered by severity (critical → low), then ``occurrence_count`` DESC,
+        then ``id`` ASC as a final tiebreak so ``limit`` truncates a stable,
+        specified subset across SQLite versions and vacuum state.
         ``severity`` is an exact match; ``file_substr`` is a case-insensitive
         substring of ``file_path`` (matched with SQL ``LIKE``, so any ``%`` or
         ``_`` in the term act as wildcards — only ever broadening the match,
@@ -429,7 +431,8 @@ class ViolationDB:
                         WHEN 'low'      THEN 1
                         ELSE 0
                     END DESC,
-                    occurrence_count DESC
+                    occurrence_count DESC,
+                    id ASC
                 LIMIT ?
                 """,
                 tuple(params),
