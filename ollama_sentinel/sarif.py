@@ -23,6 +23,8 @@ _SEVERITY_TO_LEVEL = {
     "low": "note",
 }
 
+_LEVEL_RANK = {"note": 0, "warning": 1, "error": 2}
+
 
 @dataclass
 class Relocation:
@@ -112,6 +114,10 @@ def build_sarif(
                 },
                 "defaultConfiguration": {"level": level},
             }
+        else:
+            existing = rules_by_id[rule_id]["defaultConfiguration"]["level"]
+            if _LEVEL_RANK.get(level, 1) > _LEVEL_RANK.get(existing, 1):
+                rules_by_id[rule_id]["defaultConfiguration"]["level"] = level
 
         file_path = str(finding.get("file_path") or "")
         excerpt = finding.get("verbatim_excerpt") or ""

@@ -54,6 +54,16 @@ class TestRelocateFinding:
         assert reloc.status == "relocated"
         assert reloc.start_line == 2
 
+    def test_multiline_excerpt_relocates_span(self):
+        content = "import os\n\ndef f():\n    a = 1\n    return secret(a)\n"
+        f = _finding(
+            line_start=10, line_end=11,  # stale stored lines
+            verbatim_excerpt="def f():\n    a = 1\n    return secret(a)",
+        )
+        reloc = relocate_finding(content, f)
+        assert reloc.status == "relocated"
+        assert (reloc.start_line, reloc.end_line) == (3, 5)
+
 
 class TestBuildSarif:
     def _located(self, **over):
@@ -106,3 +116,18 @@ class TestBuildSarif:
         doc = build_sarif(self._located(id=7), tool_version="x",
                           corroborated_ids=frozenset({7}))
         assert doc["runs"][0]["results"][0]["properties"]["corroborated"] is True
+
+    def test_rule_level_promotes_to_worst_severity(self):
+        # Same category, low then critical → rule badge must be "error".
+        f_lo = _finding(id=1, category="bug", severity="low")
+        f_hi = _finding(id=2, category="bug", severity="critical")
+        located = [(f, relocate_finding("x = eval(data)\n", f)) for f in (f_lo, f_hi)]
+        doc = build_sarif(located, tool_version="x")
+        rules = doc["runs"][0]["tool"]["driver"]["rules"]
+        bug_rule = next(r for r in rules if r["id"] == "ollama-sentinel/bug")
+        assert bug_rule["defaultConfiguration"]["level"] == "error"
+
+    def test_snippet_omitted_when_excerpt_empty(self):
+        doc = build_sarif(self._located(verbatim_excerpt=""), tool_version="x")
+        region = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"]
+        assert "snippet" not in region
