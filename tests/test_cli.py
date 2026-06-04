@@ -623,3 +623,33 @@ class TestFindingsCommand:
         result = runner.invoke(app, ["findings", "--config", str(cfg)])
         assert result.exit_code == 0
         assert "No violation database" in result.output
+
+    def test_limit_caps_results(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = ViolationDB(str(db_path))
+        # Three distinct findings (different line numbers so upsert creates 3 rows).
+        db.persist_findings("a.py", [
+            Finding("a.py", 1, 1, "bug", "high", "F1"),
+            Finding("a.py", 2, 2, "bug", "high", "F2"),
+            Finding("a.py", 3, 3, "bug", "high", "F3"),
+        ])
+        db.close()
+        result = runner.invoke(
+            app, ["findings", "--config", str(cfg), "-f", "json", "--limit", "2"]
+        )
+        assert result.exit_code == 0
+        assert len(json.loads(result.output)) == 2
+
+    def test_corroborated_mark_renders(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("COLUMNS", "200")
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        fid = _seed_one_finding_id(db_path)
+        _seed_incident(db_path, finding_id=fid)
+        result = runner.invoke(app, ["findings", "--config", str(cfg)])
+        assert result.exit_code == 0, result.output
+        assert "✓" in result.output
