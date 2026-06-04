@@ -572,6 +572,15 @@ def fix(
 
         rel = finding["file_path"]
         target = watch_dir / rel
+        # Capture the TOCTOU baseline BEFORE reading, so an edit landing while
+        # the file is being read changes the signature and is caught by the
+        # pre-write re-stat (rather than the edit becoming the accepted baseline).
+        try:
+            before = target.stat()
+        except OSError as e:
+            console.print(f"[red]Cannot read {rel}: {e}[/red]")
+            raise typer.Exit(code=1)
+        before_sig = (before.st_mtime_ns, before.st_size)
         try:
             content = read_strict(target, watch_dir)
         except (ValueError, OSError) as e:
@@ -580,8 +589,6 @@ def fix(
                 f"(would corrupt non-text bytes): {e}[/red]"
             )
             raise typer.Exit(code=1)
-        before = target.stat()
-        before_sig = (before.st_mtime_ns, before.st_size)
 
         reloc = relocate_finding(content, finding)
         if not (reloc.status == "relocated" and reloc.exact):

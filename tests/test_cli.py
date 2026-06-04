@@ -1032,6 +1032,38 @@ class TestFixCommand:
         assert result.exit_code == 1
         assert "No violation database" in result.output
 
+    def test_concurrent_edit_during_read_is_detected(self, tmp_path, monkeypatch):
+        # The TOCTOU baseline is captured BEFORE the read, so an edit that lands
+        # while the file is being read changes the signature and the pre-write
+        # re-stat aborts (rather than the edit becoming the accepted baseline and
+        # a write proceeding on stale content).
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+        fid = _seed_fix_finding(db_path, file_path="app.py", excerpt="x = eval(data)")
+        _mock_model(monkeypatch, "    x = safe(data)")
+
+        import ollama_sentinel.utils as utils_mod
+        real_read = utils_mod.read_strict
+
+        def mutating_read(path, watch_dir):
+            data = real_read(path, watch_dir)
+            # a concurrent writer changes the file during our read
+            src.write_text("def f():\n    x = eval(data)\n    return x\n# edited\n")
+            return data
+        monkeypatch.setattr(utils_mod, "read_strict", mutating_read)
+
+        result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
+        assert result.exit_code == 1
+        assert "changed since it was read" in result.output
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_finding(fid)["resolved"] == 0
+        finally:
+            db.close()
+
     def test_file_deleted_between_read_and_write_aborts_cleanly(self, tmp_path, monkeypatch):
         # A delete (not just an edit) during the generation window must abort
         # with the clean 'changed since it was read' message, not an uncaught
