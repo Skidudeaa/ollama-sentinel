@@ -326,8 +326,15 @@ class TestDefaultCommand:
         from unittest.mock import patch as mock_patch
         with mock_patch("ollama_sentinel.dashboard.run_dashboard") as mock_run:
             with mock_patch("asyncio.run") as mock_asyncio_run:
+                # asyncio.run is mocked, so the coroutine that run_dashboard (an
+                # AsyncMock) returns would otherwise be garbage-collected
+                # un-awaited and emit a RuntimeWarning that pytest mis-attributes
+                # to a later test. Consume it here.
+                mock_asyncio_run.side_effect = lambda coro: coro.close()
                 result = runner.invoke(app, [])
-        assert mock_asyncio_run.called
+        assert result.exit_code == 0, result.output
+        assert mock_run.called  # the dashboard coroutine is what gets run
+        assert mock_asyncio_run.call_count == 1
 
     def test_version_flag_still_works(self):
         result = runner.invoke(app, ["--version"])
