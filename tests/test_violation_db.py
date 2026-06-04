@@ -683,3 +683,121 @@ class TestVerbatimExcerptPersistence:
         assert len(rows) == 1  # upserted, not duplicated
         assert rows[0]["occurrence_count"] == 2
         assert rows[0]["verbatim_excerpt"] == "first = excerpt()"
+
+
+def _read_row(db, finding_id):
+    """Read one findings row as a dict via raw SQL (avoids depending on
+    get_finding, which is implemented in a later task)."""
+    cur = db._conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,))
+    cols = [d[0] for d in cur.description]
+    row = cur.fetchone()
+    return dict(zip(cols, row)) if row else None
+
+
+class TestResolution:
+    """resolution column + mark_resolved behavior."""
+
+    def test_mark_resolved_records_fixed(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [_make_finding(file_path="a.py")])
+            fid = db.get_unresolved("a.py")[0]["id"]
+            n = db.mark_resolved(fid, resolution="fixed")
+            row = _read_row(db, fid)
+        finally:
+            db.close()
+        assert n == 1
+        assert row["resolved"] == 1
+        assert row["resolution"] == "fixed"
+
+    def test_mark_resolved_records_dismissed(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [_make_finding(file_path="a.py")])
+            fid = db.get_unresolved("a.py")[0]["id"]
+            db.mark_resolved(fid, resolution="dismissed")
+            row = _read_row(db, fid)
+        finally:
+            db.close()
+        assert row["resolution"] == "dismissed"
+
+    def test_mark_resolved_no_reason_leaves_null(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [_make_finding(file_path="a.py")])
+            fid = db.get_unresolved("a.py")[0]["id"]
+            n = db.mark_resolved(fid)
+            row = _read_row(db, fid)
+        finally:
+            db.close()
+        assert n == 1
+        assert row["resolved"] == 1
+        assert row["resolution"] is None
+
+    def test_mark_resolved_missing_id_returns_zero(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            assert db.mark_resolved(424242, resolution="fixed") == 0
+        finally:
+            db.close()
+
+    def test_mark_resolved_fix_commit_still_creates_incident(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [_make_finding(file_path="a.py")])
+            fid = db.get_unresolved("a.py")[0]["id"]
+            db.mark_resolved(fid, fix_commit="abc123")
+            row = _read_row(db, fid)
+            incidents = db.get_incidents_for_finding(fid)
+        finally:
+            db.close()
+        assert row["resolved"] == 1
+        assert row["fix_commit_sha"] == "abc123"
+        assert len(incidents) == 1
+        assert incidents[0]["confirming_signal"] == "fix_commit"
+
+    def test_mark_resolved_fix_commit_and_resolution_together(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("a.py", [_make_finding(file_path="a.py")])
+            fid = db.get_unresolved("a.py")[0]["id"]
+            db.mark_resolved(fid, fix_commit="abc123", resolution="fixed")
+            row = _read_row(db, fid)
+            incidents = db.get_incidents_for_finding(fid)
+        finally:
+            db.close()
+        assert row["fix_commit_sha"] == "abc123"
+        assert row["resolution"] == "fixed"
+        assert len(incidents) == 1
+
+    def test_migration_adds_resolution_column_to_legacy_db(self, tmp_path):
+        p = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(
+            """
+            CREATE TABLE findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL, line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL, category TEXT NOT NULL,
+                severity TEXT NOT NULL, description TEXT NOT NULL,
+                first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                resolved INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO findings (file_path, line_start, line_end, category, "
+            "severity, description, first_seen, last_seen) "
+            "VALUES ('a.py', 1, 2, 'bug', 'low', 'd', 't', 't')"
+        )
+        conn.commit()
+        conn.close()
+
+        db = ViolationDB(str(p))  # __init__ runs _migrate
+        try:
+            row = _read_row(db, 1)
+        finally:
+            db.close()
+        assert "resolution" in row
+        assert row["resolution"] is None
