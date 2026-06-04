@@ -39,6 +39,9 @@ class Relocation:
     start_line: int
     end_line: int
     status: str  # "relocated" | "stored" | "stale"
+    exact: bool = False  # True only on a whole-line block match (not the
+    #                      word-sequence fallback, which can straddle lines).
+    #                      The write path (fix) proceeds only when exact.
 
 
 def _normalize_lines(text: str) -> List[str]:
@@ -97,7 +100,7 @@ def relocate_finding(content: str, finding: dict) -> Relocation:
             matches.append(i + 1)
     if matches:
         best = min(matches, key=lambda ln: abs(ln - stored_start))
-        return Relocation(best, best + n - 1, "relocated")
+        return Relocation(best, best + n - 1, "relocated", exact=True)
 
     # Fallback: the excerpt may have been flattened (newlines collapsed to
     # spaces) by the upstream verbatim-validation gate, so line-block matching
@@ -119,7 +122,7 @@ def relocate_finding(content: str, finding: dict) -> Relocation:
     best_start, best_end = min(
         word_matches, key=lambda se: abs(se[0] - stored_start)
     )
-    return Relocation(best_start, best_end, "relocated")
+    return Relocation(best_start, best_end, "relocated", exact=False)
 
 
 def _fingerprint(file_path: str, category: str, excerpt: str,
