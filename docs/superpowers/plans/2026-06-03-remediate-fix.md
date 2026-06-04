@@ -62,7 +62,7 @@
 
 ## Verification
 
-- [ ] Each piece: watched its tests fail RED, then GREEN; full suite green after each.
+- [ ] Each piece: watch its tests fail RED, then GREEN; full suite green after each.
 - [ ] The three safety properties have explicit regression tests (non-UTF-8 refused; mode preserved; fuzzy-only refused).
 - [ ] After Piece 0, shipped sarif/surface behavior unchanged.
 - [ ] Final adversarial review pass over the full `fix` diff (correctness + write-path safety) before merge.

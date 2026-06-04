@@ -1,7 +1,7 @@
 # Remediate (`fix <id>`) — design
 
 **Date:** 2026-06-03 (revised 2026-06-04 after adversarial readiness review)
-**Status:** Approved (brainstorm), revised for safety, pending implementation plan
+**Status:** Approved (brainstorm), revised for safety; implementation plan written (`docs/superpowers/plans/2026-06-03-remediate-fix.md`)
 **Slice:** 3 of N in the "make findings actionable" arc (after surface/SARIF #14 and triage #15)
 
 ## Problem
@@ -293,7 +293,7 @@ render, the apply gate, the `safe_write`, and `mark_resolved`. It constructs an
   arc's "human-in-the-loop, never silent writes" stance while staying scriptable.
 - **Resolve on apply, no commit.** The `[y/N]` on the diff is the approval
   signal, so the finding is resolved `fixed`. Not committing keeps the change
-  reviewable/revertable and lets the existing post-commit hook + Incident flow
+  reviewable/revertible and lets the existing post-commit hook + Incident flow
   fire when the user commits.
 - **Refuse already-resolved findings; `fix` model role with `default` fallback.**
   Both confirmed during brainstorm.
@@ -325,4 +325,4 @@ stale lines), `safe_write` containment + atomicity, the bounded splice (rest of
 file untouched), and the no-change/stale guards. The model output is the
 least-controllable element; it is contained to the finding's span and always
 shown as a diff before any write. Worst realistic case — a confirmed bad patch
-— lands only in the working tree, reviewable and revertable, never committed.
+— lands only in the working tree, reviewable and revertible, never committed.
