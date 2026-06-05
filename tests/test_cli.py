@@ -1136,3 +1136,120 @@ class TestFixCommand:
         result = runner.invoke(app, ["fix", str(fid), "--config", str(cfg), "--yes"])
         assert result.exit_code == 0, result.output
         assert src.read_bytes() == b"def f():\r\n    x = safe(data)\r\n    return x\r\n"
+
+
+# ---------------------------------------------------------------------------
+# prune (stale-prune)
+# ---------------------------------------------------------------------------
+
+
+def _seed_prune(db_path, file_path, findings):
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = ViolationDB(str(db_path))
+    db.persist_findings(file_path, findings)
+    db.close()
+
+
+class TestPruneCommand:
+    """Tests for 'ollama-sentinel prune' — close findings whose code is gone."""
+
+    def test_happy_path_prunes_only_stale(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+        original = src.read_text()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = ViolationDB(str(db_path))
+        db.persist_findings("app.py", [
+            Finding("app.py", 2, 2, "security", "high", "live",
+                    verbatim_excerpt="x = eval(data)"),     # present → kept
+            Finding("app.py", 5, 5, "bug", "low", "gone",
+                    verbatim_excerpt="q = unsafe(z)"),       # absent → stale
+        ])
+        ids = {r["description"]: r["id"] for r in db.get_all_unresolved()}
+        db.close()
+
+        result = runner.invoke(app, ["prune", "--config", str(cfg), "--yes"])
+        assert result.exit_code == 0, result.output
+        assert src.read_text() == original  # read-only on source
+        db = ViolationDB(str(db_path))
+        try:
+            gone = db.get_finding(ids["gone"])
+            live = db.get_finding(ids["live"])
+            assert gone["resolved"] == 1 and gone["resolution"] == "stale"
+            assert live["resolved"] == 0 and live["resolution"] is None
+            assert db.get_incidents_for_finding(ids["gone"]) == []  # no Incident
+        finally:
+            db.close()
+
+    def test_nothing_to_prune(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        (tmp_path / "app.py").write_text("def f():\n    x = eval(data)\n")
+        _seed_prune(db_path, "app.py", [
+            Finding("app.py", 2, 2, "security", "high", "live",
+                    verbatim_excerpt="x = eval(data)"),
+        ])
+        result = runner.invoke(app, ["prune", "--config", str(cfg), "--yes"])
+        assert result.exit_code == 0
+        assert "No stale findings" in result.output
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_all_unresolved()[0]["resolved"] == 0
+        finally:
+            db.close()
+
+    def test_non_tty_without_yes_previews_only(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        # Flagged file never created → finding is stale.
+        _seed_prune(db_path, "missing.py", [
+            Finding("missing.py", 1, 1, "bug", "low", "gone",
+                    verbatim_excerpt="q = bad()"),
+        ])
+        result = runner.invoke(app, ["prune", "--config", str(cfg)])
+        assert result.exit_code == 0, result.output
+        assert "preview only" in result.output
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_all_unresolved()[0]["resolved"] == 0  # not pruned
+        finally:
+            db.close()
+
+    def test_tty_decline_then_accept(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_prune(db_path, "missing.py", [
+            Finding("missing.py", 1, 1, "bug", "low", "gone",
+                    verbatim_excerpt="q = bad()"),
+        ])
+        monkeypatch.setattr("ollama_sentinel.cli._is_stdin_tty", lambda: True)
+
+        declined = runner.invoke(app, ["prune", "--config", str(cfg)], input="n\n")
+        assert declined.exit_code == 0, declined.output
+        assert "Aborted" in declined.output
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_all_unresolved()[0]["resolved"] == 0
+        finally:
+            db.close()
+
+        accepted = runner.invoke(app, ["prune", "--config", str(cfg)], input="y\n")
+        assert accepted.exit_code == 0, accepted.output
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_all_unresolved() == []  # pruned → no open findings
+        finally:
+            db.close()
+
+    def test_no_db_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        result = runner.invoke(app, ["prune", "--config", str(cfg)])
+        assert result.exit_code == 0
+        assert "No violation database" in result.output
