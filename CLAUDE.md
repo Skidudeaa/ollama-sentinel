@@ -192,33 +192,28 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
   679 passed / 15 skipped, ~10s). Do **not** hardcode the number here again — it
   drifts every time tests land. Quote the command, not the count.
 - **The "make findings actionable" arc** (surface → triage → remediate →
-  stale-prune): **slices 1-3 are MERGED to master.** surface (#14), triage
-  (#15), and **remediate `fix <id>` (PRs #22-26, rebase-merged 2026-06-04)**
-  all ship. Slice 4 (stale-prune `prune`) has a **merged spec but no
-  implementation yet** — that is the next pickup.
+  stale-prune): **the full arc (slices 1-4) is MERGED to master.** surface
+  (#14), triage (#15), remediate `fix <id>` (PRs #22-26, rebase-merged
+  2026-06-04), and **stale-prune `prune` (PR #29, rebase-merged 2026-06-05)**
+  all ship. The arc is complete.
 - **Working tree should be clean.** If it isn't, `git status` first.
 - **The visual guide (`docs/index.html`) is the canonical pitch surface.**
   Linked from README, GUIDE.md, and the v0.1.0 release notes.
 
 ### Resume here next time
 
-1. **Sanity check.** `pytest tests/ -q` should be green (679 / 15 skip last seen).
-2. **Implement stale-prune (`prune`).** Spec (merged, unimplemented):
-   `docs/superpowers/specs/2026-06-04-stale-prune-design.md`. Two pieces:
-   `collect_stale_findings` in `sarif.py` (read-only — reuse `relocate_finding`
-   + the `generate_sarif_file` content rule) → `prune` CLI command (preview +
-   confirm gate like `fix`, closes stale findings with `resolution='stale'`, no
-   Incident, read-only on source). Mirror the `fix` / `findings` command shape.
-3. **Then the deferred tail** (none blocking): OP-1 SIGHUP hot-reload, CB-1
+1. **Sanity check.** `pytest tests/ -q` should be green (689 / 15 skip last seen).
+2. **The "make findings actionable" arc is complete** (stale-prune `prune`
+   merged via PR #29, 2026-06-05). No arc work left.
+3. **The deferred tail** (none blocking): OP-1 SIGHUP hot-reload, CB-1
    formatter dedupe — see `docs/superpowers/followups.md`.
 
 ### Pickable next moves (ordered by leverage)
 
 | # | Item | Effort | Risk | Notes |
 |---|---|---|---|---|
-| 1 | Build stale-prune `prune` (per merged spec) | S-M | low | Only stage that closes the stranded-stale-finding leak; read-only on source. |
-| 2 | OP-1 — SIGHUP hot-reload of `ollama-sentinel.yaml` (`docs/superpowers/followups.md`) | M | med | Real DX pain on long-running watchers. |
-| 3 | CB-1 — dedupe impact-report formatter (`recipes.py` vs `synthesis.py`) | ~30-45 min | low | Dormant; only triggers if `build_research_context` gets impact data. |
+| 1 | OP-1 — SIGHUP hot-reload of `ollama-sentinel.yaml` (`docs/superpowers/followups.md`) | M | med | Real DX pain on long-running watchers. |
+| 2 | CB-1 — dedupe impact-report formatter (`recipes.py` vs `synthesis.py`) | ~30-45 min | low | Dormant; only triggers if `build_research_context` gets impact data. |
 
 Skip TR-3 — deliberate spec deviation, documented in followups.md. Qwen3
 Phases B/C stay parked (no demand; the Phase-A plan forbids pulling the models
@@ -248,6 +243,18 @@ speculatively).
 
 ### Recent landings
 
+- 2026-06-05: **"Make findings actionable" arc COMPLETE — stale-prune `prune`
+  SHIPPED + MERGED (PR #29, rebase-merged to master).** Two pieces, single PR
+  (advisor-approved): `collect_stale_findings(db, watch_dir)` in `sarif.py`
+  (read-only selector — returns open findings whose file is gone or whose
+  verbatim excerpt no longer relocates via `relocate_finding`; reuses the
+  `generate_sarif_file` content rule so `surface`/`prune` agree on "stale";
+  omits `relocated` and `stored` findings) → `cli.prune` (Rich preview table,
+  apply gate like `fix`: `--yes` applies, TTY prompts `[y/N]`, non-TTY previews
+  only; closes with `resolution='stale'`, **no Incident** — `mark_resolved`
+  only inserts an Incident when `fix_commit` is passed; read-only on source).
+  10 new tests (5 sarif + 5 CLI). Full suite 689 passed / 15 skipped.
+  Spec marked Implemented: `docs/superpowers/specs/2026-06-04-stale-prune-design.md`.
 - 2026-06-04/05: **"Make findings actionable" arc — remediate `fix <id>` SHIPPED
   + MERGED; full arc slices 1-3 on master.** REMEDIATE built as a 4-piece stack,
   adversarially verified (Workflow, 4 lenses, 13 raw → 6 confirmed findings
@@ -262,7 +269,7 @@ speculatively).
   already in; plus four polish PRs — `get_open_findings` id-tiebreak (#18),
   idempotent resolve/dismiss (#19), best-effort `findings` corroboration (#27,
   re-opened from auto-closed #20), dashboard unawaited-coroutine warning (#21);
-  CLAUDE.md doc-drift refresh (#17); stale-prune spec (#16, slice 4, unimplemented).
+  CLAUDE.md doc-drift refresh (#17); stale-prune spec (#16, slice 4).
 - 2026-05-30: **v0.2 Incident schema complete (Pieces 1-5).** Pieces 1-3
   (schema + migration + CRUD, post-commit hook + `install-hooks`/
   `record-commit`, `confirm` verb) merged to master as stacked PRs #8/#9/#10.
