@@ -295,3 +295,41 @@ def generate_sarif_file(
         unverified=unverified,
         path=sarif_path,
     )
+
+
+def collect_stale_findings(db, watch_dir: "pathlib.Path | str") -> List[dict]:
+    """Return the open findings whose flagged code is no longer locatable.
+
+    Reuses the exact staleness rule of :func:`generate_sarif_file` so ``surface``
+    and ``prune`` agree on what "stale" means: a finding is stale when its file
+    is gone, or when ``relocate_finding`` reports ``status == "stale"`` (its
+    verbatim excerpt no longer matches the file). Read-only — it queries the DB
+    and reads source files, but writes nothing.
+
+    Findings that still relocate (``"relocated"``) or have no verifiable excerpt
+    (``"stored"``) are NOT stale and are omitted. Returns the full row dicts in
+    ``get_all_unresolved()`` order.
+    """
+    watch_dir = pathlib.Path(watch_dir)
+    content_cache: dict = {}
+
+    def _content(rel: str):
+        # safe_read returns "" (never raises) for missing/unreadable/symlink/
+        # traversal, so check existence explicitly: a gone file is stale, an
+        # empty-but-present file goes through relocation like any other.
+        if rel not in content_cache:
+            abs_path = watch_dir / rel
+            content_cache[rel] = (
+                safe_read(abs_path, watch_dir) if abs_path.is_file() else None
+            )
+        return content_cache[rel]
+
+    stale: List[dict] = []
+    for r in db.get_all_unresolved():
+        content = _content(r["file_path"])
+        if content is None:
+            stale.append(r)
+            continue
+        if relocate_finding(content, r).status == "stale":
+            stale.append(r)
+    return stale

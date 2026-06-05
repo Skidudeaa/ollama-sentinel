@@ -174,7 +174,7 @@ class TestBuildSarif:
 
 import pathlib
 
-from ollama_sentinel.sarif import generate_sarif_file
+from ollama_sentinel.sarif import collect_stale_findings, generate_sarif_file
 from ollama_sentinel.violation_db import Finding, ViolationDB
 
 
@@ -313,3 +313,96 @@ class TestGenerateSarifFile:
         assert summary.path == custom_out
         assert custom_out.exists()
         assert not (tmp_path / ".ollama_reviews" / "findings.sarif").exists()
+
+
+class TestCollectStaleFindings:
+    """collect_stale_findings: same 'stale' rule as generate_sarif_file, but
+    returns the stale row dicts and writes nothing."""
+
+    def test_excerpt_absent_is_stale(self, tmp_path):
+        (tmp_path / "app.py").write_text("def f():\n    return safe(data)\n")
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed(db_path, "app.py", [
+            Finding("app.py", 2, 2, "security", "high", "gone",
+                    verbatim_excerpt="x = eval(data)"),
+        ])
+        db = ViolationDB(str(db_path))
+        try:
+            stale = collect_stale_findings(db, tmp_path)
+        finally:
+            db.close()
+        assert [r["description"] for r in stale] == ["gone"]
+
+    def test_missing_file_is_stale(self, tmp_path):
+        # No app.py on disk at all → the flagged file is gone.
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed(db_path, "app.py", [
+            Finding("app.py", 2, 2, "security", "high", "filegone",
+                    verbatim_excerpt="x = eval(data)"),
+        ])
+        db = ViolationDB(str(db_path))
+        try:
+            stale = collect_stale_findings(db, tmp_path)
+        finally:
+            db.close()
+        assert [r["description"] for r in stale] == ["filegone"]
+
+    def test_relocatable_even_drifted_not_stale(self, tmp_path):
+        # Excerpt present but drifted to line 4 → relocated, not stale.
+        (tmp_path / "app.py").write_text(
+            "import os\nimport sys\ndef f():\n    x = eval(data)\n"
+        )
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed(db_path, "app.py", [
+            Finding("app.py", 2, 2, "security", "high", "live",
+                    verbatim_excerpt="x = eval(data)"),
+        ])
+        db = ViolationDB(str(db_path))
+        try:
+            stale = collect_stale_findings(db, tmp_path)
+        finally:
+            db.close()
+        assert stale == []
+
+    def test_empty_excerpt_stored_not_stale(self, tmp_path):
+        (tmp_path / "app.py").write_text("anything\n")
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed(db_path, "app.py", [
+            Finding("app.py", 2, 2, "security", "high", "noexcerpt",
+                    verbatim_excerpt=""),
+        ])
+        db = ViolationDB(str(db_path))
+        try:
+            stale = collect_stale_findings(db, tmp_path)
+        finally:
+            db.close()
+        assert stale == []
+
+    def test_mixed_set_returns_only_stale_and_writes_nothing(self, tmp_path):
+        (tmp_path / "app.py").write_text("def f():\n    x = eval(data)\n")
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = ViolationDB(str(db_path))
+        db.persist_findings("app.py", [
+            Finding("app.py", 2, 2, "security", "high", "live",
+                    verbatim_excerpt="x = eval(data)"),
+            Finding("app.py", 5, 5, "bug", "low", "gone",
+                    verbatim_excerpt="y = unsafe(z)"),
+            Finding("app.py", 9, 9, "style", "low", "noexcerpt",
+                    verbatim_excerpt=""),
+        ])
+        db.persist_findings("missing.py", [
+            Finding("missing.py", 1, 1, "bug", "low", "filegone",
+                    verbatim_excerpt="q = bad()"),
+        ])
+        db.close()
+
+        db = ViolationDB(str(db_path))
+        try:
+            stale = collect_stale_findings(db, tmp_path)
+            still_open = db.get_all_unresolved()
+        finally:
+            db.close()
+        assert {r["description"] for r in stale} == {"gone", "filegone"}
+        assert len(still_open) == 4
+        assert all(r["resolved"] == 0 for r in still_open)
