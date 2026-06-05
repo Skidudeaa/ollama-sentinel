@@ -883,6 +883,86 @@ def surface(
 
 
 @app.command()
+def prune(
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Prune without the interactive confirmation prompt",
+    ),
+):
+    """Close findings whose flagged code is no longer locatable (stale).
+
+    Relocates every open finding by its verbatim excerpt and — on confirmation —
+    closes the ones whose file is gone or whose excerpt no longer matches,
+    recording resolution='stale' (a distinct label, no Incident). Read-only on
+    source: it reads files to relocate but never edits them.
+    """
+    from rich.table import Table
+
+    from .sarif import collect_stale_findings
+    from .violation_db import ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    watch_dir = pathlib.Path(config.watch.directory).resolve()
+    db_path = watch_dir / config.memory.db_path
+    if not db_path.exists():
+        console.print(
+            "[yellow]No violation database found. Run some reviews first.[/yellow]"
+        )
+        raise typer.Exit()
+
+    db = ViolationDB(str(db_path))
+    try:
+        stale = collect_stale_findings(db, watch_dir)
+        if not stale:
+            console.print("[green]No stale findings to prune.[/green]")
+            raise typer.Exit()
+
+        table = Table(
+            title=f"{len(stale)} stale finding(s) — flagged code no longer locatable"
+        )
+        table.add_column("ID", style="bold", width=5)
+        table.add_column("Sev", width=9)
+        table.add_column("Cat", width=10)
+        table.add_column("Location", style="cyan")
+        table.add_column("Description")
+        for r in stale:
+            table.add_row(
+                str(r["id"]),
+                r["severity"],
+                r["category"],
+                f"{r['file_path']}:{r['line_start']}",
+                (r["description"] or "")[:60],
+            )
+        console.print(table)
+
+        if not yes:
+            if _is_stdin_tty():
+                if not typer.confirm(f"Prune these {len(stale)} stale finding(s)?"):
+                    console.print(
+                        f"[yellow]Aborted; {len(stale)} finding(s) left open.[/yellow]"
+                    )
+                    raise typer.Exit()
+            else:
+                console.print("[dim](preview only; pass --yes to prune)[/dim]")
+                raise typer.Exit()
+
+        pruned = 0
+        for r in stale:
+            if db.mark_resolved(r["id"], resolution="stale") > 0:
+                pruned += 1
+    finally:
+        db.close()
+
+    console.print(
+        f"[green]Pruned {pruned} stale finding(s) (resolution=stale).[/green]"
+    )
+
+
+@app.command()
 def triage(
     input_path: Optional[str] = typer.Argument(
         None,
