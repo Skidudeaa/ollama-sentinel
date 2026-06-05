@@ -1,7 +1,7 @@
 # Stale-prune (`prune`) — design
 
 **Date:** 2026-06-04
-**Status:** Approved (brainstorm), pending implementation plan
+**Status:** Implemented 2026-06-05 — `prune` command + `collect_stale_findings`
 **Slice:** 4 of N in the "make findings actionable" arc (after surface/SARIF #14, triage #15, remediate #16)
 
 ## Problem
