@@ -243,6 +243,13 @@ speculatively).
 
 ### Recent landings
 
+- 2026-06-07: **`docs/VISION.md` refreshed (structural rewrite) + session
+  handoff.** Replaced the stale v0.1.0+ snapshot, added a "making findings
+  actionable (shipped)" section, preserved the v0.3 substrate / north-star
+  narrative; new handoff at
+  `docs/session-notes/2026-06-07-vision-refresh-and-arc-complete-handoff.md`.
+  Docs-only; suite unchanged (689/15). Plan:
+  `docs/plans/2026-06-07-001-docs-refresh-vision-and-handoff-plan.md`.
 - 2026-06-05: **"Make findings actionable" arc COMPLETE — stale-prune `prune`
   SHIPPED + MERGED (PR #29, rebase-merged to master).** Two pieces, single PR
   (advisor-approved): `collect_stale_findings(db, watch_dir)` in `sarif.py`
