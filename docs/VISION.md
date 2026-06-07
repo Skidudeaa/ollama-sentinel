@@ -20,46 +20,49 @@ reports, not generic essays. Uses OpenAI; opt-in via `pip install -e ".[research
 Both run on the user's machine. Code never leaves it (with the standard caveat
 that the research agent does call OpenAI when invoked).
 
-## State as of this session — v0.1.0+
+## Where it is now
 
-Shipped, public on GitHub, 353 tests passing, ~2.4s suite. Recent work in this
-session:
+Shipped, public on GitHub. The suite is healthy — run `pytest tests/ -q` for
+the live number (as of 2026-06-07: 689 passed / 15 skipped in ~9s; quote the
+command, not a frozen count). The product has moved well past the v0.1 "model
+that comments on your code" stage. Three things are true today that were
+aspirational a few months ago:
 
-- **Structural recall wired into the sentinel's hot path.** The
-  `ImportResolver` AST scanner — previously dead-coded behind a research-agent
-  import — now augments prior-violation lookup with 1-hop import-graph
-  neighbors. A finding on `utils.py` surfaces when reviewing `app.py`. A
-  finding on `app.py` surfaces when reviewing `utils.py`. Layered after
-  semantic recall, before single-file recall. Python-only. Five tests. Five
-  green.
-- **Truth-in-advertising gap closed.** The README's "knows your blind spots"
-  claim is now load-bearing. Before this session, structural awareness was
-  promised by docs and not delivered by code.
+- **The memory is layered and grounded.** Prior-violation recall is semantic
+  (embedding neighbors via `qwen3-embedding:4b` on the hot path — see Phase A
+  below), structural (1-hop import-graph neighbors via the `ImportResolver` AST
+  scanner, so a finding on `utils.py` surfaces when reviewing `app.py`), and
+  single-file. The README's "knows your blind spots" claim is load-bearing,
+  not marketing.
+- **Findings are no longer just opinions.** The v0.2 Finding/Incident split
+  gives the memory a way to record what *objectively happened* — a failing
+  test, a fix-shaped commit, a manual confirmation — not just what the model
+  said. (Detailed below.)
+- **Findings are actionable.** A finding is no longer a dead row in a table.
+  It can surface in your editor and CI, be auto-fixed, be triaged from tool
+  output, and be pruned when the code it flagged is gone. (The "make findings
+  actionable" arc, below.)
 
-## What's still aspirational
+**Phase A — hot-path embedding swap (shipped 2026-05-01).** The semantic
+recall embedder moved from `nomic-embed-text` to `qwen3-embedding:4b`.
+`EmbeddingConfig` is now a named-role dict; the `consolidation` and `rerank`
+roles are pre-registered in the schema but intentionally unwired (Phases B/C
+are parked — no demand yet, and the plan forbids pulling those models
+speculatively). Legacy `embedding.model: foo` YAML auto-migrates with a
+one-shot deprecation warning.
 
-The vision document gestures at a "software immune system" and a "guardrail
-compiler." Neither exists yet. The substrate they would need does not exist
-either. Specifically: the sentinel's memory currently contains only **model
-opinions** — the LLM said something is concerning, and the LLM keeps saying it
-on every re-read of the same span. Recurrence count over LLM opinion is the
-model agreeing with itself N times. That's not knowledge. That's an echo.
+## From opinion to event — the Finding/Incident model (v0.2, shipped)
 
-The v0.1 schema could not represent (all resolved in v0.2 — see below):
+The v0.1 memory contained only **model opinions**: the LLM said something was
+concerning, and kept saying it on every re-read of the same span. Recurrence
+count over LLM opinion is the model agreeing with itself N times. That's not
+knowledge — that's an echo. The v0.1 schema could not represent the commit that
+introduced a finding, the commit that resolved it, the objective failure that
+confirmed (or refuted) the suspicion, the blast radius (where the failure
+surfaced vs. where the model flagged), or the test gap. When `Finding.resolved`
+flipped, all knowledge of the fix vaporized.
 
-- The commit that introduced a finding.
-- The commit that resolved it.
-- The objective failure that confirmed the model's suspicion (or didn't).
-- The blast radius — where the failure actually surfaced, vs. where the model
-  flagged.
-- The test gap — what ran and passed despite the failure.
-
-In v0.1, `Finding.resolved` was a single bit: when it flipped, all knowledge of
-the fix vaporized. v0.2's Incident schema is what closes these gaps.
-
-## v0.2 — the Finding/Incident split (shipped)
-
-v0.2 splits the schema into two nouns:
+v0.2 closes those gaps by splitting the schema into two nouns:
 
 **Finding** — what the model says. LLM hypothesis. Cheap to produce, plentiful,
 unverified. The v0.1 schema, kept as-is.
@@ -103,15 +106,47 @@ What shipped in v0.2:
 
 The watcher is no longer the only signal source — git and test events now feed
 memory too. The file watcher remains for streaming commentary as you type.
+`gitpython` was already a core dependency, so the infrastructure cost of this
+pivot was near zero.
 
 Deferred past v0.2: `pre-commit` surfacing of incidents on staged files
 (v0.2.1), reverse import-graph blame traversal beyond the simple
 `suspect_commits` heuristic (v0.2.1), and ≥3-incident Pattern promotion (v0.3).
 
-`gitpython` was already a core dependency, so the infrastructure cost of this
-pivot was near zero.
+## Making findings actionable (shipped)
 
-## Next state — v0.3: shared substrate between modules
+v0.2 made findings *corroborable*. The actionability arc (shipped and merged
+2026-06-04/05) makes them *operable* — a finding becomes something you can see,
+diagnose, fix, and retire, from the command line and from inside your editor.
+Four verbs, plus their supporting cast:
+
+- **`surface`** — emit open Findings to `.ollama_reviews/findings.sarif`
+  (SARIF 2.1.0). They light up in the editor Problems panel and in CI, with
+  excerpt-based relocation so a finding tracks its code even as surrounding
+  lines shift. The watcher also auto-refreshes the SARIF file.
+- **`triage`** — pipe tool output (pytest, mypy, ruff, a traceback, anything)
+  into a local-model diagnosis. File+line references are auto-extracted from
+  the output and the relevant source is pulled in as context, so the model
+  reasons about *your* failure, not a generic one.
+- **`fix <id>`** — a localized, excerpt-verified fix for one Finding. It
+  previews a diff, writes only on confirm (`[y/N]` or `--yes`), and resolves
+  the Finding as fixed. The write is bounded to the finding's exact whole-line
+  span, atomic, UTF-8/CRLF-preserving, and mode-preserving. It never commits.
+- **`prune`** — close Findings whose flagged code is gone: the file no longer
+  exists, or the verbatim excerpt no longer relocates. Preview + confirm, then
+  close with `resolution='stale'` (no Incident — a vanished finding isn't a
+  corroborated event). Read-only on source.
+
+Supporting verbs round out the lifecycle: `findings` (list open Findings with
+ids), `resolve` / `dismiss` (close as fixed / false-positive, idempotent), and
+`dashboard` (a live Rich TUI of recent reviews and recurring violations,
+polling the DB read-only).
+
+The throughline: a Finding now has a full lifecycle — proposed by the model,
+corroborated by events, surfaced where you work, acted on, and retired — rather
+than accumulating as inert rows.
+
+## What's still aspirational — v0.3: shared substrate between modules
 
 Today the two modules are architecturally independent. That was the right v0.1
 call. It's now the ceiling.
