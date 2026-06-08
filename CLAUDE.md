@@ -212,14 +212,13 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 ### Pickable next moves (ordered by leverage)
 
-The small-DX backlog is drained. What's left is the v0.3 product leap plus one
-testing gap.
+The small-DX backlog is drained (OP-1, CB-1, and the impact_scan integration
+test all landed 2026-06-07). What's left is the v0.3 product leap.
 
 | # | Item | Effort | Risk | Notes |
 |---|---|---|---|---|
 | 1 | **Pattern promotion** — the Finding→Incident→**Pattern** rung (≥3 incidents of the same shape → project-specific guardrail). The north-star payoff. | L | med | Design-heavy — start with `/ce-brainstorm` (shape-detection, storage, feedback into review context). Not yet started. |
 | 2 | **v0.3 shared substrate** — lift `ImportResolver` to shared infra, unify `Finding`/`ImpactItem`, bidirectional impact↔incident flow. | L | med | The moat play (see `docs/VISION.md`). Larger/architectural; can follow Pattern. |
-| 3 | **`impact_scan` integration test** — currently mocked-only; needs a real LangGraph compile w/ `OPENAI_API_KEY`. | S-M | low | Closes a long-standing testing gotcha. |
 
 Skip TR-3 — deliberate spec deviation, documented in followups.md. Qwen3
 Phases B/C stay parked (no demand; the Phase-A plan forbids pulling the models
@@ -229,8 +228,12 @@ speculatively).
 
 - Research agent requires `pip install -e ".[research]"` (heavy deps:
   langchain, playwright, llama-index). Not installed by default.
-- `impact_scan` node tested with mocked logic only — needs integration
-  test against real LangGraph compile with `OPENAI_API_KEY`.
+- `impact_scan` now has a real integration test
+  (`tests/test_impact_scan_integration.py`): drives the actual node closure
+  inside a graph compiled by `build_workflow`, LLM boundary faked, against a
+  temp repo. Gated by `importorskip` on the full `[research]` stack — runs
+  under `pip install -e ".[research]"`, skips otherwise. (The older
+  `test_research_agent.py` mirror-logic tests remain as fast unit checks.)
 - `ollama-sentinel run` requires `ollama pull qwen3-embedding:4b` once on
   first use (~2.5 GB), or set `memory.semantic_recall: false` to fall back
   to the legacy exact-path recall.
