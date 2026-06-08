@@ -140,7 +140,21 @@ here for traceability.
 
 ## Operational DX (filed 2026-05-02)
 
-### OP-1. `ollama-sentinel run` doesn't hot-reload `ollama-sentinel.yaml`
+### OP-1. `ollama-sentinel run` doesn't hot-reload — RESOLVED 2026-06-07
+
+**Resolution:** `ollama-sentinel run` now installs a SIGHUP handler
+(`FileSentinel.install_reload_handler`, POSIX-only, registered in
+`FileSentinel.run`). On `kill -HUP <pid>` it calls `FileSentinel.reload_config`,
+which reloads the YAML and applies model/timeout changes in place via
+`FileProcessor.apply_ollama_config` (closes the old `OllamaClient`, builds a
+new one, recomputes the token budget) — the `awatch` loop keeps running. A
+changed `watch.directory` is warned-and-skipped (restart required); a broken
+YAML is logged and the running config is left intact. Six tests in
+`tests/test_hot_reload.py`. Original surface below for context.
+
+---
+
+### OP-1 (original). `ollama-sentinel run` doesn't hot-reload `ollama-sentinel.yaml`
 
 **Files:** `ollama_sentinel/watcher.py:103-126` (FileSentinel.__init__),
 `ollama_sentinel/processor.py:36-58` (OllamaClient.__init__ — bakes
