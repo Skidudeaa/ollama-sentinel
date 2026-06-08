@@ -252,6 +252,16 @@ speculatively).
 
 ### Recent landings
 
+- 2026-06-08: **Small-DX backlog drained + v0.3 Pattern-promotion planned.**
+  Shipped OP-1 SIGHUP hot-reload (PR #32), the impact_scan integration test
+  (PR #34), and salvaged grounding P1–P4 positives (PR #31); closed CB-1 as
+  already-done (PR #33). Then took **Pattern promotion → project guardrails**
+  brainstorm→plan: requirements at
+  `docs/brainstorms/2026-06-08-pattern-promotion-guardrails-requirements.md`,
+  plan at `docs/plans/2026-06-08-001-feat-pattern-promotion-guardrails-plan.md`
+  (Deep, 8 units, 2 phases — Phase 1 U1–U5 independently shippable). Handoff:
+  `docs/session-notes/2026-06-08-guardrails-planned-dx-backlog-drained-handoff.md`.
+  **Next pickup: `/ce-work` that plan, Phase 1 first.**
 - 2026-06-07: **`docs/VISION.md` refreshed (structural rewrite) + session
   handoff.** Replaced the stale v0.1.0+ snapshot, added a "making findings
   actionable (shipped)" section, preserved the v0.3 substrate / north-star
