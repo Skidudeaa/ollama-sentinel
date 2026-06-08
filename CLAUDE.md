@@ -202,18 +202,24 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 ### Resume here next time
 
-1. **Sanity check.** `pytest tests/ -q` should be green (689 / 15 skip last seen).
+1. **Sanity check.** `pytest tests/ -q` should be green (run it for the live
+   count; ~699 / 15 skip after OP-1 landed — do not trust this number, it drifts).
 2. **The "make findings actionable" arc is complete** (stale-prune `prune`
    merged via PR #29, 2026-06-05). No arc work left.
-3. **The deferred tail** (none blocking): OP-1 SIGHUP hot-reload, CB-1
-   formatter dedupe — see `docs/superpowers/followups.md`.
+3. **The deferred DX tail is now closed:** OP-1 SIGHUP hot-reload SHIPPED
+   (PR #32, 2026-06-07); CB-1 formatter dedupe verified already-done (drift
+   correction, 2026-06-07). See `docs/superpowers/followups.md`.
 
 ### Pickable next moves (ordered by leverage)
 
+The small-DX backlog is drained. What's left is the v0.3 product leap plus one
+testing gap.
+
 | # | Item | Effort | Risk | Notes |
 |---|---|---|---|---|
-| 1 | OP-1 — SIGHUP hot-reload of `ollama-sentinel.yaml` (`docs/superpowers/followups.md`) | M | med | Real DX pain on long-running watchers. |
-| 2 | CB-1 — dedupe impact-report formatter (`recipes.py` vs `synthesis.py`) | ~30-45 min | low | Dormant; only triggers if `build_research_context` gets impact data. |
+| 1 | **Pattern promotion** — the Finding→Incident→**Pattern** rung (≥3 incidents of the same shape → project-specific guardrail). The north-star payoff. | L | med | Design-heavy — start with `/ce-brainstorm` (shape-detection, storage, feedback into review context). Not yet started. |
+| 2 | **v0.3 shared substrate** — lift `ImportResolver` to shared infra, unify `Finding`/`ImpactItem`, bidirectional impact↔incident flow. | L | med | The moat play (see `docs/VISION.md`). Larger/architectural; can follow Pattern. |
+| 3 | **`impact_scan` integration test** — currently mocked-only; needs a real LangGraph compile w/ `OPENAI_API_KEY`. | S-M | low | Closes a long-standing testing gotcha. |
 
 Skip TR-3 — deliberate spec deviation, documented in followups.md. Qwen3
 Phases B/C stay parked (no demand; the Phase-A plan forbids pulling the models
