@@ -15,22 +15,22 @@ Not blockers — each entry has enough context to pick up in a fresh session.
 Plan: `docs/superpowers/plans/2026-04-16-context-builder.md`.
 Spec: `docs/superpowers/specs/2026-04-16-context-builder-design.md`.
 
-### CB-1. Dedupe impact-report formatters
+### CB-1. Dedupe impact-report formatters — DONE (verified 2026-06-07)
 
-**Files:** `ollama_sentinel/context/recipes.py:_format_impact_report`,
-`research_agent/tools/synthesis.py:format_impact_report`.
+**Files:** `ollama_sentinel/context/recipes.py:format_impact_report` (canonical),
+`research_agent/tools/synthesis.py:format_impact_report` (thin wrapper).
 
-**Issue:** two formatters diverge — the `SynthesisTool` version emits a
-`SUGGESTED FIRST COMMIT` block for HIGH-severity items; the recipe version
-does not. Currently mutually exclusive (synthesis short-circuits impact
-before reaching the recipe), so harmless today.
+**Was:** two formatters diverged — the `SynthesisTool` version emitted a
+`SUGGESTED FIRST COMMIT` block for HIGH-severity items; the recipe version did
+not.
 
-**Fix:** move the canonical formatter to a neutral location
-(`ollama_sentinel/context/recipes.py` or a shared
-`research_agent/core/impact.py`) and have both callers import it.
-
-**Trigger:** any PR that makes `build_research_context` a reachable path
-for impact data.
+**Resolution:** the canonical formatter now lives in
+`ollama_sentinel/context/recipes.py:format_impact_report` with the
+`SUGGESTED FIRST COMMIT` block reconciled in (line ~156).
+`SynthesisTool.format_impact_report` imports it (`_shared_format_impact_report`)
+and only prepends the standalone `IMPACT ANALYSIS:` header. No duplicate
+formatter body remains; `tests/test_research_agent.py::TestImpactSynthesisFormat`
+exercises the shared formatter directly. No further action required.
 
 ### CB-2. SemanticRetriever integration test — DONE (commit 566eb67)
 
