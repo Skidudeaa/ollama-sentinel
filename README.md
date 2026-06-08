@@ -65,6 +65,8 @@ This is the primary product surface. Everything the sentinel knows is visible he
 
 > **Heads up — directory matters.** `ollama-sentinel run` reads `ollama-sentinel.yaml` from the **current working directory**. If you have stale YAMLs in multiple project folders, the cwd one wins. Run from anywhere with `ollama-sentinel run --config <abs-path-to-ollama-sentinel.yaml>` if that's a problem.
 
+> **Hot-reload (POSIX).** Edit the YAML while the watcher is running and send `kill -HUP <pid>` — the sentinel reloads model and `request_timeout` settings in place without dropping the watch. (Changing `watch.directory` still needs a restart; it's warned-and-skipped on reload.)
+
 ## Documentation
 
 See **[docs/GUIDE.md](docs/GUIDE.md)** for the full user guide covering:

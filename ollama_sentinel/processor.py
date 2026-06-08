@@ -345,6 +345,23 @@ class FileProcessor:
         if self._cache is not None and hasattr(self._cache, "close"):
             self._cache.close()
 
+    async def apply_ollama_config(self, ollama_config) -> None:
+        """Rebuild the Ollama client in place from a new OllamaConfig.
+
+        Closes the existing client, swaps in one built from ``ollama_config``,
+        and recomputes the token budget from the (possibly changed) default
+        model. Backs the hot-reload path so the watcher loop keeps running
+        while model/timeout settings change.
+        """
+        await self.ollama_client.close()
+        self.ollama_client = OllamaClient(ollama_config.model_dump())
+        self.config.ollama = ollama_config
+        default_model = ollama_config.models["default"]
+        self.total_budget = max(
+            1024,
+            default_model.context_window - default_model.output_reserve_tokens,
+        )
+
     def prepare_file_content(self, file_change: FileChange) -> None:
         """
         Prepare file content or git diff for review.

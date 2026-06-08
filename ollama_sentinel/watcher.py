@@ -4,6 +4,7 @@ File watcher for Ollama Sentinel.
 import asyncio
 import logging
 import pathlib
+import signal
 import time
 from typing import Dict, Optional, Set
 
@@ -368,9 +369,64 @@ class FileSentinel:
                 self.pending_changes.update(stable_files)
                 await self.process_pending_changes()
     
+    async def reload_config(self) -> bool:
+        """Reload the YAML config and apply model/timeout changes in place.
+
+        Returns True when a reload was applied, False when the file failed to
+        load (the running config is left untouched in that case). A changed
+        ``watch.directory`` is warned-and-skipped — the running ``awatch`` loop
+        is bound to the original tree, so a restart is required to move it.
+        """
+        try:
+            new_config = load_config(self.config_path)
+        except Exception as e:  # defensive: load_config already swallows most
+            log.error("Config reload failed (%s); keeping current config.", e)
+            return False
+        if not new_config:
+            log.error("Config reload failed; keeping current config.")
+            return False
+
+        new_dir = pathlib.Path(new_config.watch.directory).resolve()
+        cur_dir = pathlib.Path(self.config.watch.directory).resolve()
+        if new_dir != cur_dir:
+            log.warning(
+                "watch.directory change ignored on hot-reload (%s -> %s); "
+                "restart the watcher to change the watched tree.",
+                cur_dir, new_dir,
+            )
+
+        # Only model/timeout settings are honored. apply_ollama_config mutates
+        # the shared config object's `ollama`, so self.config stays current
+        # without reassigning it (which would desync from the processor).
+        await self.processor.apply_ollama_config(new_config.ollama)
+        log.info("Config hot-reloaded: model/timeout settings updated.")
+        return True
+
+    def install_reload_handler(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Register a SIGHUP handler that hot-reloads config (POSIX only)."""
+        if not hasattr(signal, "SIGHUP"):
+            return
+
+        def _on_sighup() -> None:
+            log.info("SIGHUP received — reloading configuration.")
+            loop.create_task(self.reload_config())
+
+        try:
+            loop.add_signal_handler(signal.SIGHUP, _on_sighup)
+            log.info("SIGHUP hot-reload handler installed.")
+        except (NotImplementedError, RuntimeError) as e:
+            log.warning("Could not install SIGHUP reload handler: %s", e)
+
     async def run(self) -> None:
         """Run the sentinel."""
+        loop = asyncio.get_running_loop()
+        self.install_reload_handler(loop)
         try:
             await self.watch_directory()
         finally:
+            if hasattr(signal, "SIGHUP"):
+                try:
+                    loop.remove_signal_handler(signal.SIGHUP)
+                except (NotImplementedError, RuntimeError):
+                    pass
             await self.processor.close()
