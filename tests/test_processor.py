@@ -311,6 +311,50 @@ class TestOllamaClient:
 
         assert result == expected
 
+    async def test_done_reason_length_logs_truncation_warning(
+        self, ollama_config, httpx_mock: HTTPXMock, caplog
+    ):
+        """done_reason=length means Ollama cut the output at num_predict —
+        warn with the cap value so the user knows which knob to raise."""
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={
+                "message": {"content": '{"summary": "cut off mid'},
+                "done_reason": "length",
+            },
+        )
+
+        client = OllamaClient(ollama_config)
+        try:
+            result = await client.generate_review("default", "prompt")
+        finally:
+            await client.close()
+
+        assert result == '{"summary": "cut off mid'
+        warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        assert any("output-token cap" in m and "2000" in m for m in warnings)
+
+    async def test_done_reason_stop_logs_no_warning(
+        self, ollama_config, httpx_mock: HTTPXMock, caplog
+    ):
+        """A normal completion (done_reason=stop) must not warn."""
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={
+                "message": {"content": "complete review"},
+                "done_reason": "stop",
+            },
+        )
+
+        client = OllamaClient(ollama_config)
+        try:
+            result = await client.generate_review("default", "prompt")
+        finally:
+            await client.close()
+
+        assert result == "complete review"
+        assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+
 
 # ---------------------------------------------------------------------------
 # FileProcessor.format_prompt tests

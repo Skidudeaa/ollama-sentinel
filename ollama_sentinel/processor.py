@@ -54,6 +54,57 @@ def _review_format(config) -> Optional[Union[str, Dict[str, Any]]]:
     return _REVIEW_SCHEMA if config.processing.grounding else None
 
 
+def _salvage_truncated_review(raw: Any) -> Optional[Dict[str, Any]]:
+    """Recover the complete findings from a truncated grounded review.
+
+    When generation hits the output-token cap (Ollama ``done_reason:
+    "length"``), the schema-constrained JSON is cut mid-stream — the document
+    never closes, but every finding emitted before the cut is still
+    well-formed. Trim to the last complete object in the ``findings`` array,
+    close the document, and re-parse. Returns the salvaged dict only when the
+    result is schema-conformant; anything else (true prose from a
+    schema-ignoring model, a cut inside ``summary``) returns None so the
+    caller degrades to the legacy extractor as before.
+    """
+    if not isinstance(raw, str):
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    last_finding_close = -1
+    for i, ch in enumerate(raw):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            # A '}' landing back on depth 2 closes one item of the top-level
+            # findings array: {root(1) -> findings [(2) -> finding {(3).
+            if ch == "}" and depth == 2:
+                last_finding_close = i + 1
+    if last_finding_close < 0:
+        return None
+    try:
+        parsed = json.loads(raw[:last_finding_close] + "]}")
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if (
+        isinstance(parsed, dict)
+        and "summary" in parsed
+        and isinstance(parsed.get("findings"), list)
+    ):
+        return parsed
+    return None
+
+
 def _is_retryable_ollama_error(exc: BaseException) -> bool:
     """Return True for transient Ollama HTTP errors worth retrying.
 
@@ -248,7 +299,16 @@ class OllamaClient:
         try:
             response = await self.client.post(url, headers=headers, json=payload)
             response.raise_for_status()
-            return response.json()["message"]["content"]
+            data = response.json()
+            if data.get("done_reason") == "length":
+                log.warning(
+                    "Model %s hit the output-token cap (num_predict=%s); the "
+                    "response is truncated. Raise the model's max_tokens / "
+                    "output_reserve_tokens if this recurs.",
+                    name,
+                    options.get("num_predict", "unset"),
+                )
+            return data["message"]["content"]
         except httpx.ReadTimeout:
             log.error(
                 "Ollama API read timeout after %ss for model %s "
@@ -635,10 +695,26 @@ class FileProcessor:
                     "grounding_parse_failed": True,
                 }
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            # The model ignored Ollama's `format` schema (common for :cloud
-            # models and markdown-instructed system prompts) and returned
-            # prose. Recoverable: the watcher degrades to the legacy regex
-            # extractor on the prose. WARNING, not ERROR — handled path.
+            # Two distinct failure shapes land here. (1) Generation hit the
+            # output-token cap (done_reason "length") and the JSON was cut
+            # mid-stream — the findings emitted before the cut are intact, so
+            # salvage them rather than discarding the structured review.
+            salvaged = _salvage_truncated_review(raw)
+            if salvaged is not None:
+                log.warning(
+                    "Grounded review JSON was truncated mid-stream (%s) — "
+                    "output likely hit the token cap; salvaged the summary "
+                    "and %d complete finding(s). Raise the model's "
+                    "output_reserve_tokens / max_tokens to stop losing "
+                    "findings.",
+                    e,
+                    len(salvaged["findings"]),
+                )
+                return salvaged
+            # (2) The model ignored Ollama's `format` schema (common for
+            # :cloud models and markdown-instructed system prompts) and
+            # returned prose. Recoverable: the watcher degrades to the legacy
+            # regex extractor on the prose. WARNING, not ERROR — handled path.
             log.warning(
                 "Grounded review did not parse as JSON (%s); "
                 "degrading to legacy prose extractor", e,

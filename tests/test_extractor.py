@@ -575,6 +575,178 @@ class TestParseReviewResponse:
         assert result["findings"] == []
         assert result["grounding_parse_failed"] is True
 
+    async def test_truncated_grounded_json_salvages_complete_findings(
+        self, sentinel_config, tmp_path, httpx_mock, caplog
+    ):
+        """Output cut at num_predict mid-finding recovers the summary and
+        every complete finding instead of degrading to the prose extractor."""
+        from ollama_sentinel.processor import FileProcessor, FileChange
+        from watchfiles import Change
+        import json
+
+        source = tmp_path / "big.py"
+        source.write_text("a = 1\nb = 2\n")
+
+        full = json.dumps(
+            {
+                "summary": "Two issues found.",
+                "findings": [
+                    {
+                        "line_start": 1,
+                        "line_end": 1,
+                        "category": "bug",
+                        "severity": "high",
+                        "verbatim_excerpt": "a = 1",
+                        "description": "First issue",
+                    },
+                    {
+                        "line_start": 2,
+                        "line_end": 2,
+                        "category": "style",
+                        "severity": "low",
+                        "verbatim_excerpt": "b = 2",
+                        "description": "Second issue",
+                    },
+                ],
+            },
+            indent=2,
+        )
+        # Cut mid-way through the second finding's description string —
+        # the shape Ollama produces when generation hits num_predict.
+        truncated = full[: full.rindex("Second iss") + len("Second iss")]
+
+        httpx_mock.add_response(
+            url="http://localhost:11434/api/chat",
+            json={"message": {"content": truncated}, "done_reason": "length"},
+        )
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified)
+        try:
+            result = await fp.generate_review(fc)
+        finally:
+            await fp.ollama_client.close()
+
+        assert result["summary"] == "Two issues found."
+        assert len(result["findings"]) == 1
+        assert result["findings"][0]["description"] == "First issue"
+        assert "grounding_parse_failed" not in result
+
+        warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        assert any("salvaged" in m for m in warnings)
+
+    async def test_truncated_before_any_complete_finding_degrades(
+        self, sentinel_config, tmp_path, httpx_mock
+    ):
+        """Truncation before the first finding closes leaves nothing to
+        salvage — degrade to the legacy extractor as before."""
+        from ollama_sentinel.processor import FileProcessor, FileChange
+        from watchfiles import Change
+
+        source = tmp_path / "tiny.py"
+        source.write_text("x = 1\n")
+
+        truncated = '{\n  "summary": "Cut off mid-summ'
+        httpx_mock.add_response(
+            url="http://localhost:11434/api/chat",
+            json={"message": {"content": truncated}, "done_reason": "length"},
+        )
+        fp = FileProcessor(sentinel_config)
+        fc = FileChange(path=source, change_type=Change.modified)
+        try:
+            result = await fp.generate_review(fc)
+        finally:
+            await fp.ollama_client.close()
+
+        assert result["summary"] == truncated
+        assert result["findings"] == []
+        assert result["grounding_parse_failed"] is True
+
+
+class TestSalvageTruncatedReview:
+    """Unit tests for the pure _salvage_truncated_review helper."""
+
+    def _make_finding(self, n: int, excerpt: str = "code") -> dict:
+        return {
+            "line_start": n,
+            "line_end": n,
+            "category": "bug",
+            "severity": "low",
+            "verbatim_excerpt": excerpt,
+            "description": f"finding {n}",
+        }
+
+    def test_recovers_findings_before_the_cut(self):
+        import json
+        from ollama_sentinel.processor import _salvage_truncated_review
+
+        full = json.dumps(
+            {
+                "summary": "s",
+                "findings": [self._make_finding(1), self._make_finding(2)],
+            },
+            indent=2,
+        )
+        truncated = full[: full.rindex("finding 2")]
+
+        salvaged = _salvage_truncated_review(truncated)
+        assert salvaged is not None
+        assert salvaged["summary"] == "s"
+        assert len(salvaged["findings"]) == 1
+
+    def test_braces_and_escaped_quotes_inside_strings_do_not_confuse_scan(self):
+        import json
+        from ollama_sentinel.processor import _salvage_truncated_review
+
+        tricky = 'if x { return "}\\"]}" }'
+        full = json.dumps(
+            {
+                "summary": "s",
+                "findings": [
+                    self._make_finding(1, excerpt=tricky),
+                    self._make_finding(2),
+                ],
+            },
+            indent=2,
+        )
+        truncated = full[: full.rindex("finding 2")]
+
+        salvaged = _salvage_truncated_review(truncated)
+        assert salvaged is not None
+        assert len(salvaged["findings"]) == 1
+        assert salvaged["findings"][0]["verbatim_excerpt"] == tricky
+
+    def test_cut_between_findings_after_comma(self):
+        import json
+        from ollama_sentinel.processor import _salvage_truncated_review
+
+        full = json.dumps(
+            {
+                "summary": "s",
+                "findings": [self._make_finding(1), self._make_finding(2)],
+            },
+            indent=2,
+        )
+        # Cut right after the comma that separates the two findings.
+        cut = full.index("},") + 2
+        salvaged = _salvage_truncated_review(full[:cut])
+        assert salvaged is not None
+        assert len(salvaged["findings"]) == 1
+
+    def test_prose_returns_none(self):
+        from ollama_sentinel.processor import _salvage_truncated_review
+
+        assert _salvage_truncated_review("This is a prose review. No JSON.") is None
+
+    def test_truncated_summary_returns_none(self):
+        from ollama_sentinel.processor import _salvage_truncated_review
+
+        assert _salvage_truncated_review('{"summary": "cut mid-str') is None
+
+    def test_non_string_returns_none(self):
+        from ollama_sentinel.processor import _salvage_truncated_review
+
+        assert _salvage_truncated_review(None) is None
+
 
 # ---------------------------------------------------------------------------
 # Recipe instruction ordering test (Step 2)
