@@ -5,7 +5,7 @@ import yaml
 from typer.testing import CliRunner
 
 from ollama_sentinel.cli import app
-from ollama_sentinel.violation_db import Finding, Incident, ViolationDB
+from ollama_sentinel.violation_db import Finding, Guardrail, Incident, ViolationDB
 
 
 runner = CliRunner()
@@ -1253,3 +1253,182 @@ class TestPruneCommand:
         result = runner.invoke(app, ["prune", "--config", str(cfg)])
         assert result.exit_code == 0
         assert "No violation database" in result.output
+
+
+# ---------------------------------------------------------------------------
+# U2 — `ollama-sentinel guardrail` authoring + lifecycle sub-commands
+# ---------------------------------------------------------------------------
+
+
+def _list_json(cfg, *extra):
+    """Run `guardrail list -f json [extra]` and return the parsed rows."""
+    r = runner.invoke(
+        app, ["guardrail", "list", "--config", str(cfg), "-f", "json", *extra]
+    )
+    assert r.exit_code == 0, r.output
+    return json.loads(r.output)
+
+
+class TestGuardrailCLI:
+    """Tests for the `guardrail` authoring + lifecycle sub-app (U2)."""
+
+    def test_add_creates_active_guardrail_with_scope(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        r = runner.invoke(app, [
+            "guardrail", "add", "no-bare-except",
+            "--assertion", "Do not catch bare Exception without re-raising.",
+            "--category", "bug", "--path", "src/*.py",
+            "--config", str(cfg),
+        ])
+        assert r.exit_code == 0, r.output
+
+        rows = _list_json(cfg)
+        assert len(rows) == 1
+        g = rows[0]
+        assert g["name"] == "no-bare-except"
+        assert g["assertion"] == "Do not catch bare Exception without re-raising."
+        assert g["scope_category"] == "bug"
+        assert g["scope_path_glob"] == "src/*.py"
+        assert g["status"] == "active"
+        assert g["source"] == "manual"
+
+    def test_add_creates_db_when_absent(self, tmp_path, monkeypatch):
+        """Authoring must work on a fresh setup with no prior reviews/DB."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        assert not db_path.exists()
+        r = runner.invoke(app, [
+            "guardrail", "add", "g1", "--assertion", "a", "--config", str(cfg),
+        ])
+        assert r.exit_code == 0, r.output
+        assert db_path.exists()
+
+    def test_add_without_scope_is_broad(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        r = runner.invoke(app, [
+            "guardrail", "add", "broad", "--assertion", "Applies everywhere.",
+            "--config", str(cfg),
+        ])
+        assert r.exit_code == 0, r.output
+        g = _list_json(cfg)[0]
+        assert g["scope_category"] is None
+        assert g["scope_path_glob"] is None
+
+    def test_edit_changes_assertion_and_scope(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        runner.invoke(app, [
+            "guardrail", "add", "g", "--assertion", "old", "--category", "bug",
+            "--config", str(cfg),
+        ])
+        gid = _list_json(cfg)[0]["id"]
+        r = runner.invoke(app, [
+            "guardrail", "edit", str(gid),
+            "--assertion", "new assertion", "--category", "security",
+            "--config", str(cfg),
+        ])
+        assert r.exit_code == 0, r.output
+        g = _list_json(cfg)[0]
+        assert g["assertion"] == "new assertion"
+        assert g["scope_category"] == "security"
+
+    def test_disable_removes_from_active_and_enable_restores(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        runner.invoke(app, [
+            "guardrail", "add", "g", "--assertion", "a", "--config", str(cfg),
+        ])
+        gid = _list_json(cfg)[0]["id"]
+
+        r = runner.invoke(app, ["guardrail", "disable", str(gid), "--config", str(cfg)])
+        assert r.exit_code == 0, r.output
+        assert _list_json(cfg) == []  # default list is active-only
+
+        r = runner.invoke(app, ["guardrail", "enable", str(gid), "--config", str(cfg)])
+        assert r.exit_code == 0, r.output
+        assert [g["id"] for g in _list_json(cfg)] == [gid]
+
+    def test_list_all_includes_non_active(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        runner.invoke(app, ["guardrail", "add", "g", "--assertion", "a", "--config", str(cfg)])
+        gid = _list_json(cfg)[0]["id"]
+        runner.invoke(app, ["guardrail", "disable", str(gid), "--config", str(cfg)])
+        assert _list_json(cfg) == []
+        all_rows = _list_json(cfg, "--all")
+        assert [g["status"] for g in all_rows] == ["disabled"]
+
+    def test_dismiss_is_terminal_and_idempotent(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        runner.invoke(app, ["guardrail", "add", "g", "--assertion", "a", "--config", str(cfg)])
+        gid = _list_json(cfg)[0]["id"]
+
+        r1 = runner.invoke(app, ["guardrail", "dismiss", str(gid), "--config", str(cfg)])
+        assert r1.exit_code == 0, r1.output
+        # Dismiss again — no error, stays dismissed.
+        r2 = runner.invoke(app, ["guardrail", "dismiss", str(gid), "--config", str(cfg)])
+        assert r2.exit_code == 0, r2.output
+        all_rows = _list_json(cfg, "--all")
+        assert [g["status"] for g in all_rows] == ["dismissed"]
+
+    def test_list_table_renders_name_and_scope(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("COLUMNS", "200")
+        cfg = _make_report_config(tmp_path)
+        runner.invoke(app, [
+            "guardrail", "add", "no-eval", "--assertion", "Never call eval.",
+            "--category", "security", "--config", str(cfg),
+        ])
+        r = runner.invoke(app, ["guardrail", "list", "--config", str(cfg)])
+        assert r.exit_code == 0, r.output
+        assert "no-eval" in r.output
+        assert "security" in r.output
+
+    def test_list_empty_message(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        ViolationDB(str(db_path)).close()  # empty DB
+        r = runner.invoke(app, ["guardrail", "list", "--config", str(cfg)])
+        assert r.exit_code == 0
+        assert "No guardrails" in r.output
+
+    def test_list_no_db_message(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        r = runner.invoke(app, ["guardrail", "list", "--config", str(cfg)])
+        assert r.exit_code == 0
+        assert "No guardrails" in r.output
+
+    def test_edit_missing_id_errors(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        runner.invoke(app, ["guardrail", "add", "g", "--assertion", "a", "--config", str(cfg)])
+        r = runner.invoke(app, [
+            "guardrail", "edit", "9999", "--assertion", "x", "--config", str(cfg),
+        ])
+        assert r.exit_code == 1
+        assert "No guardrail with id" in r.output
+
+    def test_disable_missing_id_errors(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        runner.invoke(app, ["guardrail", "add", "g", "--assertion", "a", "--config", str(cfg)])
+        r = runner.invoke(app, ["guardrail", "disable", "9999", "--config", str(cfg)])
+        assert r.exit_code == 1
+        assert "No guardrail with id" in r.output
+
+    def test_dismiss_missing_id_errors(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        ViolationDB(str(db_path)).close()
+        r = runner.invoke(app, ["guardrail", "dismiss", "9999", "--config", str(cfg)])
+        assert r.exit_code == 1
+        assert "No guardrail with id" in r.output
