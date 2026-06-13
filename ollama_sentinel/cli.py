@@ -962,6 +962,262 @@ def prune(
     )
 
 
+# ---------------------------------------------------------------------------
+# guardrail — author + curate project guardrails (U2)
+# ---------------------------------------------------------------------------
+
+guardrail_app = typer.Typer(
+    help="Author and curate project guardrails — named, LLM-checked review rules.",
+    no_args_is_help=True,
+)
+app.add_typer(guardrail_app, name="guardrail")
+
+
+def _guardrail_db_path(config_path: str) -> pathlib.Path:
+    """Resolve the ViolationDB path from the config (or exit on a bad config)."""
+    config = _load_config_or_exit(config_path)
+    return pathlib.Path(config.watch.directory).resolve() / config.memory.db_path
+
+
+def _transition_guardrail(
+    guardrail_id: int, config_path: str, *, status: str, action: str, past: str,
+) -> None:
+    """Shared body for disable/enable/dismiss: validate id, set status, report."""
+    from .violation_db import ViolationDB
+
+    db_path = _guardrail_db_path(config_path)
+    if not db_path.exists():
+        console.print(
+            f"[red]No guardrail with id {guardrail_id}; nothing to {action}.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    db = ViolationDB(str(db_path))
+    try:
+        if db.get_guardrail(guardrail_id) is None:
+            console.print(
+                f"[red]No guardrail with id {guardrail_id}; nothing to {action}.[/red]"
+            )
+            raise typer.Exit(code=1)
+        db.set_guardrail_status(guardrail_id, status)
+    finally:
+        db.close()
+
+    console.print(f"[green]{past} guardrail {guardrail_id}.[/green]")
+
+
+@guardrail_app.command("add")
+def guardrail_add(
+    name: str = typer.Argument(..., help="Short rule name, e.g. no-bare-except"),
+    assertion: str = typer.Option(
+        ..., "--assertion", "-a",
+        help="Natural-language rule the review model checks against code",
+    ),
+    category: Optional[str] = typer.Option(
+        None, "--category",
+        help="Scope to one finding category (e.g. security); omit to apply broadly",
+    ),
+    path_glob: Optional[str] = typer.Option(
+        None, "--path",
+        help="Scope to files matching a glob (e.g. src/*.py); omit to apply broadly",
+    ),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """Author a new guardrail. It is active immediately (no incident history needed)."""
+    from .violation_db import Guardrail, ViolationDB
+
+    db_path = _guardrail_db_path(config_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)  # author before any review
+
+    db = ViolationDB(str(db_path))
+    try:
+        gid = db.create_guardrail(
+            Guardrail(
+                name=name,
+                assertion=assertion,
+                scope_category=category,
+                scope_path_glob=path_glob,
+            )
+        )
+    finally:
+        db.close()
+
+    console.print(f"[green]Added guardrail {gid}: {name} (active).[/green]")
+
+
+@guardrail_app.command("list")
+def guardrail_list(
+    show_all: bool = typer.Option(
+        False, "--all",
+        help="Include disabled/dismissed guardrails (default: active only)",
+    ),
+    status: Optional[str] = typer.Option(
+        None, "--status",
+        help="Filter by exact status: active | disabled | dismissed",
+    ),
+    output_format: str = typer.Option(
+        "table", "--format", "-f", help="Output format: table or json",
+    ),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """List guardrails. Defaults to active; --all or --status widens the view."""
+    import json as json_mod
+
+    from rich.table import Table
+
+    from .violation_db import ViolationDB
+
+    # Precedence: explicit --status wins, then --all (no filter), else active.
+    status_filter = status if status is not None else (None if show_all else "active")
+
+    db_path = _guardrail_db_path(config_path)
+    rows: list = []
+    if db_path.exists():
+        db = ViolationDB(str(db_path))
+        try:
+            rows = db.list_guardrails(status=status_filter)
+        finally:
+            db.close()
+
+    # JSON output is always valid JSON, even when empty (`[]`) — it may be piped.
+    if output_format == "json":
+        console.print(json_mod.dumps(rows, indent=2))
+        return
+
+    if not rows:
+        console.print("[green]No guardrails found.[/green]")
+        raise typer.Exit()
+
+    table = Table(title=f"Guardrails ({len(rows)})")
+    table.add_column("ID", style="bold", width=5)
+    table.add_column("Name", style="cyan")
+    table.add_column("Status", width=10)
+    table.add_column("Src", width=9)
+    table.add_column("Scope", width=22)
+    table.add_column("Assertion")
+
+    for r in rows:
+        scope_bits = []
+        if r["scope_category"]:
+            scope_bits.append(r["scope_category"])
+        if r["scope_path_glob"]:
+            scope_bits.append(r["scope_path_glob"])
+        scope = " · ".join(scope_bits) if scope_bits else "—"
+        table.add_row(
+            str(r["id"]),
+            r["name"],
+            r["status"],
+            r["source"],
+            scope,
+            (r["assertion"] or "")[:70],
+        )
+    console.print(table)
+
+
+@guardrail_app.command("edit")
+def guardrail_edit(
+    guardrail_id: int = typer.Argument(..., help="ID of the guardrail to edit"),
+    name: Optional[str] = typer.Option(None, "--name", help="New name"),
+    assertion: Optional[str] = typer.Option(
+        None, "--assertion", "-a", help="New assertion text",
+    ),
+    category: Optional[str] = typer.Option(
+        None, "--category", help="New scope category",
+    ),
+    path_glob: Optional[str] = typer.Option(
+        None, "--path", help="New scope path glob",
+    ),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """Edit a guardrail's name, assertion, or scope. Only the flags you pass change."""
+    from .violation_db import ViolationDB
+
+    if name is None and assertion is None and category is None and path_glob is None:
+        console.print(
+            "[yellow]Nothing to change; pass --name/--assertion/--category/--path.[/yellow]"
+        )
+        raise typer.Exit()
+
+    db_path = _guardrail_db_path(config_path)
+    if not db_path.exists():
+        console.print(f"[red]No guardrail with id {guardrail_id}.[/red]")
+        raise typer.Exit(code=1)
+
+    db = ViolationDB(str(db_path))
+    try:
+        if db.get_guardrail(guardrail_id) is None:
+            console.print(f"[red]No guardrail with id {guardrail_id}.[/red]")
+            raise typer.Exit(code=1)
+        kwargs: dict = {}
+        if name is not None:
+            kwargs["name"] = name
+        if assertion is not None:
+            kwargs["assertion"] = assertion
+        if category is not None:
+            kwargs["scope_category"] = category
+        if path_glob is not None:
+            kwargs["scope_path_glob"] = path_glob
+        db.update_guardrail(guardrail_id, **kwargs)
+    finally:
+        db.close()
+
+    console.print(f"[green]Updated guardrail {guardrail_id}.[/green]")
+
+
+@guardrail_app.command("disable")
+def guardrail_disable(
+    guardrail_id: int = typer.Argument(..., help="ID of the guardrail to disable"),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """Disable a guardrail. Disabled guardrails are not injected into reviews."""
+    _transition_guardrail(
+        guardrail_id, config_path, status="disabled",
+        action="disable", past="Disabled",
+    )
+
+
+@guardrail_app.command("enable")
+def guardrail_enable(
+    guardrail_id: int = typer.Argument(..., help="ID of the guardrail to re-enable"),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """Re-enable a disabled guardrail, restoring it to the active set."""
+    _transition_guardrail(
+        guardrail_id, config_path, status="active",
+        action="enable", past="Enabled",
+    )
+
+
+@guardrail_app.command("dismiss")
+def guardrail_dismiss(
+    guardrail_id: int = typer.Argument(..., help="ID of the guardrail to dismiss"),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """Dismiss a guardrail (terminal). Dismissed guardrails are never injected."""
+    _transition_guardrail(
+        guardrail_id, config_path, status="dismissed",
+        action="dismiss", past="Dismissed",
+    )
+
+
 @app.command()
 def triage(
     input_path: Optional[str] = typer.Argument(
