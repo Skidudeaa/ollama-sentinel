@@ -128,6 +128,168 @@ class TestBuildReviewContext:
         assert pos_1 < pos_2
 
 
+def _guardrail(**overrides) -> dict:
+    """A guardrail row dict (as returned by ViolationDB.get_active_guardrails)."""
+    g = dict(
+        id=1, name="g", assertion="do the thing",
+        scope_category=None, scope_path_glob=None,
+        status="active", source="manual",
+    )
+    g.update(overrides)
+    return g
+
+
+class TestGuardrailInjection:
+    """U3 — relevance-scoped guardrail injection into the review prompt."""
+
+    async def test_in_scope_guardrail_appears_with_assertion(self):
+        counter = TokenCounter()
+        out = await build_review_context(
+            file_rel_path="src/app.py", file_type="py",
+            content="x = 1\n", diff=None, chunk_info="",
+            prior_violations=[],
+            guardrails=[_guardrail(name="no-eval",
+                                   assertion="Never call eval on user input.")],
+            counter=counter, total_budget=600, retriever=NullRetriever(),
+        )
+        assert "PROJECT GUARDRAILS" in out
+        assert "no-eval" in out
+        assert "Never call eval on user input." in out
+
+    async def test_path_glob_match_includes(self):
+        counter = TokenCounter()
+        out = await build_review_context(
+            file_rel_path="src/app.py", file_type="py",
+            content="x = 1\n", diff=None, chunk_info="",
+            prior_violations=[],
+            guardrails=[_guardrail(scope_path_glob="src/*.py",
+                                   assertion="scoped rule text")],
+            counter=counter, total_budget=600, retriever=NullRetriever(),
+        )
+        assert "scoped rule text" in out
+
+    async def test_path_glob_mismatch_excludes(self):
+        counter = TokenCounter()
+        out = await build_review_context(
+            file_rel_path="src/app.py", file_type="py",
+            content="x = 1\n", diff=None, chunk_info="",
+            prior_violations=[],
+            guardrails=[_guardrail(scope_path_glob="lib/*.py",
+                                   assertion="lib only rule")],
+            counter=counter, total_budget=600, retriever=NullRetriever(),
+        )
+        assert "PROJECT GUARDRAILS" not in out
+        assert "lib only rule" not in out
+
+    async def test_nested_path_not_matched_by_single_star(self):
+        """src/*.py admits src/app.py but NOT src/sub/app.py (segment-precise)."""
+        counter = TokenCounter()
+        out = await build_review_context(
+            file_rel_path="src/sub/app.py", file_type="py",
+            content="x = 1\n", diff=None, chunk_info="",
+            prior_violations=[],
+            guardrails=[_guardrail(scope_path_glob="src/*.py",
+                                   assertion="single star rule")],
+            counter=counter, total_budget=600, retriever=NullRetriever(),
+        )
+        assert "single star rule" not in out
+
+    async def test_category_only_scope_applies_to_any_file(self):
+        """A category-only scope does not exclude by file (a file has no category)."""
+        counter = TokenCounter()
+        out = await build_review_context(
+            file_rel_path="anywhere/here.py", file_type="py",
+            content="x = 1\n", diff=None, chunk_info="",
+            prior_violations=[],
+            guardrails=[_guardrail(scope_category="security", scope_path_glob=None,
+                                   assertion="security matters everywhere")],
+            counter=counter, total_budget=600, retriever=NullRetriever(),
+        )
+        assert "security matters everywhere" in out
+
+    async def test_zero_guardrails_emits_no_section(self):
+        counter = TokenCounter()
+        out = await build_review_context(
+            file_rel_path="src/app.py", file_type="py",
+            content="x = 1\n", diff=None, chunk_info="",
+            prior_violations=[], guardrails=[],
+            counter=counter, total_budget=600, retriever=NullRetriever(),
+        )
+        assert "PROJECT GUARDRAILS" not in out
+
+    async def test_guardrails_section_above_prior_unresolved(self):
+        counter = TokenCounter()
+        violation = {
+            "id": 1, "severity": "high", "category": "security",
+            "line_start": 10, "line_end": 10, "description": "hardcoded password",
+            "file_path": "src/a.py", "occurrence_count": 1,
+            "first_seen": "2026-01-01T00:00:00",
+        }
+        out = await build_review_context(
+            file_rel_path="src/a.py", file_type="py",
+            content="x = 1\n", diff=None, chunk_info="",
+            prior_violations=[violation],
+            guardrails=[_guardrail(name="rule", assertion="a guardrail assertion")],
+            counter=counter, total_budget=1500, retriever=NullRetriever(),
+        )
+        assert "PROJECT GUARDRAILS" in out and "PRIOR UNRESOLVED" in out
+        assert out.index("PROJECT GUARDRAILS") < out.index("PRIOR UNRESOLVED")
+
+    async def test_retriever_ranks_guardrails_by_similarity(self):
+        content = "x = 1\n"
+        query_key = f"query:{hashlib.sha256(content.encode()).hexdigest()}"
+        embedder = _FakeEmbedder({
+            query_key: [1.0, 0.0],
+            "guardrail:1": [1.0, 0.0],   # cosine 1.0 (most similar)
+            "guardrail:2": [0.0, 1.0],   # cosine 0.0 (least similar)
+        })
+        retriever = SemanticRetriever(embedder=embedder)
+        # Listed bravo-first so NullRetriever would keep bravo on top; the
+        # semantic retriever must reorder alpha (id 1) above bravo (id 2).
+        guardrails = [
+            _guardrail(id=2, name="bravo", assertion="bravo rule text"),
+            _guardrail(id=1, name="alpha", assertion="alpha rule text"),
+        ]
+        out = await build_review_context(
+            file_rel_path="src/a.py", file_type="py",
+            content=content, diff=None, chunk_info="",
+            prior_violations=[], guardrails=guardrails,
+            counter=TokenCounter(), total_budget=1000, retriever=retriever,
+        )
+        assert "PROJECT GUARDRAILS" in out
+        assert out.index("alpha rule text") < out.index("bravo rule text")
+
+    async def test_budget_cap_drops_lowest_ranked_guardrail(self):
+        """When the section budget is tight, the retriever's top pick survives
+        and the lowest-ranked guardrail is dropped (soft_budget cap holds)."""
+        content = "x = 1\n"
+        query_key = f"query:{hashlib.sha256(content.encode()).hexdigest()}"
+        embedder = _FakeEmbedder({
+            query_key: [1.0, 0.0],
+            "guardrail:1": [1.0, 0.0],   # most similar → kept
+            "guardrail:2": [0.0, 1.0],   # least similar → dropped under cap
+        })
+        retriever = SemanticRetriever(embedder=embedder)
+        guardrails = [
+            _guardrail(id=2, name="bravo",
+                       assertion="BRAVO " + "padding " * 30),
+            _guardrail(id=1, name="alpha",
+                       assertion="ALPHA " + "padding " * 30),
+        ]
+        # grounding=False drops the MUST_FIT INSTRUCTIONS section so the budget
+        # math is just FILE (0.70) + guardrails (0.20). A tight total leaves room
+        # for ~one padded guardrail item.
+        out = await build_review_context(
+            file_rel_path="src/a.py", file_type="py",
+            content=content, diff=None, chunk_info="",
+            prior_violations=[], guardrails=guardrails,
+            counter=TokenCounter(), total_budget=140, retriever=retriever,
+            grounding=False,
+        )
+        assert "ALPHA" in out       # top-ranked kept
+        assert "BRAVO" not in out   # lowest-ranked capped out
+
+
 from dataclasses import dataclass, field
 from typing import List
 

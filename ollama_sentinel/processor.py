@@ -413,6 +413,7 @@ class FileProcessor:
         chunk_index: int = 0,
         total_chunks: int = 1,
         prior_violations: Optional[List[dict]] = None,
+        guardrails: Optional[List[dict]] = None,
     ) -> str:
         """Format the review prompt via the shared context recipe."""
         from ollama_sentinel.context import build_review_context
@@ -431,7 +432,24 @@ class FileProcessor:
             total_budget=self.total_budget,
             retriever=self.retriever,
             grounding=self.config.processing.grounding,
+            guardrails=guardrails or [],
         )
+
+    async def _get_active_guardrails(self) -> List[dict]:
+        """Load active project guardrails for injection, or [] on any failure.
+
+        Best-effort and read-only: a missing DB or a query error degrades to no
+        guardrails so review generation is never blocked (consistent with the
+        prior-violation recall layers). Only ``active`` guardrails are returned,
+        so disabled/dismissed rules are never injected.
+        """
+        if not self.violation_db:
+            return []
+        try:
+            return await asyncio.to_thread(self.violation_db.get_active_guardrails)
+        except Exception as e:
+            log.warning("Guardrail load failed (%s); continuing without guardrails.", e)
+            return []
 
     async def _get_ranked_prior_violations(
         self, file_path: pathlib.Path, *, file_content: Optional[str]
@@ -594,9 +612,12 @@ class FileProcessor:
         prior = await self._get_ranked_prior_violations(
             file_change.path, file_content=file_change.content,
         )
+        guardrails = await self._get_active_guardrails()
 
         if file_change.diff is not None:
-            prompt = await self.format_prompt(file_change, prior_violations=prior)
+            prompt = await self.format_prompt(
+                file_change, prior_violations=prior, guardrails=guardrails,
+            )
             raw = await self.ollama_client.generate_review(
                 model_role, prompt, response_format=_review_format(self.config),
             )
@@ -604,7 +625,9 @@ class FileProcessor:
 
         content = file_change.content
         if not content:
-            prompt = await self.format_prompt(file_change, prior_violations=prior)
+            prompt = await self.format_prompt(
+                file_change, prior_violations=prior, guardrails=guardrails,
+            )
             raw = await self.ollama_client.generate_review(
                 model_role, prompt, response_format=_review_format(self.config),
             )
@@ -617,7 +640,8 @@ class FileProcessor:
 
         if len(chunks) == 1:
             prompt = await self.format_prompt(
-                file_change, chunk_text=chunks[0], prior_violations=prior,
+                file_change, chunk_text=chunks[0],
+                prior_violations=prior, guardrails=guardrails,
             )
             raw = await self.ollama_client.generate_review(
                 model_role, prompt, response_format=_review_format(self.config),
@@ -625,13 +649,18 @@ class FileProcessor:
             return self._parse_review_response(raw, grounding=self.config.processing.grounding)
 
         async def review_chunk(chunk_idx, total_chunks):
+            # Prior violations and guardrails ride chunk 0 only (as prior
+            # violations already do) — they are project-level context, not
+            # per-chunk, and repeating them on every chunk would bloat the budget.
             violations = prior if chunk_idx == 0 else None
+            chunk_guardrails = guardrails if chunk_idx == 0 else None
             prompt = await self.format_prompt(
                 file_change,
                 chunk_text=chunks[chunk_idx],
                 chunk_index=chunk_idx,
                 total_chunks=total_chunks,
                 prior_violations=violations,
+                guardrails=chunk_guardrails,
             )
             raw = await self.ollama_client.generate_review(
                 model_role, prompt, response_format=_review_format(self.config),
