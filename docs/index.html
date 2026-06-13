@@ -543,11 +543,12 @@
     <a href="#start"    class="tick" data-i="2"><span class="dot"></span><span>t+5s</span></a>
     <a href="#loop"     class="tick" data-i="3"><span class="dot"></span><span>t+30s</span></a>
     <a href="#cmds"     class="tick" data-i="4"><span class="dot"></span><span>t+1m</span></a>
-    <a href="#report"   class="tick" data-i="5"><span class="dot"></span><span>t+1d</span></a>
-    <a href="#thesis"   class="tick" data-i="6"><span class="dot"></span><span>t+1w</span></a>
-    <a href="#research" class="tick" data-i="7"><span class="dot"></span><span>t+1mo</span></a>
-    <a href="#dash"     class="tick" data-i="8"><span class="dot"></span><span>live</span></a>
-    <a href="#cfg"      class="tick" data-i="9"><span class="dot"></span><span>cfg</span></a>
+    <a href="#report"     class="tick" data-i="5"><span class="dot"></span><span>t+1d</span></a>
+    <a href="#guardrails" class="tick" data-i="6"><span class="dot"></span><span>t+1w</span></a>
+    <a href="#thesis"     class="tick" data-i="7"><span class="dot"></span><span>t+2w</span></a>
+    <a href="#research"   class="tick" data-i="8"><span class="dot"></span><span>t+1mo</span></a>
+    <a href="#dash"       class="tick" data-i="9"><span class="dot"></span><span>live</span></a>
+    <a href="#cfg"        class="tick" data-i="10"><span class="dot"></span><span>cfg</span></a>
   </div>
   <div class="meta">v0.1 · MIT · LOCAL</div>
 </aside>
@@ -570,8 +571,9 @@
       <div>
         <p class="lead" style="margin-top: 2rem;">
           A local AI development companion that watches every save, learns your blind
-          spots, and produces dependency-aware impact analysis. Two tools, one
-          loop, your machine. Your code never leaves it.
+          spots, hardens recurring failures into project guardrails, and produces
+          dependency-aware impact analysis. Two tools, one loop, your machine. Your
+          code never leaves it.
         </p>
         <div class="hero-cta">
           <a href="#start" class="btn primary">Get started <span>↓</span></a>
@@ -811,8 +813,10 @@ ollama-sentinel run">copy</button></pre>
         The dashed feedback arc is the whole point. Each saved finding becomes
         retrievable context for the <b>next</b> review of any related file.
         Embedding-ranked, token-budgeted, and capped so the prompt stays useful
-        instead of overflowing. Best-effort everywhere — extraction failure
-        never blocks the review save.
+        instead of overflowing. Active <b>project guardrails</b> ride the same
+        injection path — scope-filtered into every matching review — and findings
+        they produce carry their provenance. Best-effort everywhere — extraction
+        failure never blocks the review save.
       </p>
     </div>
   </div>
@@ -824,8 +828,12 @@ ollama-sentinel run">copy</button></pre>
 <section id="cmds">
   <div class="wrap">
     <div class="stamp"><span class="t">t+1m</span><span>SURFACE AREA</span></div>
-    <h2>Six commands. That's the whole CLI.</h2>
-    <p class="lead">Each one fits on one line. Defaults are sensible. Flags exist when you need them.</p>
+    <h2>Seven moves cover the daily loop.</h2>
+    <p class="lead">Each fits on one line; defaults are sensible. A fuller surface sits behind them —
+      a findings lifecycle (<code>findings</code>, <code>resolve</code>, <code>fix</code>,
+      <code>surface</code>, <code>prune</code>), corroboration (<code>confirm</code>,
+      <code>incidents</code>, <code>install-hooks</code>), and the <code>guardrail</code>
+      sub-app — but you can go a long way on these.</p>
 
     <div class="cmds reveal">
       <div class="cmd">
@@ -863,6 +871,12 @@ ollama-sentinel run">copy</button></pre>
         <div class="name">init</div>
         <div class="desc">Drop a sane <code>ollama-sentinel.yaml</code> in the current directory.</div>
         <div class="ex"><span class="pr">$</span> ollama-sentinel init</div>
+      </div>
+      <div class="cmd">
+        <div class="glyph">·──── 07</div>
+        <div class="name">guardrail</div>
+        <div class="desc">Author project rules the reviewer checks every time — or promote ones it proposes from recurring patterns.</div>
+        <div class="ex"><span class="pr">$</span> ollama-sentinel guardrail add no-eval -a "Never eval untrusted input."</div>
       </div>
     </div>
   </div>
@@ -903,11 +917,54 @@ ollama-sentinel run">copy</button></pre>
 </section>
 
 <!-- ========================================================================
+     GUARDRAILS — from pattern to rule
+     ======================================================================== -->
+<section id="guardrails">
+  <div class="wrap">
+    <div class="stamp"><span class="t">t+1w</span><span>FROM PATTERN TO RULE</span></div>
+    <h2>The patterns become rules the model enforces.</h2>
+    <p class="lead">A recurring pattern is a log entry. A <b>guardrail</b> is a named rule the reviewer
+      checks on <em>every</em> future change. Author one by hand on day one — or let the sentinel
+      propose them from shapes it has flagged and corroborated three or more times. This is the
+      <code>Finding → Incident → Pattern</code> rung, closed.</p>
+
+    <div class="terminal reveal">
+      <div class="bar">
+        <span class="dots"><i></i><i></i><i></i></span>
+        <span class="ttl">~/proj  ·  ollama-sentinel guardrail candidates</span>
+      </div>
+<pre>             <span class="h">Guardrail candidates (2)</span>
+<span class="mute">┌───┬──────────┬───┬─────────────────────────────────────────────┐</span>
+<span class="mute">│</span> # <span class="mute">│</span> Category <span class="mute">│</span> N <span class="mute">│</span> Drafted assertion (editable)                <span class="mute">│</span>
+<span class="mute">├───┼──────────┼───┼─────────────────────────────────────────────┤</span>
+<span class="mute">│</span> <span class="em">1</span> <span class="mute">│</span> <span class="crit">security</span> <span class="mute">│</span> <span class="em">4</span> <span class="mute">│</span> Never pass request data into eval/exec.     <span class="mute">│</span>
+<span class="mute">│</span> <span class="em">2</span> <span class="mute">│</span> <span class="warn">bug</span>      <span class="mute">│</span> <span class="em">3</span> <span class="mute">│</span> Close database sessions in a finally block. <span class="mute">│</span>
+<span class="mute">└───┴──────────┴───┴─────────────────────────────────────────────┘</span>
+<span class="mute">  Promote with `guardrail promote &lt;#&gt;` or reject with `guardrail reject &lt;#&gt;`.</span>
+
+<span class="pr">$</span> ollama-sentinel guardrail promote 1
+<span class="mute">  Promoted candidate 1 → guardrail 5: security-pattern (active, source=promoted).</span>
+<span class="mute">  → injected into every matching review from now on.</span></pre>
+    </div>
+
+    <p class="loop-cap">
+      Two guarantees keep it honest, not nagware. <b>Curation gates enforcement</b> —
+      nothing becomes a rule without your <code>promote</code>; a candidate is only a
+      proposal. And <b>a rule can't manufacture its own evidence</b>: a guardrail's own
+      flagged findings reinforce a candidate only when backed by a <em>hard</em> signal
+      (a test failure or a fix commit), never a bare opinion — so a rule can't echo itself
+      back into existence. Clustering runs only when you ask for candidates, never on the
+      review path.
+    </p>
+  </div>
+</section>
+
+<!-- ========================================================================
      MEMORY COMPOUNDS — thesis
      ======================================================================== -->
 <section id="thesis">
   <div class="wrap">
-    <div class="stamp"><span class="t">t+1w</span><span>WHY THIS WORKS</span></div>
+    <div class="stamp"><span class="t">t+2w</span><span>WHY THIS WORKS</span></div>
     <h2>Memory compounds.</h2>
 
     <div class="thesis reveal">
@@ -1163,13 +1220,14 @@ ollama-sentinel run">copy</button></pre>
           <li><b>·</b> Ollama (sentinel)</li>
           <li><b>·</b> OPENAI_API_KEY (research)</li>
           <li><b>·</b> ~30 MB RAM, ≪ 1 s reviews</li>
-          <li><b>·</b> 336 tests · ~3 s</li>
+          <li><b>·</b> 800+ tests · ~10 s</li>
         </ul>
       </div>
       <div>
         <h3 class="eyebrow" style="font-size: 0.78rem; margin-bottom: 1rem;">Read more</h3>
         <ul>
           <li><a href="GUIDE.md">→ GUIDE.md</a></li>
+          <li><a href="VISION.md">→ VISION.md</a></li>
           <li><a href="../README.md">→ README.md</a></li>
           <li><a href="../CLAUDE.md">→ CLAUDE.md</a></li>
           <li><a href="superpowers/followups.md">→ open follow-ups</a></li>
@@ -1217,7 +1275,7 @@ ollama-sentinel run">copy</button></pre>
 
   // Active rail tick on scroll
   (function () {
-    const sections = ['hero','tools','start','loop','cmds','report','thesis','research','dash','cfg']
+    const sections = ['hero','tools','start','loop','cmds','report','guardrails','thesis','research','dash','cfg']
       .map(id => document.getElementById(id))
       .filter(Boolean);
     const ticks = document.querySelectorAll('.rail .tick');

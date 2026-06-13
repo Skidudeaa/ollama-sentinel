@@ -10,6 +10,8 @@ Most AI code review tools see your code once -- when you open a PR. Then they fo
 
 Ollama Sentinel is different. It watches every save. It remembers every finding. After a week, it knows that you keep forgetting to close database connections in `repositories/`. After a month, it knows that nullable returns in your auth flow have been flagged five times and never fixed. It tells your Ollama model about these patterns, and the model escalates them.
 
+And once a pattern is confirmed often enough, it hardens into a **guardrail** — a named rule the reviewer checks on every future change. You can author guardrails by hand, or let the sentinel propose them from shapes it has flagged and corroborated three or more times. That's the compounding payoff: the codebase's failure history stops being a log you read and becomes a rulebook the model enforces.
+
 The research agent does the same thing for library migrations. Instead of a generic essay about "what changed in SQLAlchemy 2.0," it scans your actual codebase, finds the 14 call sites that break, ranks them by severity, and tells you which file to fix first.
 
 Both tools are local. Your code never leaves your machine. The memory they build is yours.
@@ -83,6 +85,8 @@ The Control Center is a full-screen read-only TUI with three main areas:
 
 **Patterns** (right) — recurring violations ranked by frequency. These are the issues the model keeps flagging across multiple reviews. If something shows up here repeatedly, it needs real attention.
 
+**Guardrails** (right, below Recent Reviews) — your active project rules, with their scope and source (✎ authored by hand, `auto` promoted from a pattern). Read-only here; curate them with the `guardrail` commands below.
+
 ### Status Indicators
 
 The header shows:
@@ -123,11 +127,12 @@ The focused panel has a bright cyan border. The selected row is highlighted with
 1. You save a file
 2. The watcher detects the change (with debounce to avoid reviewing mid-keystroke)
 3. The file content is read (or git diff, if configured)
-4. If violation memory is enabled, prior unresolved findings for this file are fetched from the SQLite database and injected into the prompt
-5. The content + prior findings are sent to your Ollama model
-6. The model returns a review
-7. Findings are extracted from the review (LLM JSON parsing with regex fallback) and persisted to the database
-8. The review is saved as a versioned markdown file
+4. If violation memory is enabled, prior unresolved findings for this file are fetched from the SQLite database
+5. Active guardrails whose scope matches the file are loaded and (with the prior findings) injected into the prompt — relevance-ranked and token-budgeted
+6. The content + guardrails + prior findings are sent to your Ollama model
+7. The model returns a review
+8. Findings are extracted (LLM JSON parsing with regex fallback), best-effort tagged with the guardrail that produced them, and persisted to the database
+9. The review is saved as a versioned markdown file
 
 Every review makes the next one smarter.
 
@@ -163,6 +168,27 @@ ollama-sentinel triage error.log --context src/foo.py:42  # add explicit context
 ollama-sentinel                                      # default: opens Control Center
 ollama-sentinel dashboard                            # same thing, explicit command
 ollama-sentinel dashboard -r 0.5 -n 3                # half-second refresh, min count 3
+
+# Findings lifecycle
+ollama-sentinel findings                             # list open findings with ids (--severity / --file / -f json)
+ollama-sentinel resolve 42                           # close as fixed
+ollama-sentinel dismiss 31                           # close as false-positive
+ollama-sentinel fix 42                               # localized model fix → preview diff → write on confirm (--yes)
+ollama-sentinel surface                              # emit open findings to .ollama_reviews/findings.sarif (editor + CI)
+ollama-sentinel prune                                # close findings whose flagged code is gone
+
+# Incidents (corroborated events)
+ollama-sentinel confirm 42                           # manual corroboration → manual_confirm Incident (finding stays open)
+ollama-sentinel incidents                            # list corroborated events (table / -f json)
+ollama-sentinel install-hooks                        # git post-commit hook: link commits to open findings
+
+# Guardrails (project rules — see the section below)
+ollama-sentinel guardrail add no-eval -a "Never eval untrusted input." --category security --path "src/*.py"
+ollama-sentinel guardrail list                       # active rules (--all / --status / -f json)
+ollama-sentinel guardrail edit 1 --assertion "..."   # disable / enable / dismiss <id> manage lifecycle
+ollama-sentinel guardrail candidates                 # auto-detected recurring shapes (on-demand)
+ollama-sentinel guardrail promote 1                  # confirm candidate → active guardrail
+ollama-sentinel guardrail reject 1                   # suppress a candidate shape
 ```
 
 ### The Report
@@ -247,6 +273,77 @@ ollama-sentinel review src/payment.py -m security
 ```
 
 The `-m` flag selects which model role to use. Define as many as you need in the YAML under `ollama.models`.
+
+---
+
+## Project Guardrails
+
+A **guardrail** is a named, natural-language rule the reviewer checks explicitly on every relevant change — `"Never call eval/exec on untrusted input."`, `"Database sessions must be closed in a finally block."`, `"Don't log request bodies."` Where prior-violation memory reminds the model what it *has* flagged, a guardrail tells it what to *always* check. It's the codebase's hard-won lessons, made durable and enforced.
+
+Guardrails are stored in the same memory DB (no YAML), so they survive restarts and authoring one needs neither Ollama nor a prior review.
+
+### Two ways a guardrail is born
+
+```
+   You author one directly  ─────────────────────────────╮
+   (guardrail add)                                        ▼
+                                                   active guardrail ──► injected into every
+   ≥3 distinct corroborated findings of one shape         ▲            matching review
+     ─► guardrail candidates (on-demand clustering)       │
+        ─► LLM-drafted assertion                          │
+        ─► guardrail promote  (you confirm) ──────────────╯
+        ─► guardrail reject   (suppress this shape)
+```
+
+Both paths converge on one active artifact. Manual authoring gives value on day one with zero history; auto-promotion compounds on top once a shape has recurred enough to be trustworthy.
+
+### Authoring and lifecycle
+
+```bash
+# Create — active immediately. Scope is optional; omit it to apply broadly.
+ollama-sentinel guardrail add no-eval \
+  -a "Never call eval/exec on untrusted input." \
+  --category security \        # scope to one finding category (optional)
+  --path "src/*.py"            # scope to a path glob (optional)
+
+ollama-sentinel guardrail list            # active rules
+ollama-sentinel guardrail list --all      # include disabled/dismissed
+ollama-sentinel guardrail list -f json    # machine-readable
+
+ollama-sentinel guardrail edit 1 --assertion "..." --category bug   # change any field
+ollama-sentinel guardrail disable 1       # stop injecting it (reversible)
+ollama-sentinel guardrail enable 1        # bring it back
+ollama-sentinel guardrail dismiss 1       # terminal — never injected again
+```
+
+A guardrail's **scope** decides which files it applies to. A `--path` glob is matched segment-precisely against the file under review (`src/*.py` admits `src/app.py`, not `src/sub/app.py`); an absent glob applies broadly. The `--category` is carried for attribution and clustering — it doesn't restrict which files the rule appears in (a file has no category until it's reviewed).
+
+### How guardrails shape a review
+
+When you `review` or `run`, the reviewer loads every **active** guardrail whose scope matches the file, ranks them by relevance to the file's contents, and injects the top ones into the prompt under a `PROJECT GUARDRAILS — check explicitly` heading — capped by a token budget so a growing rulebook never floods the prompt. Disabled and dismissed guardrails are never injected. When the model then flags something, that finding is best-effort tagged with the guardrail that produced it (its *provenance*), which feeds the auto-promotion integrity gate below.
+
+### Auto-promotion: from pattern to rule
+
+Authoring is the day-one path; the compounding layer is promotion. Run on demand:
+
+```bash
+ollama-sentinel guardrail candidates       # detect recurring shapes (table or -f json)
+```
+
+This selects findings that have been **corroborated** (≥1 Incident — a test failure, a fix commit, or a manual confirmation), groups them by category, and clusters them by semantic similarity. A shape with **three or more distinct corroborated findings** becomes a *candidate*, each presented with a one-line assertion drafted by your local model (with a deterministic fallback if the model is unavailable). You then decide:
+
+```bash
+ollama-sentinel guardrail promote 1        # confirm candidate #1 → active guardrail (source=promoted)
+ollama-sentinel guardrail promote 1 --assertion "..." --name my-rule   # edit at confirm time
+ollama-sentinel guardrail reject 1         # not a real rule → suppress this shape from future runs
+```
+
+Two safeguards keep this honest:
+
+- **Nothing enforces without your confirm.** A candidate is a proposal; only `promote` turns it into an injected rule. `reject` records the shape so it isn't re-proposed.
+- **A rule can't manufacture its own evidence.** A guardrail flags findings (tagged with its provenance). Those findings could, in principle, cluster back into a candidate that re-proposes the *same* rule — a self-reinforcing echo. The **evidence-integrity gate** blocks that: a guardrail's own findings count toward a candidate only when corroborated by a *hard* signal (a `test_failure` or `fix_commit` Incident), never by a bare `manual_confirm` or an uncorroborated opinion. Independently-discovered findings always count.
+
+**Prerequisites for candidates:** the embedding model (`ollama pull qwen3-embedding:4b`) and `embedding.enabled` in your config, plus real incident history. Clustering runs *only* in the `candidates`/`promote`/`reject` commands — never on the watcher or dashboard loop — so it never taxes live review latency. On a fresh DB there's nothing to detect yet; author guardrails by hand and let candidates accrue.
 
 ---
 
@@ -350,14 +447,23 @@ The switching cost is real. After three months, the violation database knows thi
 ```
 ollama-sentinel/
   ollama_sentinel/           # sentinel module
-    cli.py                   # Typer CLI (run, review, init, report, triage, dashboard)
+    cli.py                   # Typer CLI (run, review, init, report, triage, dashboard,
+                             #   findings lifecycle, incidents, guardrail sub-app)
     config.py                # YAML config loading
     models.py                # Pydantic v2 config models
-    processor.py             # FileProcessor, OllamaClient, async prompt formatting
+    processor.py             # FileProcessor, OllamaClient, async prompt formatting,
+                             #   guardrail loading + provenance attribution
     watcher.py               # FileSentinel, file watching, pipeline orchestration
-    violation_db.py          # SQLite violation memory + semantic recall (embed_text)
+    violation_db.py          # SQLite memory: findings + incidents + guardrails tables,
+                             #   semantic recall (embed_text), corroborated-findings selector
+    guardrails.py            # Guardrail shape clustering, candidate detection,
+                             #   assertion drafting, evidence-integrity gate
     extractor.py             # Finding extraction (LLM + regex fallback)
-    dashboard.py             # Live TUI (Rich) for reviews + recurring violations
+    dashboard.py             # Live TUI (Rich): reviews + recurring violations + guardrails
+    sarif.py                 # SARIF surface (`surface`) + stale-prune selector (`prune`)
+    remediate.py             # Localized model fix for `fix <id>` (excerpt-bounded, atomic)
+    hooks.py                 # Git post-commit hook installer + record_commit
+    pytest_plugin.py         # Opt-in plugin: test failure → test_failure Incident
     utils.py                 # safe_read, chunking, diff, compression
     context/                 # token-budgeted prompt assembly + semantic retrieval
       assembler.py           # Section / Priority / ContextItem + assemble + chunk_by_lines
@@ -394,10 +500,12 @@ ollama-sentinel/
       history.py             # Interactive REPL history
       interface.py           # Interactive REPL UI
 
-  tests/                     # 336 tests, ~3 seconds
+  tests/                     # run `pytest tests/ -q` for the live count (~10s)
   docs/
     plans/                   # implementation plans
     superpowers/             # specs, plans, and follow-ups for landed features
+    VISION.md                # product vision + roadmap
+    index.html               # single-page visual guide (canonical pitch surface)
     GUIDE.md                 # this file
   _archive/                  # superseded snapshots (do not import; see _archive/README.md)
   ollama-sentinel.yaml       # example config
