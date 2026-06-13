@@ -127,3 +127,82 @@ async def detect_candidates(
                     file_paths=[m.get("file_path", "") for m in members],
                 ))
     return candidates
+
+
+# ---------------------------------------------------------------------------
+# Candidate surfacing + curation (U7)
+# ---------------------------------------------------------------------------
+
+
+def candidate_signature(candidate: Candidate) -> str:
+    """A stable, order-independent signature for a candidate's shape.
+
+    Used to suppress re-proposal of a dismissed shape: the same set of member
+    descriptions in the same category yields the same signature regardless of
+    finding order, so a dismissed candidate stays dismissed across runs.
+    """
+    descs = "|".join(sorted(candidate.descriptions))
+    return f"{candidate.category}::{descs}"
+
+
+def derive_scope(candidate: Candidate):
+    """Derive a (scope_category, scope_path_glob) for a promoted guardrail.
+
+    Category is always the cluster's category. A path glob is suggested only
+    when every member shares one top-level directory (e.g. all under ``src/`` →
+    ``src/*``); mixed or root-level files yield no path scope (applies broadly).
+    The developer can edit either at confirmation.
+    """
+    category = candidate.category
+    tops = set()
+    for p in candidate.file_paths:
+        parts = p.replace("\\", "/").split("/")
+        tops.add(parts[0] if len(parts) > 1 else "")
+    if len(tops) == 1:
+        top = next(iter(tops))
+        return category, (f"{top}/*" if top else None)
+    return category, None
+
+
+def _draft_prompt(candidate: Candidate) -> str:
+    examples = "\n".join(f"- {d}" for d in candidate.descriptions[:8])
+    return (
+        f"These recurring {candidate.category} issues were each independently "
+        f"confirmed in this codebase:\n{examples}\n\n"
+        "Write ONE imperative sentence — a project guardrail — that, if followed, "
+        "would prevent this class of issue. Output only the sentence, no preamble."
+    )
+
+
+def _fallback_assertion(candidate: Candidate) -> str:
+    first = candidate.descriptions[0] if candidate.descriptions else candidate.category
+    return f"Avoid recurring {candidate.category} issues such as: {first}"
+
+
+async def draft_assertion(candidate: Candidate, model_call=None) -> str:
+    """Draft a one-line NL assertion for a candidate via the local model.
+
+    ``model_call`` is an async callable ``(prompt: str) -> str`` (the CLI wires
+    it to the configured model). It is best-effort: with no model, a model
+    error, or a blank reply, a deterministic minimal fallback is returned so a
+    candidate always lists with *some* editable assertion (KTD5). The developer
+    edits the result at confirmation regardless.
+    """
+    if model_call is None:
+        return _fallback_assertion(candidate)
+    try:
+        text = await model_call(_draft_prompt(candidate))
+    except Exception:
+        return _fallback_assertion(candidate)
+    text = (text or "").strip()
+    return text or _fallback_assertion(candidate)
+
+
+def filter_suppressed(candidates: List[Candidate], dismissed_signatures) -> List[Candidate]:
+    """Drop candidates whose shape was previously dismissed.
+
+    ``dismissed_signatures`` is the set of ``candidate_signature`` values stored
+    when candidates were rejected, so the same shape is not re-proposed.
+    """
+    sigs = set(dismissed_signatures)
+    return [c for c in candidates if candidate_signature(c) not in sigs]

@@ -1432,3 +1432,181 @@ class TestGuardrailCLI:
         r = runner.invoke(app, ["guardrail", "dismiss", "9999", "--config", str(cfg)])
         assert r.exit_code == 1
         assert "No guardrail with id" in r.output
+
+
+# ---------------------------------------------------------------------------
+# U7 — `guardrail candidates` / `promote` / `reject`
+# ---------------------------------------------------------------------------
+
+
+class _ClusterEmbedder:
+    """Fake embedder: everything maps to one vector → same-category findings
+    cluster together (cross-category still split by detect_candidates)."""
+    async def embed(self, text, *, cache_key=None):
+        return [1.0, 0.0]
+
+    async def close(self):
+        pass
+
+
+def _seed_corroborated(db_path, *, n=3, category="security"):
+    """Seed n distinct findings (one file, distinct lines), each with an
+    incident so they are corroborated. Returns their ids."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = ViolationDB(str(db_path))
+    try:
+        for i in range(n):
+            db.persist_findings("src/a.py", [
+                Finding("src/a.py", i + 1, i + 1, category, "high", f"eval case {i}"),
+            ])
+        ids = []
+        for r in db.get_all_unresolved():
+            db.persist_incident(Incident(
+                finding_id=r["id"], confirming_signal="manual_confirm",
+                confirming_artifact="seed",
+            ))
+            ids.append(r["id"])
+    finally:
+        db.close()
+    return ids
+
+
+def _patch_candidate_infra(monkeypatch, *, draft="Never call eval on input.", raise_draft=False):
+    """Patch the embedder builder + the draft model call so candidate commands
+    run without Ollama."""
+    monkeypatch.setattr(
+        "ollama_sentinel.cli._build_embedder", lambda config: _ClusterEmbedder(),
+    )
+    import ollama_sentinel.processor as proc
+
+    async def _fake_generate(self, model_config, prompt, **kw):
+        if raise_draft:
+            raise RuntimeError("model down")
+        return draft
+
+    monkeypatch.setattr(proc.OllamaClient, "generate_with_model", _fake_generate)
+
+
+class TestGuardrailCandidatesCLI:
+    """Tests for `guardrail candidates` / `promote` / `reject` (U7)."""
+
+    def test_candidates_lists_with_drafted_assertion(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_corroborated(db_path)
+        _patch_candidate_infra(monkeypatch, draft="Never call eval on input.")
+
+        r = runner.invoke(app, ["guardrail", "candidates", "--config", str(cfg), "-f", "json"])
+        assert r.exit_code == 0, r.output
+        data = json.loads(r.output)
+        assert len(data) == 1
+        assert data[0]["category"] == "security"
+        assert data[0]["size"] == 3
+        assert data[0]["assertion"] == "Never call eval on input."
+
+    def test_candidates_model_unavailable_uses_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_corroborated(db_path)
+        _patch_candidate_infra(monkeypatch, raise_draft=True)
+
+        r = runner.invoke(app, ["guardrail", "candidates", "--config", str(cfg), "-f", "json"])
+        assert r.exit_code == 0, r.output
+        data = json.loads(r.output)
+        assert len(data) == 1
+        # Fallback assertion mentions the category — no crash.
+        assert "security" in data[0]["assertion"]
+
+    def test_candidates_empty_when_none(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        ViolationDB(str(db_path)).close()
+        _patch_candidate_infra(monkeypatch)
+        r = runner.invoke(app, ["guardrail", "candidates", "--config", str(cfg)])
+        assert r.exit_code == 0
+        assert "No guardrail candidates" in r.output
+
+    def test_promote_creates_active_promoted_guardrail(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_corroborated(db_path)
+        _patch_candidate_infra(monkeypatch)
+
+        r = runner.invoke(app, [
+            "guardrail", "promote", "1", "--assertion", "Do not eval.",
+            "--name", "no-eval", "--config", str(cfg),
+        ])
+        assert r.exit_code == 0, r.output
+
+        db = ViolationDB(str(db_path))
+        try:
+            actives = db.get_active_guardrails()
+            assert len(actives) == 1
+            g = actives[0]
+            assert g["name"] == "no-eval"
+            assert g["assertion"] == "Do not eval."
+            assert g["source"] == "promoted"
+            assert g["scope_category"] == "security"
+        finally:
+            db.close()
+
+    def test_promote_seeds_drafted_assertion_when_not_overridden(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_corroborated(db_path)
+        _patch_candidate_infra(monkeypatch, draft="Drafted rule text.")
+
+        r = runner.invoke(app, ["guardrail", "promote", "1", "--config", str(cfg)])
+        assert r.exit_code == 0, r.output
+        db = ViolationDB(str(db_path))
+        try:
+            assert db.get_active_guardrails()[0]["assertion"] == "Drafted rule text."
+        finally:
+            db.close()
+
+    def test_promote_out_of_range_errors(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_corroborated(db_path)
+        _patch_candidate_infra(monkeypatch)
+        r = runner.invoke(app, ["guardrail", "promote", "9", "--config", str(cfg)])
+        assert r.exit_code == 1
+        assert "No candidate at index" in r.output
+
+    def test_reject_suppresses_next_candidates_run(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_corroborated(db_path)
+        _patch_candidate_infra(monkeypatch)
+
+        # The shape is detected first…
+        before = runner.invoke(app, ["guardrail", "candidates", "--config", str(cfg), "-f", "json"])
+        assert len(json.loads(before.output)) == 1
+
+        rej = runner.invoke(app, ["guardrail", "reject", "1", "--config", str(cfg)])
+        assert rej.exit_code == 0, rej.output
+
+        # …and suppressed on the next run.
+        after = runner.invoke(app, ["guardrail", "candidates", "--config", str(cfg), "-f", "json"])
+        assert json.loads(after.output) == []
+
+    def test_reject_then_promote_is_consistent(self, tmp_path, monkeypatch):
+        """A rejected candidate is gone, so promoting index 1 afterward errors."""
+        monkeypatch.chdir(tmp_path)
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        _seed_corroborated(db_path)
+        _patch_candidate_infra(monkeypatch)
+
+        runner.invoke(app, ["guardrail", "reject", "1", "--config", str(cfg)])
+        r = runner.invoke(app, ["guardrail", "promote", "1", "--config", str(cfg)])
+        assert r.exit_code == 1
+        assert "No candidate at index" in r.output
