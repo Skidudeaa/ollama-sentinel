@@ -7,9 +7,11 @@ import time
 from unittest.mock import MagicMock, patch
 
 from ollama_sentinel.dashboard import (
+    GuardrailRow,
     OverviewStats,
     ReviewRow,
     ViolationRow,
+    active_guardrails,
     compute_overview,
     recent_reviews,
     render_layout,
@@ -18,10 +20,11 @@ from ollama_sentinel.dashboard import (
     top_violations,
     watcher_status,
     watcher_status_from_age,
+    _guardrails_panel,
     _patterns_panel,
     _footer_panel_v2,
 )
-from ollama_sentinel.violation_db import Finding, ViolationDB
+from ollama_sentinel.violation_db import Finding, Guardrail, ViolationDB
 
 
 def _touch(path: pathlib.Path, mtime: float) -> None:
@@ -219,6 +222,36 @@ class TestRunDashboard:
             )
         assert call_count >= 2
 
+    async def test_active_guardrails_exception_does_not_crash_loop(self, tmp_path, monkeypatch):
+        """A guardrail-fetch failure degrades the panel independently — the
+        loop keeps running (Control Center layout, config_path set)."""
+        db_path = tmp_path / "memory.db"
+        ViolationDB(str(db_path)).close()
+        (tmp_path / "ollama-sentinel.yaml").write_text("watch:\n  directory: .\n")
+
+        shutdown = asyncio.Event()
+        call_count = 0
+
+        def _bad_guardrails(db):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise sqlite3.OperationalError("db locked")
+            shutdown.set()
+            return []
+
+        monkeypatch.setattr("ollama_sentinel.dashboard.active_guardrails", _bad_guardrails)
+        with patch("ollama_sentinel.dashboard.Live", return_value=_mock_live()):
+            await run_dashboard(
+                watch_dir=tmp_path,
+                reviews_dir=tmp_path / "reviews",
+                db_path=db_path,
+                shutdown=shutdown,
+                refresh_s=0.01,
+                config_path=str(tmp_path / "ollama-sentinel.yaml"),
+            )
+        assert call_count >= 2
+
 
 # ---------------------------------------------------------------------------
 # Control Center v2 tests
@@ -338,6 +371,60 @@ class TestSuggestedAction:
             severity_counts={},
         )
         assert "all clear" in suggested_action(stats).lower()
+
+
+class TestActiveGuardrails:
+    """U5 — pure DB selector for the dashboard guardrails panel."""
+
+    def test_empty_db(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            assert active_guardrails(db) == []
+        finally:
+            db.close()
+
+    def test_returns_only_active_as_rows(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.create_guardrail(Guardrail(
+                name="no-eval", assertion="never eval",
+                scope_category="security", scope_path_glob="src/*.py",
+            ))
+            off = db.create_guardrail(Guardrail(name="off", assertion="x"))
+            db.set_guardrail_status(off, "disabled")
+
+            rows = active_guardrails(db)
+            assert all(isinstance(r, GuardrailRow) for r in rows)
+            assert [r.name for r in rows] == ["no-eval"]
+            assert rows[0].source == "manual"
+            assert "security" in rows[0].scope and "src/*.py" in rows[0].scope
+        finally:
+            db.close()
+
+    def test_broad_scope_label(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.create_guardrail(Guardrail(name="broad", assertion="x"))
+            assert active_guardrails(db)[0].scope == "all files"
+        finally:
+            db.close()
+
+
+class TestGuardrailsPanel:
+    """U5 — guardrails panel renderer (read-only, degrades safely)."""
+
+    def test_empty_renders_without_error(self):
+        panel = _guardrails_panel([])
+        assert panel.title == "Guardrails"
+        assert "no guardrails" in _render(panel)
+
+    def test_with_data_shows_name_and_scope(self):
+        rows = [GuardrailRow(name="no-eval", scope="security · src/*.py", source="manual")]
+        panel = _guardrails_panel(rows)
+        assert "Guardrails (1)" in panel.title
+        text = _render(panel)
+        assert "no-eval" in text
+        assert "security" in text
 
 
 class TestControlCenterPanels:
@@ -496,6 +583,34 @@ class TestTriageRenderIntegration:
         i_high = out.index("HighFile.py")
         i_crit = out.index("CritFile.py")
         assert i_low < i_high < i_crit, out
+
+
+class TestRenderLayoutGuardrails:
+    """U5 — the guardrails panel lands in the Control Center right column."""
+
+    def test_guardrails_panel_in_right_column(self, tmp_path):
+        now = time.time()
+        layout = render_layout(
+            str(tmp_path), tmp_path, tmp_path / "memory.db",
+            [], [], now,
+            config_path="test.yaml", model_name="gemma3",
+            guardrails=[GuardrailRow(name="no-eval", scope="security", source="manual")],
+        )
+        panel = layout["body"]["right"]["guardrails"].renderable
+        out = _render(panel, width=120)
+        assert "no-eval" in out
+
+    def test_right_column_still_present_without_guardrails(self, tmp_path):
+        now = time.time()
+        layout = render_layout(
+            str(tmp_path), tmp_path, tmp_path / "memory.db",
+            [], [], now,
+            config_path="test.yaml", model_name="gemma3",
+        )
+        # Backwards-compat: right column exists; guardrails sub-panel degrades empty.
+        assert layout["body"]["right"] is not None
+        out = _render(layout["body"]["right"]["guardrails"].renderable, width=120)
+        assert "no guardrails" in out
 
 
 class TestViolationDBNewHelpers:

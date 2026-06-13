@@ -95,6 +95,14 @@ class ViolationRow:
 
 
 @dataclass
+class GuardrailRow:
+    """An active project guardrail for the dashboard panel."""
+    name: str
+    scope: str   # human-readable scope label ("security · src/*.py", "all files")
+    source: str  # "manual" | "promoted"
+
+
+@dataclass
 class OverviewStats:
     """Aggregate system state for the Control Center overview card."""
     total_reviews: int
@@ -150,6 +158,28 @@ def top_violations(db: ViolationDB, min_count: int, limit: int) -> List[Violatio
             description=r["description"],
         )
         for r in raw
+    ]
+
+
+def _format_guardrail_scope(category: Optional[str], path_glob: Optional[str]) -> str:
+    """Human-readable scope label for a guardrail row."""
+    bits = [b for b in (category, path_glob) if b]
+    return " · ".join(bits) if bits else "all files"
+
+
+def active_guardrails(db: ViolationDB) -> List[GuardrailRow]:
+    """Return active guardrails from the DB as ``GuardrailRow`` objects.
+
+    Read-only; mirrors ``top_violations``. The caller's per-source try/except
+    isolates a failure here from the rest of the dashboard.
+    """
+    return [
+        GuardrailRow(
+            name=g["name"],
+            scope=_format_guardrail_scope(g.get("scope_category"), g.get("scope_path_glob")),
+            source=g.get("source", "manual"),
+        )
+        for g in db.get_active_guardrails()
     ]
 
 
@@ -402,6 +432,27 @@ def _patterns_panel(rows: List[ViolationRow]) -> Panel:
     return Panel(table, title=f"Patterns ({len(rows)})", border_style="magenta")
 
 
+def _guardrails_panel(rows: List[GuardrailRow]) -> Panel:
+    """Active-guardrails panel: name + scope + source, one row each.
+
+    Read-only and non-focusable (curation happens via the CLI). Empty state
+    degrades to a muted hint; never raises on bad input.
+    """
+    if not rows:
+        return Panel(
+            Text("no guardrails — author one with `guardrail add`", style="dim"),
+            title="Guardrails", border_style="green",
+        )
+    table = Table.grid(padding=(0, 1), expand=True)
+    table.add_column(no_wrap=True, overflow="ellipsis")   # name
+    table.add_column(no_wrap=True, overflow="ellipsis", style="dim")  # scope
+    table.add_column(no_wrap=True, justify="right", style="dim")      # source
+    for r in rows:
+        src = "auto" if r.source == "promoted" else "✎"
+        table.add_row(r.name, r.scope, src)
+    return Panel(table, title=f"Guardrails ({len(rows)})", border_style="green")
+
+
 def _footer_panel_v2() -> Panel:
     """Footer with keyboard hints."""
     body = "[dim]Ctrl-C[/] quit   [dim]│[/]   Refreshes every 1s   [dim]│[/]   Read-only control center"
@@ -447,6 +498,7 @@ def render_layout(
     hottest: Optional[tuple] = None,
     new_this_week: int = 0,
     research_latest: Optional[Dict] = None,
+    guardrails: Optional[List[GuardrailRow]] = None,
 ) -> Layout:
     """Build the full Rich layout for one frame.
 
@@ -499,7 +551,10 @@ def render_layout(
         Layout(name="right", ratio=1),
     )
     layout["body"]["left"].update(_patterns_panel(ranked))
-    layout["body"]["right"].update(_reviews_rail(reviews, now, -1, 0))
+    layout["body"]["right"].split_column(
+        Layout(_reviews_rail(reviews, now, -1, 0), name="reviews", ratio=2),
+        Layout(_guardrails_panel(guardrails or []), name="guardrails", ratio=1),
+    )
     layout["footer"].update(_footer_panel_v2())
     return layout
 
@@ -589,6 +644,7 @@ async def run_dashboard(
         severity_counts: Dict[str, int] = {}
         hottest: Optional[tuple] = None
         new_this_week: int = 0
+        guardrails: list = []
 
         if db is None and db_path.exists():
             try:
@@ -625,6 +681,11 @@ async def run_dashboard(
                 except Exception:
                     log.exception("count_new_since failed")
 
+                try:
+                    guardrails = active_guardrails(db)
+                except Exception:
+                    log.exception("active_guardrails failed")
+
         research_latest = None
         if config_path:
             try:
@@ -640,6 +701,7 @@ async def run_dashboard(
             "hottest": hottest,
             "new_this_week": new_this_week,
             "research_latest": research_latest,
+            "guardrails": guardrails,
             "now": now,
         }
 
@@ -715,7 +777,11 @@ async def run_dashboard(
             Layout(name="right", ratio=1),
         )
         layout["body"]["left"].update(patterns_p)
-        layout["body"]["right"].update(reviews_p)
+        layout["body"]["right"].split_column(
+            Layout(reviews_p, name="reviews", ratio=2),
+            Layout(_guardrails_panel(data.get("guardrails") or []),
+                   name="guardrails", ratio=1),
+        )
 
         if interactive:
             layout["footer"].update(_footer_interactive(state))
