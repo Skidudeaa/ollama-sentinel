@@ -1,13 +1,23 @@
 ---
 title: "feat: Pattern promotion → project guardrails"
 type: feat
-status: active
+status: implemented
 date: 2026-06-08
+implemented: 2026-06-13
 depth: deep
 origin: docs/brainstorms/2026-06-08-pattern-promotion-guardrails-requirements.md
 ---
 
 # feat: Pattern promotion → project guardrails
+
+> **Status: Implemented (2026-06-13).** All 8 units shipped as a linear
+> stacked-PR chain off master: Phase 1 — U1 #37, U2 #38, U3 #39, U4 #40, U5 #41;
+> Phase 2 — U6 #42, U7 #43, U8 #44. TDD per unit; suite 699→803 passed / 16 skip.
+> Two transparent deferrals (flagged in the PR bodies): the live *dashboard*
+> pending-candidate view (skipped to honor KTD4 — clustering is on-demand only),
+> and U8's gate is implemented as a *global* self-caused-soft exclusion rather
+> than *scoped-to-originating-guardrail* (the stricter, safe direction; satisfies
+> every plan scenario). Pending merge bottom-up #37→#44.
 
 ## Summary
 
