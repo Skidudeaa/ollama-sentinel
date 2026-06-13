@@ -1226,6 +1226,60 @@ class TestGuardrailCRUD:
             db.close()
 
 
+class TestGetCorroboratedFindings:
+    """U6 — read selector for clustering: findings with >=1 incident + signals."""
+
+    def test_only_corroborated_findings_returned(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            with_inc = _seed_finding_id(db, file_path="a.py", line_start=1, line_end=1)
+            _seed_finding_id(db, file_path="a.py", line_start=9, line_end=9)  # no incident
+            db.persist_incident(_make_incident(with_inc))
+
+            rows = db.get_corroborated_findings()
+            assert [r["id"] for r in rows] == [with_inc]
+        finally:
+            db.close()
+
+    def test_distinct_findings_not_incident_count(self, tmp_path):
+        """One finding with three incidents is a single row (distinct findings)."""
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            fid = _seed_finding_id(db)
+            for sig in ("test_failure", "manual_confirm", "fix_commit"):
+                db.persist_incident(_make_incident(fid, confirming_signal=sig,
+                                                   confirming_artifact=sig))
+            rows = db.get_corroborated_findings()
+            assert len(rows) == 1
+            assert rows[0]["id"] == fid
+            assert set(rows[0]["confirming_signals"]) == {
+                "test_failure", "manual_confirm", "fix_commit",
+            }
+        finally:
+            db.close()
+
+    def test_carries_guardrail_provenance(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            gid = db.create_guardrail(_make_guardrail())
+            db.persist_findings(
+                "a.py", [_make_finding(file_path="a.py", guardrail_id=gid)],
+            )
+            fid = db.get_unresolved("a.py")[0]["id"]
+            db.persist_incident(_make_incident(fid))
+            rows = db.get_corroborated_findings()
+            assert rows[0]["guardrail_id"] == gid
+        finally:
+            db.close()
+
+    def test_empty_db_returns_empty(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            assert db.get_corroborated_findings() == []
+        finally:
+            db.close()
+
+
 class TestGuardrailTableMigration:
     def test_guardrails_table_created_on_init(self, tmp_path):
         db = ViolationDB(str(tmp_path / "v.db"))

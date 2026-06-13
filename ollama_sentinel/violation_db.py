@@ -414,6 +414,33 @@ class ViolationDB:
             )
             return self._rows_to_dicts(cur)
 
+    def get_corroborated_findings(self) -> List[dict]:
+        """Return every finding with >=1 Incident, across all files (read-only).
+
+        One row per distinct finding (not per incident). Each row is the full
+        findings row plus a ``confirming_signals`` list — the distinct
+        ``confirming_signal`` values of its incidents. Backs guardrail shape
+        clustering (U6) and the evidence-integrity gate (U8): ``guardrail_id``
+        provenance and the signal set are both carried so the caller can apply
+        the gate without a second query.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT findings.*,
+                       GROUP_CONCAT(DISTINCT incidents.confirming_signal) AS _signals
+                FROM findings
+                JOIN incidents ON incidents.finding_id = findings.id
+                GROUP BY findings.id
+                ORDER BY findings.id ASC
+                """
+            )
+            rows = self._rows_to_dicts(cur)
+        for r in rows:
+            raw = r.pop("_signals", None)
+            r["confirming_signals"] = raw.split(",") if raw else []
+        return rows
+
     def get_unresolved(self, file_path: str) -> List[dict]:
         """Return all unresolved findings for *file_path*."""
         with self._lock:
