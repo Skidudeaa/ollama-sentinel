@@ -44,6 +44,15 @@ ollama-sentinel dismiss 31          # close Finding 31 as false-positive (resolu
 ollama-sentinel fix 42              # localized fix for Finding 42: preview diff, write on confirm, resolve (fixed)
 ollama-sentinel prune               # close findings whose flagged code is gone (preview + confirm, resolution='stale')
 
+# Guardrails (project rules injected into reviews; Finding->Incident->Pattern rung)
+ollama-sentinel guardrail add no-eval -a "Never call eval on untrusted input." --category security --path "src/*.py"
+ollama-sentinel guardrail list      # active guardrails (--all / --status; -f json)
+ollama-sentinel guardrail edit 3 --assertion "..."   # edit name/assertion/scope
+ollama-sentinel guardrail disable 3 # disable | enable | dismiss (lifecycle)
+ollama-sentinel guardrail candidates # detect recurring shapes (>=3 corroborated) w/ drafted assertion (on-demand)
+ollama-sentinel guardrail promote 1 # confirm candidate #1 -> active guardrail (source=promoted)
+ollama-sentinel guardrail reject 1  # dismiss candidate #1 so its shape isn't re-proposed
+
 python -m research_agent.main query "question" --context file.py --output result.md
 python -m research_agent.main interactive
 python -m research_agent.main setup
@@ -74,19 +83,43 @@ CLI (Typer) -> FileSentinel -> awatch loop (debounce)
                              |- _get_ranked_prior_violations()
                              |    semantic: ViolationDB.get_neighbors_by_similarity()
                              |    fallback:  ViolationDB.get_unresolved(path)
+                             |- _get_active_guardrails() (active project rules)
                              |- format_prompt() -> build_review_context() recipe
                              |    MUST_FIT: active file / diff block
+                             |    OPTIONAL: PROJECT GUARDRAILS (scope-filtered, ranked)
                              |    OPTIONAL: PRIOR UNRESOLVED (retriever-ranked)
                              |- chunk_content() -> chunk_by_lines (token-aware)
                              |- OllamaClient.generate_review() (httpx, tenacity retry)
                                  |
                            extract_findings() (LLM JSON + regex fallback)
+                             |- attribute_guardrail_provenance() (best-effort: finding -> guardrail)
                              |- ViolationDB.persist_findings() (SQLite upsert,
-                                populates embed_text for semantic recall)
+                                populates embed_text + guardrail_id provenance)
                                  |
                            FileProcessor.save_review()
                              |- versioned output with history cleanup
 ```
+
+### Guardrails (v0.3: Finding -> Incident -> Pattern)
+
+Guardrails are curated, named NL rules the review model checks explicitly. They
+are born two ways and converge on one active artifact (the Pattern rung from
+`docs/VISION.md`):
+
+```
+   Developer authors directly ----------------------------\
+   (guardrail add)                                          v
+                                                      active guardrail
+   >=3 distinct corroborated findings of one shape          ^   |
+     -> guardrail candidates (on-demand clustering)         |   |- injected into reviews
+        -> LLM-drafted assertion                            |   |     (scope filter + rank + budget)
+        -> guardrail promote (confirm) ---------------------/   |- flagged findings carry provenance
+        -> guardrail reject (suppress shape)                    v
+                                                          ViolationDB.guardrails table
+   evidence-integrity gate (counts_toward_strength): a guardrail's own findings
+   reinforce a candidate only via a hard signal (test_failure/fix_commit) -> no echo
+```
+
 
 ### Incident corroboration (v0.2: Finding -> Incident)
 
@@ -127,15 +160,16 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 | Module | Purpose |
 |--------|---------|
 | `ollama_sentinel/processor.py` | FileProcessor, OllamaClient, async prompt formatting via recipe, review generation |
-| `ollama_sentinel/violation_db.py` | SQLite-backed Finding persistence with upsert, `embed_text` column, and `get_neighbors_by_similarity` |
+| `ollama_sentinel/violation_db.py` | SQLite-backed Finding persistence with upsert, `embed_text` column, `get_neighbors_by_similarity`; `guardrails` table + CRUD (`Guardrail`); finding `guardrail_id` provenance; `get_corroborated_findings` (clustering selector) |
+| `ollama_sentinel/guardrails.py` | Guardrail shape clustering + candidate detection (leaf): `Candidate`, async `detect_candidates`, `draft_assertion`, `derive_scope`, `candidate_signature`/`filter_suppressed`, and the `counts_toward_strength` evidence-integrity gate |
 | `ollama_sentinel/extractor.py` | LLM JSON extraction + regex fallback for parsing review findings |
 | `ollama_sentinel/watcher.py` | FileSentinel, file watching, ignore logic, pipeline orchestration |
 | `ollama_sentinel/models.py` | Pydantic v2 config models: Ollama/Embedding/Memory/Processing with validators |
-| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard, confirm, incidents, install-hooks, record-commit, surface, findings, resolve, dismiss, fix, prune |
+| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard, confirm, incidents, install-hooks, record-commit, surface, findings, resolve, dismiss, fix, prune + `guardrail` sub-app (add/list/edit/disable/enable/dismiss, candidates/promote/reject) |
 | `ollama_sentinel/remediate.py` | Localized fix generation for `fix <id>`: `splice_lines`/`parse_fix_response`/`build_fix_prompt` (pure) + `propose_fix` (I/O); bounds the model edit to the finding's exact whole-line span |
 | `ollama_sentinel/pytest_plugin.py` | Opt-in pytest plugin: matches test failures to open Findings, records `test_failure` Incidents (`pytest11` entry point) |
 | `ollama_sentinel/hooks.py` | Git post-commit hook installer + `record_commit` (links commits to open Findings) |
-| `ollama_sentinel/dashboard.py` | Live Rich TUI for `ollama-sentinel dashboard` — polls reviews dir + ViolationDB read-only |
+| `ollama_sentinel/dashboard.py` | Live Rich TUI for `ollama-sentinel dashboard` — polls reviews dir + ViolationDB read-only; includes a read-only active-guardrails panel (`active_guardrails`/`_guardrails_panel`) |
 | `ollama_sentinel/sarif.py` | SARIF 2.1.0 surface: excerpt-based `relocate_finding`, `build_sarif` document, `generate_sarif_file` (read-only orchestration) — backs the `surface` command + watcher auto-refresh; `collect_stale_findings` (read-only) backs `prune` |
 | `ollama_sentinel/context/assembler.py` | `Section` / `Priority` / `ContextItem` dataclasses + `assemble()` + `chunk_by_lines` — pure, token-budgeted |
 | `ollama_sentinel/context/tokens.py` | `TokenCounter` (tiktoken `cl100k_base` with char-based fallback) |
@@ -203,22 +237,25 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 ### Resume here next time
 
 1. **Sanity check.** `pytest tests/ -q` should be green (run it for the live
-   count; ~699 / 15 skip after OP-1 landed — do not trust this number, it drifts).
-2. **The "make findings actionable" arc is complete** (stale-prune `prune`
-   merged via PR #29, 2026-06-05). No arc work left.
-3. **The deferred DX tail is now closed:** OP-1 SIGHUP hot-reload SHIPPED
-   (PR #32, 2026-06-07); CB-1 formatter dedupe verified already-done (drift
-   correction, 2026-06-07). See `docs/superpowers/followups.md`.
+   count; ~803 / 16 skip on the guardrails stack tip — do not trust this number,
+   it drifts).
+2. **Pattern promotion → project guardrails is BUILT** (the north-star v0.3
+   feature). All 8 plan units U1–U8 ship as a linear stacked-PR chain
+   **#37→#38→#39→#40→#41→#42→#43→#44** (base master). **Not yet merged** — review
+   and merge bottom-up; GitHub auto-retargets each child to master as its parent
+   lands. The independent salvage fix is **PR #36**. This docs PR rides the tip.
+3. **The "make findings actionable" arc is complete** (PR #29, 2026-06-05).
+   OP-1 SIGHUP hot-reload (#32) and CB-1 (#33) also done. See
+   `docs/superpowers/followups.md`.
 
 ### Pickable next moves (ordered by leverage)
 
-The small-DX backlog is drained (OP-1, CB-1, and the impact_scan integration
-test all landed 2026-06-07). What's left is the v0.3 product leap.
+The v0.3 Pattern-promotion leap is **built** (#37–#44, pending merge). What's left:
 
 | # | Item | Effort | Risk | Notes |
 |---|---|---|---|---|
-| 1 | **Pattern promotion** — the Finding→Incident→**Pattern** rung (≥3 incidents of the same shape → project-specific guardrail). The north-star payoff. | L | med | Design-heavy — start with `/ce-brainstorm` (shape-detection, storage, feedback into review context). Not yet started. |
-| 2 | **v0.3 shared substrate** — lift `ImportResolver` to shared infra, unify `Finding`/`ImpactItem`, bidirectional impact↔incident flow. | L | med | The moat play (see `docs/VISION.md`). Larger/architectural; can follow Pattern. |
+| 1 | **Merge the guardrails stack** (#37→#44 bottom-up) + #36. Then the two transparent scope deferrals: (a) the *live dashboard pending-candidate view* (skipped in U7 to honor KTD4 — on-demand clustering only; a cached/slow-cadence panel would re-enable it); (b) confirm whether U8's *global* self-caused-soft exclusion should become *scoped-to-originating-guardrail* (stricter-is-safe today). | S–M | low | Both noted in the U7/U8 PR bodies. |
+| 2 | **v0.3 shared substrate** — lift `ImportResolver` to shared infra, unify `Finding`/`ImpactItem`, bidirectional impact↔incident flow. | L | med | The moat play (see `docs/VISION.md`). Architectural; follows guardrails. |
 
 Skip TR-3 — deliberate spec deviation, documented in followups.md. Qwen3
 Phases B/C stay parked (no demand; the Phase-A plan forbids pulling the models
@@ -252,6 +289,24 @@ speculatively).
 
 ### Recent landings
 
+- 2026-06-13: **v0.3 Pattern promotion → project guardrails BUILT (8-PR stack,
+  pending merge).** Executed the `docs/plans/2026-06-08-001-...-plan.md` plan
+  end-to-end via `/ce-work`, TDD per unit, one stacked PR each off master:
+  **Phase 1** — U1 storage+provenance (#37: `guardrails` table + CRUD + finding
+  `guardrail_id` via additive migration), U2 CLI authoring/lifecycle (#38:
+  `guardrail add/list/edit/disable/enable/dismiss` sub-app), U3 relevance-scoped
+  injection (#39: `PROJECT GUARDRAILS` section above PRIOR UNRESOLVED, scope
+  filter + rank + budget), U4 best-effort provenance capture (#40), U5 dashboard
+  panel (#41). **Phase 2** — U6 on-demand shape clustering (#42:
+  `ollama_sentinel/guardrails.py` + `get_corroborated_findings`), U7 candidate
+  surfacing+curation (#43: `guardrail candidates/promote/reject` w/ LLM-drafted
+  assertions + signature suppression), U8 evidence-integrity gate (#44:
+  `counts_toward_strength` — self-caused findings reinforce only via
+  test_failure/fix_commit, no echo). Suite 699→803 passed / 16 skip. Two
+  transparent deferrals: live dashboard *pending*-candidate view (KTD4: clustering
+  on-demand only) and U8 scoped-vs-global gate — both flagged in the PR bodies.
+  Also salvaged-truncated-grounded-review fix as independent **PR #36**. Merge
+  bottom-up #37→#44 (+ #36).
 - 2026-06-08: **Small-DX backlog drained + v0.3 Pattern-promotion planned.**
   Shipped OP-1 SIGHUP hot-reload (PR #32), the impact_scan integration test
   (PR #34), and salvaged grounding P1–P4 positives (PR #31); closed CB-1 as
