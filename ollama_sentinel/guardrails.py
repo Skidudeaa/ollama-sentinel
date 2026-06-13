@@ -68,6 +68,26 @@ async def _embed_findings(findings: List[dict], embedder):
     return [p for p in pairs if p is not None]
 
 
+_HARD_SIGNALS = frozenset({"test_failure", "fix_commit"})
+
+
+def counts_toward_strength(finding: dict) -> bool:
+    """Evidence-integrity gate (U8): may this finding count toward a candidate?
+
+    A finding with no guardrail provenance (independently discovered) always
+    counts. A *self-caused* finding — one carrying the ``guardrail_id`` of a
+    guardrail that flagged it (U4) — counts only when corroborated by a **hard**
+    signal (``test_failure`` or ``fix_commit``). Soft-only (``manual_confirm``)
+    or uncorroborated self-caused findings are excluded, so an active guardrail
+    cannot manufacture its own re-promotion (the Pattern-tier echo). A missing
+    provenance link therefore fails safe: the finding just counts as independent.
+    """
+    if finding.get("guardrail_id") is None:
+        return True
+    signals = finding.get("confirming_signals") or []
+    return any(s in _HARD_SIGNALS for s in signals)
+
+
 def _cluster(pairs, threshold: float):
     """Greedy seed clustering.
 
@@ -106,7 +126,16 @@ async def detect_candidates(
     ``embed(text, *, cache_key=None)``), so a fake embedder drives the tests and
     the real ``OllamaEmbedder`` drives production. Deterministic: findings are
     processed in id order.
+
+    The evidence-integrity gate (``counts_toward_strength``) pre-filters the
+    findings so a guardrail's own soft-corroborated findings never reinforce a
+    candidate — only independently-discovered or hard-corroborated findings
+    contribute to a shape's strength.
     """
+    if not findings:
+        return []
+
+    findings = [f for f in findings if counts_toward_strength(f)]
     if not findings:
         return []
 

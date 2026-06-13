@@ -238,3 +238,86 @@ class TestFilterSuppressed:
     def test_no_dismissed_keeps_all(self):
         cs = [_candidate(category="a"), _candidate(category="b")]
         assert filter_suppressed(cs, set()) == cs
+
+
+# ---------------------------------------------------------------------------
+# U8 — evidence-integrity gate
+# ---------------------------------------------------------------------------
+
+from ollama_sentinel.guardrails import counts_toward_strength
+
+
+class TestCountsTowardStrength:
+    def test_independent_finding_counts(self):
+        assert counts_toward_strength(
+            {"guardrail_id": None, "confirming_signals": ["manual_confirm"]}
+        ) is True
+
+    def test_independent_with_no_signals_counts(self):
+        assert counts_toward_strength(
+            {"guardrail_id": None, "confirming_signals": []}
+        ) is True
+
+    def test_self_caused_with_test_failure_counts(self):
+        assert counts_toward_strength(
+            {"guardrail_id": 5, "confirming_signals": ["test_failure"]}
+        ) is True
+
+    def test_self_caused_with_fix_commit_counts(self):
+        assert counts_toward_strength(
+            {"guardrail_id": 5, "confirming_signals": ["fix_commit"]}
+        ) is True
+
+    def test_self_caused_with_only_manual_confirm_excluded(self):
+        assert counts_toward_strength(
+            {"guardrail_id": 5, "confirming_signals": ["manual_confirm"]}
+        ) is False
+
+    def test_self_caused_with_no_signals_excluded(self):
+        assert counts_toward_strength(
+            {"guardrail_id": 5, "confirming_signals": []}
+        ) is False
+
+    def test_self_caused_mixed_signals_with_hard_counts(self):
+        assert counts_toward_strength(
+            {"guardrail_id": 5, "confirming_signals": ["manual_confirm", "fix_commit"]}
+        ) is True
+
+
+class TestGateAppliedInDetectCandidates:
+    async def test_self_caused_soft_excluded_from_strength(self):
+        """A self-caused finding with only soft corroboration drops below the
+        threshold — the guardrail cannot manufacture its own re-promotion."""
+        f1 = _finding(1, "security", "eval a")   # independent (helper: guardrail_id None)
+        f2 = _finding(2, "security", "eval b")   # independent
+        soft = _finding(3, "security", "eval c")
+        soft["guardrail_id"] = 99
+        soft["confirming_signals"] = ["manual_confirm"]  # self-caused, soft → gated out
+        embedder = _FakeEmbedder({
+            "finding:1": [1.0, 0.0], "finding:2": [1.0, 0.0], "finding:3": [1.0, 0.0],
+        })
+        cands = await detect_candidates([f1, f2, soft], embedder, similarity_threshold=0.9)
+        assert cands == []  # only 2 eligible → below the 3-distinct threshold
+
+    async def test_self_caused_hard_counts_toward_shape(self):
+        """A self-caused finding with a hard signal counts normally."""
+        f1 = _finding(1, "security", "eval a")
+        f2 = _finding(2, "security", "eval b")
+        hard = _finding(3, "security", "eval c")
+        hard["guardrail_id"] = 99
+        hard["confirming_signals"] = ["test_failure"]  # self-caused, hard → counts
+        embedder = _FakeEmbedder({
+            "finding:1": [1.0, 0.0], "finding:2": [1.0, 0.0], "finding:3": [1.0, 0.0],
+        })
+        cands = await detect_candidates([f1, f2, hard], embedder, similarity_threshold=0.9)
+        assert len(cands) == 1
+        assert sorted(cands[0].finding_ids) == [1, 2, 3]
+
+    async def test_independent_findings_unaffected_by_gate(self):
+        """Findings with no provenance always count, whatever their signal."""
+        findings = [_finding(i, "bug", f"off by one {i}") for i in (1, 2, 3)]
+        for f in findings:
+            f["confirming_signals"] = ["manual_confirm"]  # soft, but independent
+        embedder = _FakeEmbedder({f"finding:{i}": [1.0, 0.0] for i in (1, 2, 3)})
+        cands = await detect_candidates(findings, embedder, similarity_threshold=0.9)
+        assert len(cands) == 1
