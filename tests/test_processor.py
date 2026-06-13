@@ -504,6 +504,99 @@ class TestFileProcessorGenerateReview:
         assert "## Part 2/" in summary
 
 
+class TestGuardrailWiring:
+    """U3 — FileProcessor loads active guardrails and injects them into reviews."""
+
+    @staticmethod
+    def _config(tmp_path):
+        """Config with semantic + structural recall off so generate_review makes
+        exactly one (chat) call and no embedder network traffic."""
+        return SentinelConfig(
+            watch=WatchConfig(directory=str(tmp_path)),
+            ollama=OllamaConfig(
+                host="http://localhost:11434",
+                models={
+                    "default": OllamaModelConfig(
+                        name="test-model", system_prompt="Review code."
+                    ),
+                },
+            ),
+            memory=MemoryConfig(
+                enabled=True, db_path=".ollama_reviews/memory.db",
+                semantic_recall=False, structural_recall=False,
+            ),
+        )
+
+    @staticmethod
+    def _db(tmp_path):
+        from ollama_sentinel.violation_db import ViolationDB
+        p = tmp_path / ".ollama_reviews" / "memory.db"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return ViolationDB(str(p))
+
+    async def test_get_active_guardrails_excludes_non_active(self, tmp_path):
+        from ollama_sentinel.violation_db import Guardrail
+
+        db = self._db(tmp_path)
+        try:
+            keep = db.create_guardrail(Guardrail(name="keep", assertion="active rule"))
+            off = db.create_guardrail(Guardrail(name="off", assertion="disabled rule"))
+            gone = db.create_guardrail(Guardrail(name="gone", assertion="dismissed rule"))
+            db.set_guardrail_status(off, "disabled")
+            db.set_guardrail_status(gone, "dismissed")
+
+            fp = FileProcessor(self._config(tmp_path), violation_db=db)
+            try:
+                rows = await fp._get_active_guardrails()
+            finally:
+                await fp.ollama_client.close()
+            assert [r["id"] for r in rows] == [keep]
+        finally:
+            db.close()
+
+    async def test_get_active_guardrails_no_db_returns_empty(self, sentinel_config):
+        fp = FileProcessor(sentinel_config)  # no violation_db wired
+        try:
+            assert await fp._get_active_guardrails() == []
+        finally:
+            await fp.ollama_client.close()
+
+    async def test_generate_review_injects_active_excludes_disabled(
+        self, tmp_path, httpx_mock: HTTPXMock
+    ):
+        from ollama_sentinel.violation_db import Guardrail
+
+        source = tmp_path / "small.py"
+        source.write_text("print('hello')")
+
+        db = self._db(tmp_path)
+        db.create_guardrail(Guardrail(
+            name="no-print", assertion="GUARDRAIL_ACTIVE_TOKEN avoid print",
+        ))
+        off = db.create_guardrail(Guardrail(
+            name="off", assertion="GUARDRAIL_DISABLED_TOKEN",
+        ))
+        db.set_guardrail_status(off, "disabled")
+
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": json.dumps({"summary": "ok", "findings": []})}},
+        )
+
+        fp = FileProcessor(self._config(tmp_path), violation_db=db)
+        fc = FileChange(path=source, change_type=Change.modified)
+        try:
+            await fp.generate_review(fc)
+        finally:
+            await fp.ollama_client.close()
+            db.close()
+
+        body = httpx_mock.get_requests()[0].read().decode()
+        assert "PROJECT GUARDRAILS" in body
+        assert "GUARDRAIL_ACTIVE_TOKEN" in body
+        assert "GUARDRAIL_DISABLED_TOKEN" not in body
+
+
 # ---------------------------------------------------------------------------
 # FileProcessor.save_review tests
 # ---------------------------------------------------------------------------

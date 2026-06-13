@@ -45,6 +45,38 @@ def _hash_violation(v: dict) -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
+def _hash_guardrail(g: dict) -> str:
+    """Stable fallback key for guardrails that lack an `id` field."""
+    key = f"{g.get('name')}:{g.get('assertion')}"
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+def _render_guardrail(g: dict) -> str:
+    name = g.get("name", "guardrail")
+    assertion = g.get("assertion", "")
+    category = g.get("scope_category")
+    scope = f" [{category}]" if category else ""
+    return f"- {name}{scope}: {assertion}"
+
+
+def _guardrail_applies_to_file(g: dict, file_rel_path: str) -> bool:
+    """Whether a guardrail's declared scope admits *file_rel_path*.
+
+    Only the path-glob dimension filters by file: a guardrail scoped to a
+    ``scope_path_glob`` is injected only for files matching that glob (matched
+    against the POSIX-normalized relative path, so ``src/*.py`` admits
+    ``src/app.py`` but not ``lib/app.py`` or ``src/sub/app.py``). An absent
+    glob means "applies broadly". ``scope_category`` does NOT exclude by file —
+    a file has no category until it is reviewed; the category dimension is
+    carried for downstream finding attribution and clustering, not injection.
+    """
+    glob = g.get("scope_path_glob")
+    if not glob:
+        return True
+    normalized = file_rel_path.replace("\\", "/")
+    return pathlib.PurePosixPath(normalized).match(glob)
+
+
 async def build_review_context(
     *,
     file_rel_path: str,
@@ -57,6 +89,7 @@ async def build_review_context(
     total_budget: int,
     retriever: Retriever,
     grounding: bool = True,
+    guardrails: Sequence[dict] = (),
 ) -> str:
     """Sentinel recipe — replaces the body of FileProcessor.format_prompt.
 
@@ -64,6 +97,12 @@ async def build_review_context(
     requires verbatim quoting and references the JSON schema's rejection
     behaviour. When False, omits that section because no schema is enforced —
     the instruction would be a lie and waste context.
+
+    ``guardrails`` are active project rules (already lifecycle-filtered by the
+    caller). They are scope-filtered to this file, then injected as a higher-
+    priority OPTIONAL section than ``PRIOR UNRESOLVED ISSUES`` — the retriever
+    ranks them by relevance and ``soft_budget`` caps the section so a growing
+    rulebook never floods the prompt.
     """
     sections: List[Section] = []
     if grounding:
@@ -92,6 +131,26 @@ async def build_review_context(
         soft_budget=int(total_budget * 0.70),
         truncate="tail",
     ))
+    # Guardrails are appended BEFORE prior violations so that, among OPTIONAL
+    # sections (which assemble() fills in list order), they win budget contention.
+    scoped_guardrails = [
+        g for g in guardrails if _guardrail_applies_to_file(g, file_rel_path)
+    ]
+    if scoped_guardrails:
+        guardrail_items = [
+            ContextItem(
+                text=_render_guardrail(g),
+                embed_key=f"guardrail:{g.get('id', _hash_guardrail(g))}",
+            )
+            for g in scoped_guardrails
+        ]
+        sections.append(Section(
+            name="PROJECT GUARDRAILS — check explicitly",
+            items=guardrail_items,
+            priority=Priority.OPTIONAL,
+            soft_budget=int(total_budget * 0.20),
+            retriever=retriever,
+        ))
     if prior_violations:
         violation_items = [
             ContextItem(
