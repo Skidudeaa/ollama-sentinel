@@ -289,8 +289,8 @@ speculatively).
 
 ### Recent landings
 
-- 2026-06-13: **v0.3 Pattern promotion → project guardrails BUILT (8-PR stack,
-  pending merge).** Executed the `docs/plans/2026-06-08-001-...-plan.md` plan
+- 2026-06-13: **v0.3 Pattern promotion → project guardrails BUILT + MERGED
+  (8-PR stack).** Executed the `docs/plans/2026-06-08-001-...-plan.md` plan
   end-to-end via `/ce-work`, TDD per unit, one stacked PR each off master:
   **Phase 1** — U1 storage+provenance (#37: `guardrails` table + CRUD + finding
   `guardrail_id` via additive migration), U2 CLI authoring/lifecycle (#38:
@@ -302,11 +302,22 @@ speculatively).
   surfacing+curation (#43: `guardrail candidates/promote/reject` w/ LLM-drafted
   assertions + signature suppression), U8 evidence-integrity gate (#44:
   `counts_toward_strength` — self-caused findings reinforce only via
-  test_failure/fix_commit, no echo). Suite 699→803 passed / 16 skip. Two
-  transparent deferrals: live dashboard *pending*-candidate view (KTD4: clustering
-  on-demand only) and U8 scoped-vs-global gate — both flagged in the PR bodies.
-  Also salvaged-truncated-grounded-review fix as independent **PR #36**. Merge
-  bottom-up #37→#44 (+ #36).
+  test_failure/fix_commit, no echo). Plus full doc sweep (#45: README, GUIDE,
+  VISION, index.html, CLAUDE.md). Suite 699→803 passed / 16 skip. All
+  rebase-merged bottom-up #37→#45 to master 2026-06-13. Two transparent
+  deferrals (open): live dashboard *pending*-candidate view (KTD4: clustering
+  on-demand only) and U8 scoped-vs-global gate — both noted in the U7/U8 PRs.
+- 2026-06-12: **Truncated grounded-review salvage (PR #36, merged 2026-06-13).**
+  A grounded review that hits the output-token cap (`num_predict`) is cut
+  mid-JSON by Ollama; the parse failure was misdiagnosed as "model ignored
+  format" and every complete finding was discarded, degrading to the regex
+  extractor. Now `OllamaClient.generate_with_model` reads `done_reason` and warns
+  with the `num_predict` value on truncation, and `_parse_review_response` runs a
+  string/escape-aware bracket scan (`_salvage_truncated_review`) to trim to the
+  last complete finding object, close the document, and re-parse — summary + all
+  complete findings survive; only the finding cut mid-generation is lost.
+  `:cloud` schema-ignoring prose still degrades to the legacy extractor. 10 new
+  tests. Reproduced live against `qwen3-coder:30b`.
 - 2026-06-08: **Small-DX backlog drained + v0.3 Pattern-promotion planned.**
   Shipped OP-1 SIGHUP hot-reload (PR #32), the impact_scan integration test
   (PR #34), and salvaged grounding P1–P4 positives (PR #31); closed CB-1 as
