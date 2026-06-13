@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
+# Sentinel distinguishing "argument not provided" from an explicit None
+# (used by update_guardrail so callers can *clear* a scope field with None).
+_UNSET = object()
+
 
 @dataclass
 class Finding:
@@ -19,6 +23,27 @@ class Finding:
     severity: str    # "critical", "high", "medium", "low"
     description: str
     verbatim_excerpt: str = ""
+    guardrail_id: Optional[int] = None  # provenance: guardrail that produced this finding
+
+
+@dataclass
+class Guardrail:
+    """A curated, named rule injected into reviews as an LLM-checked assertion.
+
+    Guardrails are model-agnostic prose checks: a ``name``, a natural-language
+    ``assertion`` the review model evaluates against code, and an optional
+    ``scope`` (a finding ``scope_category`` and/or a ``scope_path_glob``) that
+    bounds which files the guardrail applies to. ``status`` gates enforcement
+    (only ``active`` guardrails are injected); ``source`` records whether the
+    developer authored it (``manual``) or confirmed an auto-promoted candidate
+    (``promoted``).
+    """
+    name: str
+    assertion: str
+    scope_category: Optional[str] = None
+    scope_path_glob: Optional[str] = None
+    status: str = "active"    # "active" | "disabled" | "dismissed"
+    source: str = "manual"    # "manual" | "promoted"
 
 
 @dataclass
@@ -81,6 +106,20 @@ class ViolationDB:
         )
     """
 
+    _CREATE_GUARDRAILS_TABLE = """
+        CREATE TABLE IF NOT EXISTS guardrails (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            name            TEXT    NOT NULL,
+            assertion       TEXT    NOT NULL,
+            scope_category  TEXT,
+            scope_path_glob TEXT,
+            status          TEXT    NOT NULL DEFAULT 'active',
+            source          TEXT    NOT NULL DEFAULT 'manual',
+            created_at      TEXT    NOT NULL,
+            updated_at      TEXT    NOT NULL
+        )
+    """
+
     def __init__(self, db_path: str) -> None:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -90,11 +129,12 @@ class ViolationDB:
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.execute(self._CREATE_TABLE)
             self._conn.execute(self._CREATE_INCIDENTS_TABLE)
+            self._conn.execute(self._CREATE_GUARDRAILS_TABLE)
             self._conn.commit()
         self._migrate()
 
     def _migrate(self) -> None:
-        """Idempotent migration: add columns introduced after the initial schema (embed_text backfill, triggering_commit_sha, fix_commit_sha, verbatim_excerpt, resolution)."""
+        """Idempotent migration: add columns introduced after the initial schema (embed_text backfill, triggering_commit_sha, fix_commit_sha, verbatim_excerpt, resolution, guardrail_id)."""
         try:
             with self._lock:
                 cur = self._conn.execute("PRAGMA table_info(findings)")
@@ -126,6 +166,10 @@ class ViolationDB:
                 if "resolution" not in cols:
                     self._conn.execute(
                         "ALTER TABLE findings ADD COLUMN resolution TEXT"
+                    )
+                if "guardrail_id" not in cols:
+                    self._conn.execute(
+                        "ALTER TABLE findings ADD COLUMN guardrail_id INTEGER"
                     )
                 self._conn.commit()
         except sqlite3.DatabaseError as e:
@@ -182,8 +226,8 @@ class ViolationDB:
                             INSERT INTO findings
                                 (file_path, line_start, line_end, category,
                                  severity, description, first_seen, last_seen,
-                                 embed_text, verbatim_excerpt)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 embed_text, verbatim_excerpt, guardrail_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 f.file_path,
@@ -196,6 +240,7 @@ class ViolationDB:
                                 now,
                                 embed_text,
                                 f.verbatim_excerpt,
+                                f.guardrail_id,
                             ),
                         )
                 self._conn.commit()
@@ -551,6 +596,142 @@ class ViolationDB:
 
         scored.sort(key=lambda p: p[0], reverse=True)
         return [row for _score, row in scored[:k]]
+
+    # ------------------------------------------------------------------
+    # Guardrails (U1)
+    # ------------------------------------------------------------------
+
+    def create_guardrail(self, guardrail: Guardrail) -> int:
+        """Insert a Guardrail and return its new id.
+
+        ``status`` and ``source`` fall back to the dataclass defaults
+        (``active`` / ``manual``). ``created_at`` and ``updated_at`` are stamped
+        to the same instant at creation.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO guardrails
+                        (name, assertion, scope_category, scope_path_glob,
+                         status, source, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        guardrail.name,
+                        guardrail.assertion,
+                        guardrail.scope_category,
+                        guardrail.scope_path_glob,
+                        guardrail.status,
+                        guardrail.source,
+                        now,
+                        now,
+                    ),
+                )
+                self._conn.commit()
+                return int(cur.lastrowid) if cur.lastrowid is not None else -1
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_guardrail(self, guardrail_id: int) -> Optional[dict]:
+        """Return the guardrails row for *guardrail_id*, or None — any status."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM guardrails WHERE id = ?", (guardrail_id,)
+            )
+            rows = self._rows_to_dicts(cur)
+        return rows[0] if rows else None
+
+    def list_guardrails(
+        self,
+        *,
+        status: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> List[dict]:
+        """Return guardrails, optionally filtered by ``status`` / ``source``.
+
+        Ordered by ``id`` ascending so listings are stable across calls.
+        """
+        clauses: list = []
+        params: list = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if source is not None:
+            clauses.append("source = ?")
+            params.append(source)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            cur = self._conn.execute(
+                f"SELECT * FROM guardrails {where} ORDER BY id ASC",
+                tuple(params),
+            )
+            return self._rows_to_dicts(cur)
+
+    def get_active_guardrails(self) -> List[dict]:
+        """Return all ``active`` guardrails (the set eligible for injection)."""
+        return self.list_guardrails(status="active")
+
+    def update_guardrail(
+        self,
+        guardrail_id: int,
+        *,
+        name: Optional[str] = None,
+        assertion: Optional[str] = None,
+        scope_category=_UNSET,
+        scope_path_glob=_UNSET,
+    ) -> int:
+        """Edit a guardrail's name/assertion/scope; return rows updated.
+
+        Only the fields you pass change. ``name`` / ``assertion`` are left
+        untouched when ``None``. ``scope_category`` / ``scope_path_glob`` use the
+        ``_UNSET`` sentinel so passing ``None`` explicitly *clears* the scope
+        (broadens the guardrail) while omitting it leaves it intact. Touches
+        ``updated_at`` whenever any field changes. Returns 0 if no guardrail has
+        that id.
+        """
+        sets = ["updated_at = ?"]
+        params: list = [datetime.now(timezone.utc).isoformat()]
+        if name is not None:
+            sets.append("name = ?")
+            params.append(name)
+        if assertion is not None:
+            sets.append("assertion = ?")
+            params.append(assertion)
+        if scope_category is not _UNSET:
+            sets.append("scope_category = ?")
+            params.append(scope_category)
+        if scope_path_glob is not _UNSET:
+            sets.append("scope_path_glob = ?")
+            params.append(scope_path_glob)
+        params.append(guardrail_id)
+
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE guardrails SET {', '.join(sets)} WHERE id = ?",
+                tuple(params),
+            )
+            self._conn.commit()
+            return cur.rowcount
+
+    def set_guardrail_status(self, guardrail_id: int, status: str) -> int:
+        """Set a guardrail's lifecycle ``status`` and return rows updated.
+
+        ``status`` is one of ``active`` / ``disabled`` / ``dismissed``. Setting
+        the same status again is a no-op transition (idempotent) that still
+        reports rowcount 1 — the row exists. Returns 0 if no guardrail has that
+        id. Touches ``updated_at``.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE guardrails SET status = ?, updated_at = ? WHERE id = ?",
+                (status, datetime.now(timezone.utc).isoformat(), guardrail_id),
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     # ------------------------------------------------------------------
     # Lifecycle

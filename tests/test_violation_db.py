@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from ollama_sentinel.violation_db import Finding, ViolationDB
+from ollama_sentinel.violation_db import Finding, Guardrail, ViolationDB
 
 
 # ---------------------------------------------------------------------------
@@ -1038,3 +1038,260 @@ class TestGetOpenFindings:
             db.close()
         assert all_ids == sorted(all_ids)
         assert limited == sorted(all_ids)[:3]
+
+
+# ---------------------------------------------------------------------------
+# U1: Guardrail storage model + finding provenance
+# ---------------------------------------------------------------------------
+
+
+def _make_guardrail(**overrides) -> Guardrail:
+    """Build a Guardrail with sensible defaults, allowing field overrides."""
+    defaults = dict(
+        name="no-bare-except",
+        assertion="Do not catch bare Exception without re-raising or logging.",
+        scope_category="bug",
+        scope_path_glob="src/*.py",
+    )
+    defaults.update(overrides)
+    return Guardrail(**defaults)
+
+
+class TestGuardrailCRUD:
+    def test_create_returns_id_and_roundtrips(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            gid = db.create_guardrail(_make_guardrail())
+            assert isinstance(gid, int) and gid > 0
+
+            row = db.get_guardrail(gid)
+            assert row is not None
+            assert row["id"] == gid
+            assert row["name"] == "no-bare-except"
+            assert row["assertion"].startswith("Do not catch bare Exception")
+            assert row["scope_category"] == "bug"
+            assert row["scope_path_glob"] == "src/*.py"
+            # Defaults applied on creation.
+            assert row["status"] == "active"
+            assert row["source"] == "manual"
+            assert row["created_at"]
+            assert row["updated_at"]
+        finally:
+            db.close()
+
+    def test_create_without_scope_defaults_null(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            gid = db.create_guardrail(
+                Guardrail(name="broad", assertion="Applies everywhere.")
+            )
+            row = db.get_guardrail(gid)
+            assert row["scope_category"] is None
+            assert row["scope_path_glob"] is None
+        finally:
+            db.close()
+
+    def test_create_promoted_source_persists(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            gid = db.create_guardrail(_make_guardrail(source="promoted"))
+            assert db.get_guardrail(gid)["source"] == "promoted"
+        finally:
+            db.close()
+
+    def test_get_guardrail_missing_returns_none(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            assert db.get_guardrail(424242) is None
+        finally:
+            db.close()
+
+    def test_list_guardrails_all_and_filtered(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            a = db.create_guardrail(_make_guardrail(name="a"))
+            b = db.create_guardrail(_make_guardrail(name="b", source="promoted"))
+            db.set_guardrail_status(b, "disabled")
+
+            all_rows = db.list_guardrails()
+            assert {r["id"] for r in all_rows} == {a, b}
+
+            active = db.list_guardrails(status="active")
+            assert [r["id"] for r in active] == [a]
+
+            promoted = db.list_guardrails(source="promoted")
+            assert [r["id"] for r in promoted] == [b]
+        finally:
+            db.close()
+
+    def test_get_active_guardrails_excludes_non_active(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            keep = db.create_guardrail(_make_guardrail(name="keep"))
+            off = db.create_guardrail(_make_guardrail(name="off"))
+            gone = db.create_guardrail(_make_guardrail(name="gone"))
+            db.set_guardrail_status(off, "disabled")
+            db.set_guardrail_status(gone, "dismissed")
+
+            active = db.get_active_guardrails()
+            assert [r["id"] for r in active] == [keep]
+        finally:
+            db.close()
+
+    def test_status_transitions_persist(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            gid = db.create_guardrail(_make_guardrail())
+            assert db.get_guardrail(gid)["status"] == "active"
+
+            assert db.set_guardrail_status(gid, "disabled") == 1
+            assert db.get_guardrail(gid)["status"] == "disabled"
+
+            assert db.set_guardrail_status(gid, "active") == 1
+            assert db.get_guardrail(gid)["status"] == "active"
+
+            assert db.set_guardrail_status(gid, "dismissed") == 1
+            assert db.get_guardrail(gid)["status"] == "dismissed"
+        finally:
+            db.close()
+
+    def test_dismiss_is_idempotent(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            gid = db.create_guardrail(_make_guardrail())
+            db.set_guardrail_status(gid, "dismissed")
+            # Dismiss again — no error, stays dismissed.
+            db.set_guardrail_status(gid, "dismissed")
+            assert db.get_guardrail(gid)["status"] == "dismissed"
+        finally:
+            db.close()
+
+    def test_set_status_missing_id_returns_zero(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            assert db.set_guardrail_status(424242, "disabled") == 0
+        finally:
+            db.close()
+
+    def test_update_guardrail_edits_name_assertion_scope(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            gid = db.create_guardrail(_make_guardrail())
+            n = db.update_guardrail(
+                gid,
+                name="renamed",
+                assertion="New assertion text.",
+                scope_category="security",
+                scope_path_glob="lib/**.py",
+            )
+            assert n == 1
+            row = db.get_guardrail(gid)
+            assert row["name"] == "renamed"
+            assert row["assertion"] == "New assertion text."
+            assert row["scope_category"] == "security"
+            assert row["scope_path_glob"] == "lib/**.py"
+        finally:
+            db.close()
+
+    def test_update_guardrail_can_clear_scope(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            gid = db.create_guardrail(_make_guardrail())
+            db.update_guardrail(gid, scope_category=None, scope_path_glob=None)
+            row = db.get_guardrail(gid)
+            assert row["scope_category"] is None
+            assert row["scope_path_glob"] is None
+        finally:
+            db.close()
+
+    def test_update_guardrail_unspecified_fields_unchanged(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            gid = db.create_guardrail(_make_guardrail())
+            # Only change the name — scope must be left intact.
+            db.update_guardrail(gid, name="only-name")
+            row = db.get_guardrail(gid)
+            assert row["name"] == "only-name"
+            assert row["scope_category"] == "bug"
+            assert row["scope_path_glob"] == "src/*.py"
+            assert row["assertion"].startswith("Do not catch bare Exception")
+        finally:
+            db.close()
+
+    def test_update_guardrail_missing_id_returns_zero(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            assert db.update_guardrail(424242, name="x") == 0
+        finally:
+            db.close()
+
+
+class TestGuardrailTableMigration:
+    def test_guardrails_table_created_on_init(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            tbl = db._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='guardrails'"
+            ).fetchone()
+            assert tbl is not None
+        finally:
+            db.close()
+
+
+class TestGuardrailProvenance:
+    def test_finding_written_with_guardrail_id(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            gid = db.create_guardrail(_make_guardrail())
+            db.persist_findings(
+                "src/app.py",
+                [_make_finding(file_path="src/app.py", guardrail_id=gid)],
+            )
+            row = db.get_unresolved("src/app.py")[0]
+            assert row["guardrail_id"] == gid
+        finally:
+            db.close()
+
+    def test_finding_without_guardrail_id_is_null(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings("src/app.py", [_make_finding(file_path="src/app.py")])
+            row = db.get_unresolved("src/app.py")[0]
+            assert row["guardrail_id"] is None
+        finally:
+            db.close()
+
+    def test_migration_adds_guardrail_id_to_legacy_db(self, tmp_path):
+        """Additive migration adds guardrail_id to a pre-existing DB, no data loss."""
+        p = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(
+            """
+            CREATE TABLE findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL, line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL, category TEXT NOT NULL,
+                severity TEXT NOT NULL, description TEXT NOT NULL,
+                first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                resolved INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO findings (file_path, line_start, line_end, category, "
+            "severity, description, first_seen, last_seen) "
+            "VALUES ('a.py', 1, 2, 'bug', 'low', 'd', 't', 't')"
+        )
+        conn.commit()
+        conn.close()
+
+        db = ViolationDB(str(p))  # __init__ runs _migrate
+        try:
+            rows = db.get_unresolved("a.py")
+            assert len(rows) == 1  # existing row intact
+            assert "guardrail_id" in rows[0]
+            assert rows[0]["guardrail_id"] is None  # legacy row: no provenance
+        finally:
+            db.close()
