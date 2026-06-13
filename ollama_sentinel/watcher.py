@@ -14,7 +14,7 @@ from watchfiles import awatch, Change
 from .config import load_config
 from .extractor import extract_findings_legacy, validate_findings
 from .models import SentinelConfig
-from .processor import FileChange, FileProcessor
+from .processor import FileChange, FileProcessor, attribute_guardrail_provenance
 from .violation_db import ViolationDB
 
 log = logging.getLogger("ollama-sentinel")
@@ -262,6 +262,21 @@ class FileSentinel:
                         summary_text = review.get("summary", "")
                         valid_findings = extract_findings_legacy(summary_text, str(rel_path))
                     if valid_findings:
+                        # Best-effort guardrail provenance: attribute each finding
+                        # to the in-scope guardrail it corresponds to. Never blocks
+                        # persistence — a failure leaves provenance null.
+                        try:
+                            guardrails = await asyncio.to_thread(
+                                self.violation_db.get_active_guardrails,
+                            )
+                            if guardrails:
+                                attribute_guardrail_provenance(
+                                    valid_findings, guardrails, str(rel_path),
+                                )
+                        except Exception as e:
+                            log.warning(
+                                "Guardrail attribution failed for %s: %s", rel_path, e,
+                            )
                         await asyncio.to_thread(
                             self.violation_db.persist_findings, str(rel_path), valid_findings,
                         )

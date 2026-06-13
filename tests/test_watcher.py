@@ -485,3 +485,62 @@ class TestSarifAutoRefresh:
 
         # The review itself still saved.
         assert (tmp_path / ".ollama_reviews" / "app.md").exists()
+
+
+class TestGuardrailProvenanceWiring:
+    """U4 — process_change attributes guardrail provenance to flagged findings."""
+
+    async def test_flagged_finding_records_guardrail_provenance(
+        self, tmp_path, monkeypatch
+    ):
+        from ollama_sentinel.violation_db import Guardrail
+
+        cfg = _watcher_cfg(tmp_path)
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+
+        sentinel = FileSentinel(cfg)
+        monkeypatch.setattr(sentinel.processor, "generate_review", _fake_review)
+        # Author a guardrail scoped to the finding's category before review.
+        gid = sentinel.violation_db.create_guardrail(
+            Guardrail(name="no-eval", assertion="Never eval untrusted input.",
+                      scope_category="security")
+        )
+        try:
+            await sentinel.process_change(
+                FileChange(path=src, change_type=Change.modified)
+            )
+        finally:
+            await sentinel.processor.close()
+
+        rows = sentinel.violation_db.get_unresolved("app.py")
+        assert len(rows) == 1
+        assert rows[0]["guardrail_id"] == gid
+
+    async def test_provenance_failure_does_not_block_persistence(
+        self, tmp_path, monkeypatch
+    ):
+        """If guardrail attribution raises, findings still persist (null provenance)."""
+        cfg = _watcher_cfg(tmp_path)
+        src = tmp_path / "app.py"
+        src.write_text("def f():\n    x = eval(data)\n    return x\n")
+
+        sentinel = FileSentinel(cfg)
+        monkeypatch.setattr(sentinel.processor, "generate_review", _fake_review)
+
+        def _boom(self):
+            raise RuntimeError("guardrail load blew up")
+
+        # get_active_guardrails raising inside process_change must not abort persist.
+        from ollama_sentinel.violation_db import ViolationDB
+        monkeypatch.setattr(ViolationDB, "get_active_guardrails", _boom)
+        try:
+            await sentinel.process_change(
+                FileChange(path=src, change_type=Change.modified)
+            )
+        finally:
+            await sentinel.processor.close()
+
+        rows = sentinel.violation_db.get_unresolved("app.py")
+        assert len(rows) == 1
+        assert rows[0]["guardrail_id"] is None
