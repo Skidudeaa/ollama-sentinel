@@ -1218,6 +1218,260 @@ def guardrail_dismiss(
     )
 
 
+# --- Candidate surfacing + curation (U7) ----------------------------------
+
+def _build_embedder(config):
+    """Construct the hot-path embedder for on-demand clustering, or None.
+
+    Module-level so tests can monkeypatch it with a fake embedder.
+    """
+    from .context import OllamaEmbedder
+    try:
+        return OllamaEmbedder(
+            host=config.ollama.host,
+            model=config.embedding.models["hot"],
+            timeout_seconds=float(config.embedding.timeout_seconds),
+        )
+    except Exception:
+        return None
+
+
+async def _cli_candidates(config, db, *, threshold: float):
+    """Detect + suppress guardrail candidates (no drafting). Returns the list,
+    ordered deterministically so a 1-based index is stable between list/promote/
+    reject on unchanged data. Runs on demand only (KTD4)."""
+    from .guardrails import detect_candidates, filter_suppressed
+
+    findings = await asyncio.to_thread(db.get_corroborated_findings)
+    if not findings:
+        return []
+    embedder = _build_embedder(config)
+    if embedder is None:
+        return []
+    try:
+        cands = await detect_candidates(findings, embedder, similarity_threshold=threshold)
+    finally:
+        await embedder.close()
+    # Suppress shapes already rejected: dismissed promoted guardrails store the
+    # candidate signature in their assertion (see `reject`). A confirmed-then-
+    # dismissed real guardrail won't match (different text format), so it never
+    # falsely suppresses.
+    dismissed = [
+        g["assertion"]
+        for g in db.list_guardrails(status="dismissed", source="promoted")
+    ]
+    return filter_suppressed(cands, dismissed)
+
+
+def _model_caller(client, config):
+    """An async (prompt)->str callable bound to the configured default model."""
+    model_cfg = config.ollama.models.get("default")
+
+    async def _call(prompt: str) -> str:
+        return await client.generate_with_model(model_cfg, prompt)
+
+    return _call
+
+
+@guardrail_app.command("candidates")
+def guardrail_candidates(
+    output_format: str = typer.Option(
+        "table", "--format", "-f", help="Output format: table or json",
+    ),
+    threshold: float = typer.Option(
+        0.85, "--threshold", help="Embedding-similarity threshold for clustering",
+    ),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """List detected guardrail candidates — recurring corroborated shapes.
+
+    A candidate is >=3 distinct corroborated findings sharing a semantic shape,
+    each shown with an LLM-drafted assertion you can edit at `guardrail promote`.
+    On-demand only: clustering runs here, never on the watcher/dashboard loop.
+    """
+    import json as json_mod
+
+    from rich.table import Table
+
+    from .guardrails import draft_assertion
+    from .processor import OllamaClient
+    from .violation_db import ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    if not config.embedding.enabled:
+        console.print(
+            "[yellow]Candidate detection needs the embedding model "
+            "(set embedding.enabled in your config).[/yellow]"
+        )
+        raise typer.Exit()
+    db_path = _guardrail_db_path(config_path)
+    if not db_path.exists():
+        console.print("[green]No candidates — no violation database yet.[/green]")
+        raise typer.Exit()
+
+    async def _run():
+        db = ViolationDB(str(db_path))
+        client = OllamaClient(config.ollama.model_dump())
+        call = _model_caller(client, config)
+        try:
+            cands = await _cli_candidates(config, db, threshold=threshold)
+            return [(c, await draft_assertion(c, call)) for c in cands]
+        finally:
+            await client.close()
+            db.close()
+
+    drafted = asyncio.run(_run())
+
+    # JSON output is always valid JSON, even when empty (`[]`) — it may be piped.
+    if output_format == "json":
+        console.print(json_mod.dumps([
+            {"index": i, "category": c.category, "size": c.size,
+             "finding_ids": c.finding_ids, "assertion": a}
+            for i, (c, a) in enumerate(drafted, 1)
+        ], indent=2))
+        return
+
+    if not drafted:
+        console.print("[green]No guardrail candidates detected.[/green]")
+        raise typer.Exit()
+
+    table = Table(title=f"Guardrail candidates ({len(drafted)})")
+    table.add_column("#", style="bold", width=3)
+    table.add_column("Category", width=12)
+    table.add_column("N", justify="right", width=3)
+    table.add_column("Drafted assertion (editable)")
+    for i, (c, a) in enumerate(drafted, 1):
+        table.add_row(str(i), c.category, str(c.size), a)
+    console.print(table)
+    console.print(
+        "[dim]Promote with `guardrail promote <#>` or reject with "
+        "`guardrail reject <#>`.[/dim]"
+    )
+
+
+@guardrail_app.command("promote")
+def guardrail_promote(
+    index: int = typer.Argument(..., help="1-based index from `guardrail candidates`"),
+    name: Optional[str] = typer.Option(None, "--name", help="Guardrail name"),
+    assertion: Optional[str] = typer.Option(
+        None, "--assertion", "-a", help="Override the drafted assertion",
+    ),
+    threshold: float = typer.Option(
+        0.85, "--threshold", help="Must match the value used to list candidates",
+    ),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """Confirm a candidate into an active guardrail (source=promoted).
+
+    Nothing is enforced until this confirm step — a candidate never becomes
+    active on its own. The assertion is seeded from the draft (or --assertion)
+    and remains editable via `guardrail edit`.
+    """
+    from .guardrails import derive_scope, draft_assertion
+    from .processor import OllamaClient
+    from .violation_db import Guardrail, ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    db_path = _guardrail_db_path(config_path)
+    if not db_path.exists():
+        console.print(f"[red]No candidate at index {index}.[/red]")
+        raise typer.Exit(code=1)
+
+    async def _run():
+        db = ViolationDB(str(db_path))
+        client = OllamaClient(config.ollama.model_dump())
+        try:
+            cands = await _cli_candidates(config, db, threshold=threshold)
+            if index < 1 or index > len(cands):
+                return None
+            c = cands[index - 1]
+            text = assertion
+            if text is None:
+                text = await draft_assertion(c, _model_caller(client, config))
+            cat, glob = derive_scope(c)
+            gname = name or f"{c.category}-pattern"
+            gid = db.create_guardrail(Guardrail(
+                name=gname, assertion=text,
+                scope_category=cat, scope_path_glob=glob,
+                source="promoted",
+            ))
+            return gid, gname
+        finally:
+            await client.close()
+            db.close()
+
+    result = asyncio.run(_run())
+    if result is None:
+        console.print(
+            f"[red]No candidate at index {index}; run `guardrail candidates`.[/red]"
+        )
+        raise typer.Exit(code=1)
+    gid, gname = result
+    console.print(
+        f"[green]Promoted candidate {index} → guardrail {gid}: {gname} "
+        f"(active, source=promoted). Edit with `guardrail edit {gid}`.[/green]"
+    )
+
+
+@guardrail_app.command("reject")
+def guardrail_reject(
+    index: int = typer.Argument(..., help="1-based index from `guardrail candidates`"),
+    threshold: float = typer.Option(
+        0.85, "--threshold", help="Must match the value used to list candidates",
+    ),
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+):
+    """Reject a candidate so its shape is not re-proposed on the next run."""
+    from .guardrails import candidate_signature
+    from .violation_db import Guardrail, ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    db_path = _guardrail_db_path(config_path)
+    if not db_path.exists():
+        console.print(f"[red]No candidate at index {index}.[/red]")
+        raise typer.Exit(code=1)
+
+    async def _run():
+        db = ViolationDB(str(db_path))
+        try:
+            cands = await _cli_candidates(config, db, threshold=threshold)
+            if index < 1 or index > len(cands):
+                return None
+            c = cands[index - 1]
+            # Tombstone: a dismissed promoted guardrail whose assertion is the
+            # candidate signature, so `candidates` suppresses this shape next run.
+            gid = db.create_guardrail(Guardrail(
+                name=f"[rejected] {c.category}",
+                assertion=candidate_signature(c),
+                scope_category=c.category,
+                source="promoted",
+            ))
+            db.set_guardrail_status(gid, "dismissed")
+            return c.category
+        finally:
+            db.close()
+
+    category = asyncio.run(_run())
+    if category is None:
+        console.print(
+            f"[red]No candidate at index {index}; run `guardrail candidates`.[/red]"
+        )
+        raise typer.Exit(code=1)
+    console.print(
+        f"[green]Rejected candidate {index} ({category}); "
+        f"this shape won't be re-proposed.[/green]"
+    )
+
+
 @app.command()
 def triage(
     input_path: Optional[str] = typer.Argument(

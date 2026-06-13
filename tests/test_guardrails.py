@@ -140,3 +140,101 @@ class TestDetectCandidates:
     async def test_empty_input_returns_empty(self):
         embedder = _FakeEmbedder({})
         assert await detect_candidates([], embedder) == []
+
+
+# ---------------------------------------------------------------------------
+# U7 — candidate surfacing helpers (signature, draft, scope, suppression)
+# ---------------------------------------------------------------------------
+
+from ollama_sentinel.guardrails import (
+    candidate_signature,
+    derive_scope,
+    draft_assertion,
+    filter_suppressed,
+)
+
+
+def _candidate(category="security", ids=(1, 2, 3),
+               descriptions=("eval a", "eval b", "eval c"),
+               file_paths=("src/a.py", "src/b.py", "src/c.py")):
+    return Candidate(
+        category=category,
+        finding_ids=list(ids),
+        descriptions=list(descriptions),
+        file_paths=list(file_paths),
+    )
+
+
+class TestCandidateSignature:
+    def test_stable_regardless_of_description_order(self):
+        a = _candidate(descriptions=("x", "y", "z"))
+        b = _candidate(descriptions=("z", "x", "y"))
+        assert candidate_signature(a) == candidate_signature(b)
+
+    def test_category_distinguishes(self):
+        a = _candidate(category="security")
+        b = _candidate(category="perf")
+        assert candidate_signature(a) != candidate_signature(b)
+
+
+class TestDeriveScope:
+    def test_category_always_returned(self):
+        cat, _glob = derive_scope(_candidate(category="bug"))
+        assert cat == "bug"
+
+    def test_common_top_dir_becomes_path_glob(self):
+        _cat, glob = derive_scope(_candidate(
+            file_paths=("src/a.py", "src/b.py", "src/c.py")))
+        assert glob == "src/*"
+
+    def test_mixed_dirs_no_path_glob(self):
+        _cat, glob = derive_scope(_candidate(
+            file_paths=("src/a.py", "lib/b.py", "src/c.py")))
+        assert glob is None
+
+    def test_root_files_no_path_glob(self):
+        _cat, glob = derive_scope(_candidate(file_paths=("a.py", "b.py", "c.py")))
+        assert glob is None
+
+
+class TestDraftAssertion:
+    async def test_uses_model_output_when_available(self):
+        async def _call(prompt):
+            assert "security" in prompt  # the cluster category is in the prompt
+            return "  Never call eval on untrusted input.  "
+        out = await draft_assertion(_candidate(), _call)
+        assert out == "Never call eval on untrusted input."
+
+    async def test_falls_back_when_no_model(self):
+        out = await draft_assertion(_candidate(category="bug",
+                                               descriptions=("off by one",)))
+        assert "bug" in out
+        assert "off by one" in out
+
+    async def test_falls_back_when_model_raises(self):
+        async def _boom(prompt):
+            raise RuntimeError("model down")
+        out = await draft_assertion(_candidate(category="perf",
+                                               descriptions=("n^2 loop",)), _boom)
+        assert "perf" in out and "n^2 loop" in out
+
+    async def test_falls_back_when_model_returns_blank(self):
+        async def _blank(prompt):
+            return "   "
+        out = await draft_assertion(_candidate(), _blank)
+        assert out  # non-empty fallback
+
+
+class TestFilterSuppressed:
+    def test_dismissed_signature_is_dropped(self):
+        c = _candidate()
+        sig = candidate_signature(c)
+        assert filter_suppressed([c], {sig}) == []
+
+    def test_unrelated_signature_kept(self):
+        c = _candidate()
+        assert filter_suppressed([c], {"other::sig"}) == [c]
+
+    def test_no_dismissed_keeps_all(self):
+        cs = [_candidate(category="a"), _candidate(category="b")]
+        assert filter_suppressed(cs, set()) == cs
