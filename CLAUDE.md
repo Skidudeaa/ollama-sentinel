@@ -219,43 +219,44 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 ## Known Issues / Next Session Breadcrumbs
 
-### Repo state as of 2026-06-05 (last session)
+### Repo state as of 2026-06-13 (last session)
 
 - **v0.1.1 shipped**; repo public at <https://github.com/Skidudeaa/ollama-sentinel>.
 - **Test suite:** run `pytest tests/ -q` for the live count (this session it was
-  679 passed / 15 skipped, ~10s). Do **not** hardcode the number here again — it
+  813 passed / 16 skipped, ~10s). Do **not** hardcode the number here again — it
   drifts every time tests land. Quote the command, not the count.
+- **v0.3 Pattern promotion → project guardrails is MERGED to master.** All 8
+  units U1–U8 + a full doc sweep + the salvage fix landed as PRs #36–#45
+  (rebase-merged bottom-up 2026-06-13). `master @ 92de011`. The north-star
+  Finding→Incident→Pattern rung is live. See the 2026-06-13 handoff note.
 - **The "make findings actionable" arc** (surface → triage → remediate →
-  stale-prune): **the full arc (slices 1-4) is MERGED to master.** surface
-  (#14), triage (#15), remediate `fix <id>` (PRs #22-26, rebase-merged
-  2026-06-04), and **stale-prune `prune` (PR #29, rebase-merged 2026-06-05)**
-  all ship. The arc is complete.
-- **Working tree should be clean.** If it isn't, `git status` first.
+  stale-prune) is also complete and merged (#14/#15/#22-26/#29).
+- **Working tree should be clean** and **all feature branches deleted** (only
+  `master` remains). If it isn't, `git status` first.
 - **The visual guide (`docs/index.html`) is the canonical pitch surface.**
   Linked from README, GUIDE.md, and the v0.1.0 release notes.
 
 ### Resume here next time
 
 1. **Sanity check.** `pytest tests/ -q` should be green (run it for the live
-   count; ~803 / 16 skip on the guardrails stack tip — do not trust this number,
-   it drifts).
-2. **Pattern promotion → project guardrails is BUILT** (the north-star v0.3
-   feature). All 8 plan units U1–U8 ship as a linear stacked-PR chain
-   **#37→#38→#39→#40→#41→#42→#43→#44** (base master). **Not yet merged** — review
-   and merge bottom-up; GitHub auto-retargets each child to master as its parent
-   lands. The independent salvage fix is **PR #36**. This docs PR rides the tip.
-3. **The "make findings actionable" arc is complete** (PR #29, 2026-06-05).
-   OP-1 SIGHUP hot-reload (#32) and CB-1 (#33) also done. See
-   `docs/superpowers/followups.md`.
+   count; ~813 / 16 skip — do not trust this number, it drifts). `git status`
+   should be clean on `master`.
+2. **The guardrails feature is fully MERGED** (PRs #36–#45, 2026-06-13). Nothing
+   to ship there. Try it: `ollama-sentinel guardrail add … ` works with no
+   Ollama; `guardrail candidates` needs the embedder + corroborated history. See
+   `docs/session-notes/2026-06-13-guardrails-merged-handoff.md`.
+3. **Two small follow-ups are open** (deferred during the build, both low-risk —
+   see Pickable next moves and the handoff note).
 
 ### Pickable next moves (ordered by leverage)
 
-The v0.3 Pattern-promotion leap is **built** (#37–#44, pending merge). What's left:
+The v0.3 Pattern-promotion leap is **shipped and merged**. What's left:
 
 | # | Item | Effort | Risk | Notes |
 |---|---|---|---|---|
-| 1 | **Merge the guardrails stack** (#37→#44 bottom-up) + #36. Then the two transparent scope deferrals: (a) the *live dashboard pending-candidate view* (skipped in U7 to honor KTD4 — on-demand clustering only; a cached/slow-cadence panel would re-enable it); (b) confirm whether U8's *global* self-caused-soft exclusion should become *scoped-to-originating-guardrail* (stricter-is-safe today). | S–M | low | Both noted in the U7/U8 PR bodies. |
-| 2 | **v0.3 shared substrate** — lift `ImportResolver` to shared infra, unify `Finding`/`ImpactItem`, bidirectional impact↔incident flow. | L | med | The moat play (see `docs/VISION.md`). Architectural; follows guardrails. |
+| 1 | **Guardrail deferrals** — (a) a *live dashboard pending-candidate view* (skipped in U7 to honor KTD4: clustering is on-demand only; a cached / slow-cadence panel would re-enable it without taxing the poll loop); (b) decide whether U8's *global* self-caused-soft exclusion should narrow to *scoped-to-originating-guardrail* (the current global form is stricter-is-safe and passes every plan scenario). | S–M | low | Both flagged in the U7/U8 PR bodies. Only worth doing if you actually feel the gap in use. |
+| 2 | **v0.3 shared substrate** — lift `ImportResolver` to shared infra, unify `Finding`/`ImpactItem`, bidirectional impact↔incident flow. | L | med | The moat play (see `docs/VISION.md`). The biggest remaining architectural arc; now unblocked. |
+| 3 | **Cosmetic:** `tests/test_cli.py` has one unused `Guardrail` import (Pyright-only lint, no test impact) — fold into whatever next touches that file. | XS | none | — |
 
 Skip TR-3 — deliberate spec deviation, documented in followups.md. Qwen3
 Phases B/C stay parked (no demand; the Phase-A plan forbids pulling the models
