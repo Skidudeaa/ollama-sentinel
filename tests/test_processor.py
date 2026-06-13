@@ -504,6 +504,115 @@ class TestFileProcessorGenerateReview:
         assert "## Part 2/" in summary
 
 
+def _gr(**overrides) -> dict:
+    """A guardrail row dict (as returned by ViolationDB.get_active_guardrails)."""
+    g = dict(
+        id=1, name="g", assertion="a",
+        scope_category=None, scope_path_glob=None,
+        status="active", source="manual",
+    )
+    g.update(overrides)
+    return g
+
+
+class TestGuardrailAttribution:
+    """U4 — best-effort guardrail provenance on flagged findings."""
+
+    def test_single_category_scoped_guardrail_attributed(self):
+        from ollama_sentinel.processor import attribute_guardrail_provenance
+        from ollama_sentinel.violation_db import Finding
+
+        f = Finding("src/app.py", 1, 1, "security", "high", "uses eval")
+        attribute_guardrail_provenance(
+            [f], [_gr(id=7, scope_category="security")], "src/app.py",
+        )
+        assert f.guardrail_id == 7
+
+    def test_single_broad_guardrail_attributed(self):
+        from ollama_sentinel.processor import attribute_guardrail_provenance
+        from ollama_sentinel.violation_db import Finding
+
+        f = Finding("src/app.py", 1, 1, "bug", "high", "x")
+        attribute_guardrail_provenance([f], [_gr(id=3)], "src/app.py")  # broad
+        assert f.guardrail_id == 3
+
+    def test_category_match_chosen_among_many(self):
+        from ollama_sentinel.processor import attribute_guardrail_provenance
+        from ollama_sentinel.violation_db import Finding
+
+        f = Finding("src/app.py", 1, 1, "security", "high", "x")
+        guardrails = [
+            _gr(id=1, scope_category="security"),
+            _gr(id=2, scope_category="perf"),
+        ]
+        attribute_guardrail_provenance([f], guardrails, "src/app.py")
+        assert f.guardrail_id == 1
+
+    def test_unrelated_finding_stays_null(self):
+        from ollama_sentinel.processor import attribute_guardrail_provenance
+        from ollama_sentinel.violation_db import Finding
+
+        f = Finding("src/app.py", 1, 1, "style", "low", "x")
+        guardrails = [
+            _gr(id=1, scope_category="security"),
+            _gr(id=2, scope_category="perf"),
+        ]
+        attribute_guardrail_provenance([f], guardrails, "src/app.py")
+        assert f.guardrail_id is None
+
+    def test_ambiguous_category_stays_null(self):
+        from ollama_sentinel.processor import attribute_guardrail_provenance
+        from ollama_sentinel.violation_db import Finding
+
+        f = Finding("src/app.py", 1, 1, "bug", "high", "x")
+        guardrails = [
+            _gr(id=1, scope_category="bug"),
+            _gr(id=2, scope_category="bug"),
+        ]
+        attribute_guardrail_provenance([f], guardrails, "src/app.py")
+        assert f.guardrail_id is None
+
+    def test_out_of_path_scope_not_attributed(self):
+        from ollama_sentinel.processor import attribute_guardrail_provenance
+        from ollama_sentinel.violation_db import Finding
+
+        f = Finding("src/app.py", 1, 1, "security", "high", "x")
+        guardrails = [_gr(id=1, scope_category="security", scope_path_glob="lib/*.py")]
+        attribute_guardrail_provenance([f], guardrails, "src/app.py")
+        assert f.guardrail_id is None
+
+    def test_no_guardrails_is_noop(self):
+        from ollama_sentinel.processor import attribute_guardrail_provenance
+        from ollama_sentinel.violation_db import Finding
+
+        f = Finding("src/app.py", 1, 1, "security", "high", "x")
+        attribute_guardrail_provenance([f], [], "src/app.py")
+        assert f.guardrail_id is None
+
+    def test_single_mismatched_category_guardrail_stays_null(self):
+        """A lone in-scope guardrail scoped to a *different* category must not
+        capture an unrelated finding (only broad lone rules attribute)."""
+        from ollama_sentinel.processor import attribute_guardrail_provenance
+        from ollama_sentinel.violation_db import Finding
+
+        f = Finding("src/app.py", 1, 1, "security", "high", "x")
+        attribute_guardrail_provenance(
+            [f], [_gr(id=1, scope_category="perf")], "src/app.py",
+        )
+        assert f.guardrail_id is None
+
+    def test_malformed_guardrail_degrades_without_raising(self):
+        from ollama_sentinel.processor import attribute_guardrail_provenance
+        from ollama_sentinel.violation_db import Finding
+
+        f = Finding("src/app.py", 1, 1, "security", "high", "x")
+        # A non-dict entry must be skipped, not crash; the valid one still attributes.
+        attribute_guardrail_provenance(
+            [f], [None, _gr(id=5, scope_category="security")], "src/app.py",
+        )
+        assert f.guardrail_id == 5
+
+
 class TestGuardrailWiring:
     """U3 — FileProcessor loads active guardrails and injects them into reviews."""
 

@@ -95,6 +95,58 @@ def _number_lines(content: str) -> str:
     )
 
 
+def attribute_guardrail_provenance(
+    findings: "List[Any]", guardrails: "List[dict]", file_rel_path: str,
+) -> None:
+    """Best-effort: stamp each finding with the guardrail that produced it.
+
+    Mutates ``finding.guardrail_id`` in place. The guardrail set is scope-filtered
+    to ``file_rel_path`` using the *same* canonical filter the injection path uses
+    (``recipes._guardrail_applies_to_file``), so a finding is only ever attributed
+    to a guardrail that was actually injected for this file. Attribution is
+    intentionally conservative — it fails safe to ``None`` (U8's integrity gate
+    only *adds* trust when provenance is present, so a missed link just counts the
+    finding as independently discovered):
+
+      1. If exactly one in-scope guardrail is scoped to the finding's category,
+         attribute to it.
+      2. Else, if the only in-scope guardrail is a single *broad* rule (no
+         category scope), attribute to it.
+      3. Otherwise (ambiguous, or the only rule is scoped to a different
+         category) leave the provenance null.
+
+    Never raises — a malformed guardrail entry is skipped, and a per-finding
+    failure degrades that finding to null without affecting the others. Provenance
+    must never block finding persistence.
+    """
+    from ollama_sentinel.context.recipes import _guardrail_applies_to_file
+
+    def _applies(g) -> bool:
+        try:
+            return _guardrail_applies_to_file(g, file_rel_path)
+        except Exception:
+            return False
+
+    in_scope = [g for g in guardrails if _applies(g)]
+    if not in_scope:
+        return
+
+    for f in findings:
+        try:
+            category = getattr(f, "category", None)
+            cat_matches = [g for g in in_scope if g.get("scope_category") == category]
+            if len(cat_matches) == 1:
+                f.guardrail_id = cat_matches[0]["id"]
+            elif (
+                not cat_matches
+                and len(in_scope) == 1
+                and in_scope[0].get("scope_category") is None
+            ):
+                f.guardrail_id = in_scope[0]["id"]
+        except Exception:
+            continue
+
+
 @dataclass
 class FileChange:
     """Represents a changed file to be processed."""
