@@ -13,7 +13,11 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from . import __version__
-from .config import create_default_config
+from .config import (
+    create_default_config,
+    list_installed_models,
+    select_reviewer_model,
+)
 from .processor import FileChange
 from .watcher import FileSentinel
 from watchfiles import Change
@@ -214,13 +218,30 @@ def init(
         overwrite = typer.confirm(f"{config_path} already exists. Overwrite?")
         if not overwrite:
             raise typer.Exit()
-    
-    # Create a basic configuration
-    config = create_default_config(directory, output)
-    
+
+    # Auto-detect a reviewer model from the local Ollama install so the
+    # generated config points at a model that actually exists. Falls back to
+    # the hardcoded default when Ollama is unreachable.
+    host = "http://localhost:11434"
+    installed = list_installed_models(host)
+    reviewer_model = select_reviewer_model(installed)
+    if installed:
+        log.info(
+            f"Detected {len(installed)} installed Ollama model(s); "
+            f"selected reviewer model '{reviewer_model}'."
+        )
+    else:
+        log.warning(
+            f"Could not reach Ollama at {host} to detect models; defaulting "
+            f"reviewer to '{reviewer_model}'. Pull it (`ollama pull "
+            f"{reviewer_model}`) or edit the model name in {config_path}."
+        )
+
+    config = create_default_config(directory, output, reviewer_model=reviewer_model)
+
     with open(config_path, "w") as f:
         yaml.dump(config, f, sort_keys=False, default_flow_style=False)
-    
+
     log.info(f"Created configuration file: {config_path}")
 
 

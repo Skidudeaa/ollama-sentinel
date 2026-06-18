@@ -14,7 +14,15 @@ runner = CliRunner()
 class TestInitCommand:
     """Tests for 'ollama-sentinel init'."""
 
+    @staticmethod
+    def _stub_installed(monkeypatch, models):
+        """Make init's model detection deterministic (no live Ollama)."""
+        monkeypatch.setattr(
+            "ollama_sentinel.cli.list_installed_models", lambda *a, **k: models
+        )
+
     def test_creates_config_file(self, tmp_path, monkeypatch):
+        self._stub_installed(monkeypatch, [])
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["init", str(tmp_path)])
         assert result.exit_code == 0
@@ -22,6 +30,7 @@ class TestInitCommand:
         assert config_path.exists()
 
     def test_created_config_is_valid_yaml(self, tmp_path, monkeypatch):
+        self._stub_installed(monkeypatch, [])
         monkeypatch.chdir(tmp_path)
         runner.invoke(app, ["init", str(tmp_path)])
         config_path = tmp_path / "ollama-sentinel.yaml"
@@ -31,7 +40,20 @@ class TestInitCommand:
         assert "ollama" in config
         assert "default" in config["ollama"]["models"]
 
-    def test_created_config_uses_gemma3(self, tmp_path, monkeypatch):
+    def test_init_uses_detected_coder_model(self, tmp_path, monkeypatch):
+        self._stub_installed(monkeypatch, ["qwen3.6:35b", "qwen3-coder:30b"])
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(app, ["init", str(tmp_path)])
+        config_path = tmp_path / "ollama-sentinel.yaml"
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+        assert config["ollama"]["models"]["default"]["name"] == "qwen3-coder:30b"
+        assert config["ollama"]["models"]["triage"]["name"] == "qwen3-coder:30b"
+
+    def test_init_falls_back_to_gemma3_when_ollama_unreachable(
+        self, tmp_path, monkeypatch
+    ):
+        self._stub_installed(monkeypatch, [])
         monkeypatch.chdir(tmp_path)
         runner.invoke(app, ["init", str(tmp_path)])
         config_path = tmp_path / "ollama-sentinel.yaml"
