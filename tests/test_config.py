@@ -1,10 +1,16 @@
 """Tests for ollama_sentinel config loading and default generation."""
 import pathlib
 
+import httpx
 import pytest
 import yaml
 
-from ollama_sentinel.config import create_default_config, load_config
+from ollama_sentinel.config import (
+    create_default_config,
+    list_installed_models,
+    load_config,
+    select_reviewer_model,
+)
 
 
 class TestLoadConfig:
@@ -67,6 +73,12 @@ class TestCreateDefaultConfig:
     def test_default_model_is_gemma3(self):
         config = create_default_config(".")
         assert config["ollama"]["models"]["default"]["name"] == "gemma3:4b"
+
+    def test_reviewer_model_param_overrides_default_and_triage(self):
+        config = create_default_config(".", reviewer_model="qwen3-coder:30b")
+        models = config["ollama"]["models"]
+        assert models["default"]["name"] == "qwen3-coder:30b"
+        assert models["triage"]["name"] == "qwen3-coder:30b"
 
     def test_default_has_required_model_key(self):
         config = create_default_config(".")
@@ -137,3 +149,75 @@ class TestCreateDefaultConfig:
         assert "DIAGNOSIS" in triage["system_prompt"]
         assert triage["context_window"] == 8192
         assert triage["output_reserve_tokens"] == 2000
+
+
+class TestSelectReviewerModel:
+    """Tests for select_reviewer_model() — pure model-selection heuristic."""
+
+    def test_empty_list_returns_fallback(self):
+        assert select_reviewer_model([]) == "gemma3:4b"
+
+    def test_custom_fallback_is_used_when_empty(self):
+        assert select_reviewer_model([], fallback="llama3:8b") == "llama3:8b"
+
+    def test_prefers_coder_model(self):
+        installed = ["qwen3.6:35b", "qwen3-coder:30b", "gemma3:4b"]
+        assert select_reviewer_model(installed) == "qwen3-coder:30b"
+
+    def test_excludes_embedding_models(self):
+        # An embedding model can't do chat review; never select it.
+        installed = ["qwen3-embedding:4b", "qwen3.6:35b"]
+        assert select_reviewer_model(installed) == "qwen3.6:35b"
+
+    def test_only_embedding_models_returns_fallback(self):
+        installed = ["qwen3-embedding:4b", "qwen3-embedding:8b"]
+        assert select_reviewer_model(installed) == "gemma3:4b"
+
+    def test_prefers_local_over_cloud(self):
+        # Local-first: a local chat model beats a cloud coder model.
+        installed = ["deepseek-v4-pro:cloud", "qwen3.6:35b"]
+        assert select_reviewer_model(installed) == "qwen3.6:35b"
+
+    def test_deprioritizes_medical_specialist_models(self):
+        # A general model is a better default reviewer than a clinical model,
+        # even though "medllama2" contains the preferred "llama" family token.
+        installed = ["medllama2:latest", "meditron:latest", "qwen3.6:35b"]
+        assert select_reviewer_model(installed) == "qwen3.6:35b"
+
+    def test_real_world_zoo_picks_coder(self):
+        installed = [
+            "qwen3-coder:30b",
+            "qwen3.6:35b",
+            "qwen3-embedding:4b",
+            "deepseek-v4-pro:cloud",
+            "devstral-2:123b-cloud",
+            "hf.co/MaziyarPanahi/BioMistral-Clinical-7B-GGUF:latest",
+            "medgemma1.5:4b",
+            "meditron:latest",
+            "medllama2:latest",
+        ]
+        assert select_reviewer_model(installed) == "qwen3-coder:30b"
+
+
+class TestListInstalledModels:
+    """Tests for list_installed_models() — best-effort /api/tags query."""
+
+    def test_returns_model_names_on_success(self, httpx_mock):
+        httpx_mock.add_response(
+            url="http://localhost:11434/api/tags",
+            json={"models": [{"name": "qwen3-coder:30b"}, {"name": "qwen3.6:35b"}]},
+        )
+        assert list_installed_models("http://localhost:11434") == [
+            "qwen3-coder:30b",
+            "qwen3.6:35b",
+        ]
+
+    def test_returns_empty_list_on_http_error(self, httpx_mock):
+        httpx_mock.add_response(
+            url="http://localhost:11434/api/tags", status_code=404
+        )
+        assert list_installed_models("http://localhost:11434") == []
+
+    def test_returns_empty_list_on_connection_error(self, httpx_mock):
+        httpx_mock.add_exception(httpx.ConnectError("connection refused"))
+        assert list_installed_models("http://localhost:11434") == []
