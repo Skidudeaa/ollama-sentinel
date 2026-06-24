@@ -1,0 +1,63 @@
+name: Temporary Sturgeon Lake source build
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/sturgeon-map-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install geospatial dependencies
+        run: python -m pip install --disable-pip-version-check requests shapely
+      - name: Acquire and validate official lake data
+        run: python .sturgeon_map_work/build_sturgeon_source.py
+      - name: Split oversized bundle and write transfer manifest
+        run: |
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          out=Path('.sturgeon_map_work/output')
+          bundle=out/'Sturgeon_Lake_official_source_bundle.zip'
+          limit=80*1024*1024
+          files=[]
+          if bundle.stat().st_size > limit:
+              with bundle.open('rb') as src:
+                  i=1
+                  while True:
+                      data=src.read(limit)
+                      if not data: break
+                      p=out/f'{bundle.name}.part{i:03d}'
+                      p.write_bytes(data)
+                      files.append(p)
+                      i+=1
+              bundle.unlink()
+          else:
+              files=[bundle]
+          manifest={'files':[{'name':p.name,'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files]}
+          (out/'transfer_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          PY
+      - name: Commit transfer files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .sturgeon_map_work/output
+          git commit -m 'Temporary Sturgeon Lake official source output' || exit 0
+          git push
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sturgeon-lake-official-source
+          path: .sturgeon_map_work/output/*
+          if-no-files-found: error
+          retention-days: 3
