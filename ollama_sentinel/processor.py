@@ -449,6 +449,30 @@ class FileProcessor:
                 log.warning("Git repository not found, disabling git_diff_mode")
                 self.config.processing.git_diff_mode = False
 
+    async def prewarm_embedder(self) -> None:
+        """Load the embedding model into memory before the watch loop starts.
+
+        Issues a single throwaway embed so Ollama resolves and resident-loads
+        the hot embedding model while system memory is still free — before the
+        (much larger) review model's first cold-load. That ordering avoids the
+        transient ``/api/embeddings`` 500 Ollama returns when the embedder and
+        review model contend for memory during a concurrent load. Best-effort:
+        a failure here is logged and swallowed, leaving semantic recall to
+        degrade to identity order exactly as it does at review time.
+        """
+        if self.embedder is None:
+            return
+        from ollama_sentinel.context import EmbeddingUnavailable
+
+        try:
+            await self.embedder.embed("warmup")
+            log.info("Embedding model %s pre-warmed.", self.embedder.model)
+        except EmbeddingUnavailable as e:
+            log.warning(
+                "Embedder pre-warm failed (%s); semantic recall will load lazily.",
+                e,
+            )
+
     async def close(self):
         """Close clients."""
         await self.ollama_client.close()

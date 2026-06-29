@@ -544,3 +544,35 @@ class TestGuardrailProvenanceWiring:
         rows = sentinel.violation_db.get_unresolved("app.py")
         assert len(rows) == 1
         assert rows[0]["guardrail_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Startup embedder pre-warm
+# ---------------------------------------------------------------------------
+
+class TestRunPrewarmsEmbedder:
+    """FileSentinel.run() pre-warms the embedder before entering the watch loop
+    so the embedding model is resident before the review model's cold-load."""
+
+    async def test_run_prewarms_before_watching(self, tmp_path, monkeypatch):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        config_path = _write_config(tmp_path)
+        sentinel = FileSentinel(config_path)
+
+        calls: list[str] = []
+
+        async def _prewarm():
+            calls.append("prewarm")
+
+        async def _watch():
+            calls.append("watch")
+
+        monkeypatch.setattr(sentinel.processor, "prewarm_embedder", AsyncMock(side_effect=_prewarm))
+        monkeypatch.setattr(sentinel, "watch_directory", AsyncMock(side_effect=_watch))
+        monkeypatch.setattr(sentinel.processor, "close", AsyncMock())
+
+        await sentinel.run()
+
+        assert calls == ["prewarm", "watch"]

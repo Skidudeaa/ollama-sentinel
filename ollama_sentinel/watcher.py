@@ -437,6 +437,7 @@ class FileSentinel:
         loop = asyncio.get_running_loop()
         self.install_reload_handler(loop)
         try:
+            await self.processor.prewarm_embedder()
             await self.watch_directory()
         finally:
             if hasattr(signal, "SIGHUP"):

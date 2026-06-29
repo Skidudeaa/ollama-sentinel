@@ -357,6 +357,60 @@ class TestOllamaClient:
 
 
 # ---------------------------------------------------------------------------
+# FileProcessor.prewarm_embedder tests
+# ---------------------------------------------------------------------------
+
+OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
+
+
+class TestPrewarmEmbedder:
+    """Pre-warming loads the embedding model before the watch loop starts so it
+    is resident before the (large) review model's cold-load — avoiding the
+    transient /api/embeddings 500 from concurrent model loads under memory
+    pressure. Best-effort: never raises, degrades to the legacy path."""
+
+    async def test_prewarm_issues_embedding_request(
+        self, sentinel_config, httpx_mock: HTTPXMock
+    ):
+        """With an embedder configured, prewarm issues one embed request."""
+        httpx_mock.add_response(
+            url=OLLAMA_EMBED_URL,
+            json={"embedding": [0.1, 0.2, 0.3]},
+        )
+        fp = FileProcessor(sentinel_config)
+        assert fp.embedder is not None  # default config enables semantic recall
+
+        await fp.prewarm_embedder()
+
+        requests = httpx_mock.get_requests(url=OLLAMA_EMBED_URL)
+        assert len(requests) == 1
+
+    async def test_prewarm_noop_when_no_embedder(
+        self, sentinel_config, httpx_mock: HTTPXMock
+    ):
+        """With no embedder, prewarm makes no request and does not raise."""
+        fp = FileProcessor(sentinel_config)
+        fp.embedder = None
+
+        await fp.prewarm_embedder()
+
+        assert httpx_mock.get_requests() == []
+
+    async def test_prewarm_swallows_unavailable(
+        self, sentinel_config, httpx_mock: HTTPXMock
+    ):
+        """A failing embed backend never propagates out of prewarm."""
+        httpx_mock.add_response(url=OLLAMA_EMBED_URL, status_code=500)
+        fp = FileProcessor(sentinel_config)
+        assert fp.embedder is not None
+
+        # Must not raise — startup proceeds, recall degrades to identity order.
+        await fp.prewarm_embedder()
+
+        assert len(httpx_mock.get_requests(url=OLLAMA_EMBED_URL)) == 1
+
+
+# ---------------------------------------------------------------------------
 # FileProcessor.format_prompt tests
 # ---------------------------------------------------------------------------
 
