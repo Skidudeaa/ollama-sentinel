@@ -219,11 +219,15 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 ## Known Issues / Next Session Breadcrumbs
 
-### Repo state as of 2026-06-13 (last session)
+### Repo state as of 2026-06-29 (last session)
 
 - **v0.1.1 shipped**; repo public at <https://github.com/Skidudeaa/ollama-sentinel>.
+- **`master @ origin/master` and in sync** (pushed 2026-06-29). Two small
+  features landed direct-to-master this session: init model auto-detect and the
+  startup embedder pre-warm. See the two newest Recent-landings entries and the
+  2026-06-29 handoff note.
 - **Test suite:** run `pytest tests/ -q` for the live count (this session it was
-  813 passed / 16 skipped, ~10s). Do **not** hardcode the number here again — it
+  830 passed / 16 skipped, ~12s). Do **not** hardcode the number here again — it
   drifts every time tests land. Quote the command, not the count.
 - **v0.3 Pattern promotion → project guardrails is MERGED to master.** All 8
   units U1–U8 + a full doc sweep + the salvage fix landed as PRs #36–#45
@@ -290,6 +294,24 @@ speculatively).
 
 ### Recent landings
 
+- 2026-06-29: **Startup embedder pre-warm (direct to master, `4270b9b`).**
+  Diagnosed a recurring `/api/embeddings 500` seen against a live watched project:
+  not a bug — the hot embedder loaded lazily on the first file change, racing the
+  (large) review model's cold-load for memory, so Ollama returned a transient 500
+  and that first review's semantic recall degraded to identity order (graceful,
+  but avoidable). Fix: `FileProcessor.prewarm_embedder()` issues one throwaway
+  `embed("warmup")` so Ollama resident-loads the embedder while memory is free;
+  `FileSentinel.run()` calls it before the watch loop. Best-effort — no-op without
+  an embedder, swallows `EmbeddingUnavailable` so startup never breaks. Verified
+  live: `ollama ps` showed `qwen3-embedding:4b` resident after a prewarm call.
+  4 new tests (`TestPrewarmEmbedder` ×3, `TestRunPrewarmsEmbedder` ×1). **Not yet
+  re-confirmed live in the real watched project** (the 500-is-gone proof) — the
+  one open follow-up. Suite 830/16.
+- 2026-06-17: **`init` auto-detects the installed Ollama model (`e7cb5aa`).**
+  `ollama-sentinel init` queries `/api/tags` and picks an installed model instead
+  of hardcoding `gemma3:4b` (now an offline fallback only). `select_reviewer_model`
+  + `list_installed_models` in `config.py`; local-first heuristic. Pushed to
+  master this session as part of the same fast-forward.
 - 2026-06-13: **v0.3 Pattern promotion → project guardrails BUILT + MERGED
   (8-PR stack).** Executed the `docs/plans/2026-06-08-001-...-plan.md` plan
   end-to-end via `/ce-work`, TDD per unit, one stacked PR each off master:
