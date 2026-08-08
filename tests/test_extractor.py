@@ -385,6 +385,46 @@ class TestExtractFindingsLegacyClassicFormat:
         assert [(f.line_start, f.line_end) for f in findings] == [(3, 3), (8, 8)]
 
 
+# Captured verbatim from a real `ollama-sentinel review` run against
+# kimi-k3:cloud (2026-08-08, ACLEDAPIClient.swift). K3 references lines in the
+# terse `L31` / `L36–38` style rather than spelling out "line", so the
+# extractor must accept a bare uppercase `L` prefix too. Do not "clean up".
+_TERSE_L_PROSE = """### Bugs
+
+1. **L31 — Likely malformed `BETWEEN` date value (`||` double pipe).** ACLED's \
+API expects a single pipe delimiter for ranges. The `||` here produces an \
+empty middle value, which the API will likely reject or misinterpret.
+
+2. **L36–38 — Missing `email` credential.** Current ACLED API access requires \
+both `key` and a registered `email` parameter. Requests with only `key` will \
+fail auth.
+
+3. No pagination / truncation handling (L30–35). ACLED caps rows per request. \
+A wide date range will silently return a truncated dataset.
+"""
+
+
+class TestExtractFindingsLegacyTerseLineRefs:
+    """Reviews referencing lines as `L31` / `L36–38` (e.g. kimi-k3) parse."""
+
+    def test_terse_refs_multi_block(self):
+        """Bold single ref, en-dash range, and parenthesized range all parse."""
+        findings = extract_findings_legacy(_TERSE_L_PROSE, "a.swift")
+        ranges = [(f.line_start, f.line_end) for f in findings]
+        assert ranges == [(31, 31), (36, 38), (30, 35)]
+        assert all(f.file_path == "a.swift" for f in findings)
+
+    def test_lowercase_l_is_not_a_line_ref(self):
+        """Identifiers like `l33t` must not be misread as line references."""
+        text = "- The l33t variable naming here is unclear; rename for clarity."
+        assert extract_findings_legacy(text, "a.py") == []
+
+    def test_embedded_uppercase_L_in_word_is_not_a_line_ref(self):
+        """`URL31` and similar tokens must not be misread as line references."""
+        text = "- The constant URL31 duplicates URL30; consolidate the config."
+        assert extract_findings_legacy(text, "a.py") == []
+
+
 # ---------------------------------------------------------------------------
 # Schema failure fallback tests (processor-level)
 # ---------------------------------------------------------------------------

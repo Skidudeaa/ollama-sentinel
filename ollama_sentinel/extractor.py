@@ -40,16 +40,17 @@ def _parse_finding(raw: dict, file_path: str) -> Finding | None:
         return None
 
 
-# Matches a line reference in either the pre-grounding free-form style
-# ("line 5", "lines 5-10") or the grounded-prose degrade style the prompt
-# asks for ("Line Range: `line_start..line_end`", e.g. "Line Range: `1..2`").
-# After the label, markdown punctuation (** ` : =) may sit between the label
-# and the first number; the range separator may be ``..``, a hyphen/dash, or
-# the word "to".
+# Matches a line reference in the pre-grounding free-form style ("line 5",
+# "lines 5-10"), the grounded-prose degrade style the prompt asks for
+# ("Line Range: `line_start..line_end`", e.g. "Line Range: `1..2`"), or the
+# terse style some models emit ("L31", "L36–38" — seen from kimi-k3). After a
+# spelled-out label, markdown punctuation (** ` : =) may sit between the label
+# and the first number; the terse `L` must abut its number and is
+# case-sensitive (a lowercase `l33t` or embedded `URL31` is not a line ref);
+# the range separator may be ``..``, a hyphen/dash, or the word "to".
 _LINE_REF_PATTERN = re.compile(
-    r"(?:line[\s_]*range|line[\s_]*start|lines?)"
-    r"[\s:=*`'\"]*(\d+)"
-    r"(?:\s*(?:\.\.|[-–—]|to)\s*[`'\"]*(\d+))?",
+    r"(?:(?:line[\s_]*range|line[\s_]*start|lines?)[\s:=*`'\"]*|(?-i:\bL))(\d+)"
+    r"(?:\s*(?:\.\.|[-–—]|to)\s*[`'\"]*(?-i:L?)(\d+))?",
     re.IGNORECASE,
 )
 
