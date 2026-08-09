@@ -219,13 +219,20 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 ## Known Issues / Next Session Breadcrumbs
 
-### Repo state as of 2026-06-29 (last session)
+### Repo state as of 2026-08-08 (last session)
 
+- **THE DOGFOOD FLEET IS LIVE.** Six real projects watched across two machines
+  (Mac: theater6, dwell/Noctober24, Dictum · droplet: somaNotes, feb8, dictum
+  backend), all reviewed by `kimi-k3:cloud`, plus a Tailscale-private web
+  dashboard (**separate repo `Skidudeaa/sentinel-dash`**, live at
+  http://100.84.74.15:8300) and a `watchers` ops CLI (`~/.local/bin/watchers`).
+  **Adoption verdict due ~2026-08-22** — see
+  `docs/session-notes/2026-08-08-dogfood-fleet-and-sentinel-dash-handoff.md`
+  for the fleet map, K3 operating facts, and the verdict criteria.
+- One code landing here: `4d1cd2c` extractor fix for K3's terse `L31` line
+  refs (silent zero-findings bug). Suite 833/16.
 - **v0.1.1 shipped**; repo public at <https://github.com/Skidudeaa/ollama-sentinel>.
-- **`master @ origin/master` and in sync** (pushed 2026-06-29). Two small
-  features landed direct-to-master this session: init model auto-detect and the
-  startup embedder pre-warm. See the two newest Recent-landings entries and the
-  2026-06-29 handoff note.
+- **`master @ origin/master` and in sync** (pushed 2026-08-08).
 - **Test suite:** run `pytest tests/ -q` for the live count (this session it was
   830 passed / 16 skipped, ~12s). Do **not** hardcode the number here again — it
   drifts every time tests land. Quote the command, not the count.
@@ -242,15 +249,18 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 ### Resume here next time
 
-1. **Sanity check.** `pytest tests/ -q` should be green (run it for the live
-   count; ~813 / 16 skip — do not trust this number, it drifts). `git status`
-   should be clean on `master`.
-2. **The guardrails feature is fully MERGED** (PRs #36–#45, 2026-06-13). Nothing
-   to ship there. Try it: `ollama-sentinel guardrail add … ` works with no
-   Ollama; `guardrail candidates` needs the embedder + corroborated history. See
-   `docs/session-notes/2026-06-13-guardrails-merged-handoff.md`.
-3. **Two small follow-ups are open** (deferred during the build, both low-risk —
-   see Pickable next moves and the handoff note).
+1. **Check the dogfood verdict clock first** (due ~2026-08-22). Read
+   `docs/session-notes/2026-08-08-dogfood-fleet-and-sentinel-dash-handoff.md`,
+   then look at real usage: `watchers all` on the Mac, or the dashboard at
+   http://100.84.74.15:8300 (tailnet). The question is whether the passive
+   layer catches things Claude Code misses at acceptable noise — if not,
+   strip or archive rather than build more.
+2. **Sanity check.** `pytest tests/ -q` should be green (run it for the live
+   count — do not hardcode it, it drifts). `git status` clean on `master`.
+3. **Do not add features to this repo until the verdict is in.** The one
+   exception class: bugs surfaced by the fleet itself (like the `4d1cd2c`
+   extractor fix — a silent zero-findings bug found in dogfood hour one).
+4. `research_agent` is slated for cutting regardless of the verdict.
 
 ### Pickable next moves (ordered by leverage)
 
@@ -294,6 +304,19 @@ speculatively).
 
 ### Recent landings
 
+- 2026-08-08: **Dogfood fleet + kimi-k3 + sentinel-dash (mostly outside this
+  repo).** Six projects watched (3 Mac / 3 droplet-systemd), reviewer switched
+  to `kimi-k3:cloud` everywhere. K3 facts: ignores `format` schema (run
+  `grounding: false`), thinking tokens eat `num_predict` (use 16384 reserve +
+  65536 ctx), line-ref style drifts. **In-repo landing `4d1cd2c`:** legacy
+  extractor now accepts terse `L31`/`L36–38` refs (was silently persisting
+  ZERO findings from K3 reviews); 3 tests from verbatim K3 output; 833/16.
+  Embedder pre-warm confirmed live (that follow-up is closed). Per-project
+  guardrails seeded from each project's own CLAUDE.md, incl. matched
+  cross-repo contract guardrails for the two client/server pairs. Dashboard:
+  private repo `sentinel-dash`, FastAPI + SSE + stdlib heartbeat collector,
+  tailnet-only at 100.84.74.15:8300. Handoff:
+  `docs/session-notes/2026-08-08-dogfood-fleet-and-sentinel-dash-handoff.md`.
 - 2026-06-29: **Startup embedder pre-warm (direct to master, `4270b9b`).**
   Diagnosed a recurring `/api/embeddings 500` seen against a live watched project:
   not a bug — the hot embedder loaded lazily on the first file change, racing the
