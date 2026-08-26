@@ -235,6 +235,12 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
   WAL-checkpointed** (soma 14,267 · theater6 2,864 · dictum 908 · dwell 678
   · dictumd/feb8 ~110 each). To restart, see the "waking it back up"
   section of the 2026-08-25 note.
+- **Droplet install de-drifted.** `/root/ollama-sentinel` had been sitting
+  143 commits behind on `1b3c127` while the venv that actually ran was
+  *newer* — the checkout looked authoritative and was not. Both are now
+  byte-identical at `origin/master`. The venv is a **non-editable** install,
+  so `git pull` alone does not change what runs; reinstall with
+  `/root/ollama-sentinel-venv/bin/pip install /root/ollama-sentinel`.
 - Code landings this arc: `4d1cd2c` extractor fix for K3's terse `L31` line
   refs (silent zero-findings bug). Suite: run `pytest tests/ -q`.
 - **v0.1.1 shipped**; repo public at <https://github.com/Skidudeaa/ollama-sentinel>.

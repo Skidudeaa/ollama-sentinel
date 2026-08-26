@@ -88,6 +88,13 @@ future re-run against a grounded local model would test a different system.
 | dictumd | 111 | partial | droplet |
 | feb8 | 108 | stopped Aug 11 | droplet |
 
+**Do not read the gaps as pure neglect.** The operator ran a maintenance pass
+on the droplet on 2026-08-24 that stopped services, so some of the "stale"
+ages above are maintenance, not abandonment. The one unambiguous coverage
+fact is **dwell**: every row it holds predates the bake, so it contributed
+nothing regardless. The verdict rests on soma's full 17 days plus theater6's
+4, which is ample for a quality judgement.
+
 ## Shutdown inventory (what was actually touched)
 
 **Droplet (`root@100.84.74.15`)** — stopped **and disabled** (no boot restart):
@@ -116,6 +123,31 @@ future re-run against a grounded local model would test a different system.
 **Data: preserved, not deleted.** Every `memory.db` was
 `wal_checkpoint(TRUNCATE)`'d after its writer stopped, so no state is stranded
 in a `-wal` sidecar.
+
+## Droplet install reconciled (was a split-brain footgun)
+
+The droplet had **two disagreeing copies** of ollama-sentinel, and the git
+checkout was the *stale* one — the trap being that it looks authoritative:
+
+- `/root/ollama-sentinel` (git checkout) sat on `master @ 1b3c127`
+  (2026-05-03), **143 commits behind** origin. No `guardrails.py`, no v0.3, no
+  v0.2 pieces 4/5, no `4d1cd2c` extractor fix.
+- `/root/ollama-sentinel-venv` (what actually ran) was **newer** than that
+  checkout — it had `guardrails.py` and the extractor fix, so it was installed
+  from somewhere else (rsync from the Mac, most likely), never from
+  `/root/ollama-sentinel`.
+
+Anyone opening `/root/ollama-sentinel` to see "what the fleet ran" would have
+read 4-month-old code. Fixed 2026-08-25: fast-forwarded the checkout to
+`origin/master` (clean tree, zero local-only commits, so `--ff-only`
+succeeded) and reinstalled the venv from it. The two trees are now
+byte-identical and match `origin/master`; `ollama-sentinel --help` verified
+working; all units confirmed still stopped and disabled afterward.
+
+**If you ever reinstall on that box, install from the checkout**
+(`/root/ollama-sentinel-venv/bin/pip install /root/ollama-sentinel`) so this
+cannot drift apart again. Note it is a *non-editable* install — a `git pull`
+alone does not update what runs; it needs the `pip install` too.
 
 ## Verified NOT wired to break anything
 
