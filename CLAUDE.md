@@ -219,18 +219,24 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 ## Known Issues / Next Session Breadcrumbs
 
-### Repo state as of 2026-08-08 (last session)
+### Repo state as of 2026-08-25 (last session)
 
-- **THE DOGFOOD FLEET IS LIVE.** Six real projects watched across two machines
-  (Mac: theater6, dwell/Noctober24, Dictum · droplet: somaNotes, feb8, dictum
-  backend), all reviewed by `kimi-k3:cloud`, plus a Tailscale-private web
-  dashboard (**separate repo `Skidudeaa/sentinel-dash`**, live at
-  http://100.84.74.15:8300) and a `watchers` ops CLI (`~/.local/bin/watchers`).
-  **Adoption verdict due ~2026-08-22** — see
-  `docs/session-notes/2026-08-08-dogfood-fleet-and-sentinel-dash-handoff.md`
-  for the fleet map, K3 operating facts, and the verdict criteria.
-- One code landing here: `4d1cd2c` extractor fix for K3's terse `L31` line
-  refs (silent zero-findings bug). Suite 833/16.
+- **THE BAKE IS OVER AND THE FLEET IS SHUT DOWN.** Verdict rendered
+  2026-08-25: **the reviewer earns its keep, the presentation layer does
+  not.** Project is **parked, not dead** — the operator is moving to other
+  work. Full evidence + the shutdown inventory:
+  `docs/session-notes/2026-08-25-bake-verdict-and-fleet-shutdown.md`.
+- **Nothing is running anywhere.** Droplet units
+  (`ollama-sentinel-{somanotes,feb8,dictum}`, `sentinel-dash`, `ollama`) are
+  **stopped AND disabled** — they will not come back at boot. Mac: launchd
+  heartbeat booted out and its plist renamed `.plist.disabled`; theater6's
+  sentinel `post-commit` hook renamed `post-commit.sentinel-disabled`. No
+  watcher processes on either machine. **All finding DBs preserved and
+  WAL-checkpointed** (soma 14,267 · theater6 2,864 · dictum 908 · dwell 678
+  · dictumd/feb8 ~110 each). To restart, see the "waking it back up"
+  section of the 2026-08-25 note.
+- Code landings this arc: `4d1cd2c` extractor fix for K3's terse `L31` line
+  refs (silent zero-findings bug). Suite: run `pytest tests/ -q`.
 - **v0.1.1 shipped**; repo public at <https://github.com/Skidudeaa/ollama-sentinel>.
 - **`master @ origin/master` and in sync** (pushed 2026-08-08).
 - **Test suite:** run `pytest tests/ -q` for the live count (this session it was
@@ -249,28 +255,36 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 ### Resume here next time
 
-1. **Check the dogfood verdict clock first** (due ~2026-08-22). Read
-   `docs/session-notes/2026-08-08-dogfood-fleet-and-sentinel-dash-handoff.md`,
-   then look at real usage: `watchers all` on the Mac, or the dashboard at
-   http://100.84.74.15:8300 (tailnet). The question is whether the passive
-   layer catches things Claude Code misses at acceptable noise — if not,
-   strip or archive rather than build more.
+**The project is parked.** Do not start building. If you are here because the
+operator came back to it, do this in order:
+
+1. **Read the verdict**, not the old fleet note:
+   `docs/session-notes/2026-08-25-bake-verdict-and-fleet-shutdown.md`. It has
+   the measured signal/noise evidence and the three fixes the bake earned.
 2. **Sanity check.** `pytest tests/ -q` should be green (run it for the live
    count — do not hardcode it, it drifts). `git status` clean on `master`.
-3. **Do not add features to this repo until the verdict is in.** The one
-   exception class: bugs surfaced by the fleet itself (like the `4d1cd2c`
-   extractor fix — a silent zero-findings bug found in dogfood hour one).
-4. `research_agent` is slated for cutting regardless of the verdict.
+3. **Confirm nothing restarted.** Everything is stopped *and* disabled, so it
+   should not have — but `ssh root@100.84.74.15 'systemctl is-enabled
+   ollama-sentinel-somanotes'` and `launchctl list | grep sentinel` are the
+   two checks.
+4. `research_agent` is still slated for cutting.
 
 ### Pickable next moves (ordered by leverage)
 
-The v0.3 Pattern-promotion leap is **shipped and merged**. What's left:
+**The bake reordered this table.** The v0.3 architecture work is no longer the
+top of the list — the bake showed the reviewer is good and the *presentation*
+is what fails. Items 1–3 are what the fleet actually earned; they are the only
+things worth doing if this project is picked back up.
 
 | # | Item | Effort | Risk | Notes |
 |---|---|---|---|---|
-| 1 | **Guardrail deferrals** — (a) a *live dashboard pending-candidate view* (skipped in U7 to honor KTD4: clustering is on-demand only; a cached / slow-cadence panel would re-enable it without taxing the poll loop); (b) decide whether U8's *global* self-caused-soft exclusion should narrow to *scoped-to-originating-guardrail* (the current global form is stricter-is-safe and passes every plan scenario). | S–M | low | Both flagged in the U7/U8 PR bodies. Only worth doing if you actually feel the gap in use. |
-| 2 | **v0.3 shared substrate** — lift `ImportResolver` to shared infra, unify `Finding`/`ImpactItem`, bidirectional impact↔incident flow. | L | med | The moat play (see `docs/VISION.md`). The biggest remaining architectural arc; now unblocked. |
-| 3 | **Cosmetic:** `tests/test_cli.py` has one unused `Guardrail` import (Pyright-only lint, no test impact) — fold into whatever next touches that file. | XS | none | — |
+| 1 | **Severity is scanned out of quoted code.** `extractor.py:161-164` substring-matches the whole block, code fence included, with `"critical"` first in dict order — a CSS `.critical` class or `{ critical_high: 'HH' }` promotes a style nit to critical. Strip fenced/inline code before the keyword scan. Measured: **125/177 (71%)** of soma's criticals and 7/14 of theater6's are this bug. Same flaw in `_CATEGORY_KEYWORDS` (`"bug"`/`"error"` first). | S | low | Highest leverage single fix in the repo. |
+| 2 | **Legacy path never sets `verbatim_excerpt`**, so the whole actionability arc is inert: `relocate_finding` returns `"stored"` (`sarif.py:88`) → `fix` can't bound an edit, `prune` never sees staleness, `surface` anchors SARIF to drifted lines. 100% of theater6 and ~97% of dictum findings are affected. Fix: synthesize the excerpt at persist time by slicing the cited line span out of the file. Decide separately whether to backfill existing DBs. | M | low | Without this, findings can be read but never acted on. |
+| 3 | **Watch scope is too wide.** soma spent K3 calls reviewing `events_2026-08-11.jsonl` and analytics `.md`; **1,702 of its 14,267 findings (12%)** are on non-source files. Config-only fix. | XS | none | — |
+| 4 | **Dedup:** `persist_findings` keys on `(file, line_start, line_end, category)`; both `line_end` and `category` drift under legacy extraction, so re-reviews insert instead of incrementing. Real, but only ~8% (soma) / ~13% (theater6) of rows — **smaller than it looks**, the bulk of the 18,864 are genuinely distinct observations. | S | low | Do after 1–2. |
+| 5 | **v0.3 shared substrate** — lift `ImportResolver` to shared infra, unify `Finding`/`ImpactItem`, bidirectional impact↔incident flow. | L | med | The moat play (`docs/VISION.md`). Demoted: the bake says fix presentation before architecture. |
+| 6 | **Guardrail deferrals** — (a) live dashboard pending-candidate view; (b) whether U8's *global* self-caused-soft exclusion should narrow to *scoped-to-originating-guardrail*. | S–M | low | Flagged in the U7/U8 PR bodies. Only if the gap is actually felt. |
+| 7 | **Cosmetic:** `tests/test_cli.py` has one unused `Guardrail` import (Pyright-only lint, no test impact). | XS | none | — |
 
 Skip TR-3 — deliberate spec deviation, documented in followups.md. Qwen3
 Phases B/C stay parked (no demand; the Phase-A plan forbids pulling the models
@@ -304,6 +318,21 @@ speculatively).
 
 ### Recent landings
 
+- 2026-08-25: **Bake verdict rendered + entire fleet shut down.** 17 days of
+  dogfooding judged on its actual criterion (review quality, not engagement —
+  the resolve/incident counters were structurally zero because those paths
+  were never installed). **Signal is real** (a U+200B zero-width space inside
+  a regex, an XSS, a numeric-coerced clinical severity inference, a Swift
+  stale-closure race), **and the violation-memory layer demonstrably worked**
+  — reviews carried `STILL PRESENT (flagged 4× since ...)` annotations.
+  **Noise is a labeling bug, not a model problem:** 71% of soma's "critical"
+  tier came from `extractor.py` scanning severity keywords out of quoted
+  code. Shut down and *disabled* all five droplet units (3 sentinel +
+  sentinel-dash + ollama) and the Mac launchd heartbeat + theater6 git hook;
+  all DBs WAL-checkpointed and preserved; every droplet production service
+  verified still running. Docs only, no code changed. Full evidence,
+  shutdown inventory, and restart recipe:
+  `docs/session-notes/2026-08-25-bake-verdict-and-fleet-shutdown.md`.
 - 2026-08-08: **Dogfood fleet + kimi-k3 + sentinel-dash (mostly outside this
   repo).** Six projects watched (3 Mac / 3 droplet-systemd), reviewer switched
   to `kimi-k3:cloud` everywhere. K3 facts: ignores `format` schema (run
