@@ -235,6 +235,13 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
   WAL-checkpointed** (soma 14,267 · theater6 2,864 · dictum 908 · dwell 678
   · dictumd/feb8 ~110 each). To restart, see the "waking it back up"
   section of the 2026-08-25 note.
+- **The bake's real defects were harvested before shutdown** —
+  `docs/harvest/bake-harvest-2026-08-25.md` (+ `.json`). 18,864 findings →
+  **368** that describe an actual defect, severity recomputed offline from
+  prose only (the stored column is untrustworthy, see next-move #1).
+  Includes a live-credential and XSS cluster in somaNotes and a
+  silent-data-loss race in `hyperdrive/router.py`. **~1 in 8 is still a false
+  positive — verify against source before fixing.**
 - **Droplet install de-drifted.** `/root/ollama-sentinel` had been sitting
   143 commits behind on `1b3c127` while the venv that actually ran was
   *newer* — the checkout looked authoritative and was not. Both are now

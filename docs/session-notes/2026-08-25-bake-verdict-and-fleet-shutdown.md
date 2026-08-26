@@ -198,3 +198,23 @@ nobody reads and a triaged queue.
 - `pytest tests/ -q` green (run it for the live count — it drifts).
 - No code changed this session. Docs only: this note + CLAUDE.md status and
   next-moves rewrite.
+
+## Salvage: the findings were harvested before the DBs went cold
+
+Shutting the fleet down would have stranded 18,864 findings in SQLite files
+nobody opens again. They were mined first — see
+`docs/harvest/bake-harvest-2026-08-25.md` (prose + triage order) and
+`docs/harvest/bake-harvest-2026-08-25.json` (368 findings, machine-readable).
+
+Method: recompute severity offline from **prose only** (strip fenced/inline
+code, so the `extractor.py` keyword bug does not leak code identifiers into
+the rating), prefer the model's explicit `**Severity:**` where stated (~6% of
+findings), otherwise score defect signals minus taste signals; collapse
+duplicate signatures; drop scratch dirs and praise. **18,864 → 368 at score
+≥ 4**, with a measured precision limit of roughly **1 false positive in 8**.
+
+Headline salvage: a hardcoded API-key fallback (`"1977"`) and a
+regenerated-per-restart CSRF secret in somaNotes, an XSS cluster in its census
+JS, a `Severity: HIGH` silent-data-loss race in `hyperdrive/router.py:7363`,
+and a `deploy.sh` whose sqlite integrity check reports success when `sqlite3`
+itself fails.
