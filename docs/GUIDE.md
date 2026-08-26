@@ -1,5 +1,12 @@
 # Ollama Sentinel -- User Guide
 
+> **⏸ The project is parked (2026-08-25) and nothing is running.** Every command
+> below still works — this guide is accurate — but see
+> [the verdict](session-notes/2026-08-25-bake-verdict-and-fleet-shutdown.md) for
+> what a 17-day trial on six live projects actually showed, and the README's
+> "Known limits" for three unfixed defects worth knowing before you rely on
+> severity sorting or the `fix`/`prune` commands.
+
 > **▶ Prefer the visual walkthrough?** Open [`index.html`](index.html) in a browser
 > for the same content as a single-page infographic — hero, architecture diagram,
 > command grid, sample outputs, dashboard sketch, annotated config.
@@ -8,7 +15,11 @@
 
 Most AI code review tools see your code once -- when you open a PR. Then they forget everything.
 
-Ollama Sentinel is different. It watches every save. It remembers every finding. After a week, it knows that you keep forgetting to close database connections in `repositories/`. After a month, it knows that nullable returns in your auth flow have been flagged five times and never fixed. It tells your Ollama model about these patterns, and the model escalates them.
+Ollama Sentinel is different. It watches every save. It remembers every finding. When something has been flagged before and never fixed, that history is fed back into the next review, and the model escalates it.
+
+That last part is not a promise — it was observed. During the 2026-08 trial, reviews came back annotated `STILL PRESENT (flagged 4× since 2026-08-10)` with prior-issue status tables the model wrote itself.
+
+The honest counterweight: accumulating findings is easy, and reading them is not. Six watched projects produced roughly 1,100 findings a day. Memory that compounds is only worth as much as your capacity to act on it.
 
 And once a pattern is confirmed often enough, it hardens into a **guardrail** — a named rule the reviewer checks on every future change. You can author guardrails by hand, or let the sentinel propose them from shapes it has flagged and corroborated three or more times. That's the compounding payoff: the codebase's failure history stops being a log you read and becomes a rulebook the model enforces.
 
@@ -437,6 +448,8 @@ Ollama Sentinel accumulates. It watches every save, not just PRs. It remembers e
 The research agent does the same for migrations. It doesn't just explain what changed in a library -- it tells you exactly where your code breaks, ranked by severity, with a suggested first commit.
 
 The structural advantage is locality and persistence. A tool that lives on your machine, watches your work continuously, and builds memory that compounds over weeks is fundamentally different from a tool you visit when you remember to.
+
+**Where that argument stops.** The 2026-08 trial found the real advantage was narrower than "persistence": it was *breadth*. The tool reviewed files nobody would think to open — the single best find of the trial was a zero-width space (U+200B) inside a regex in a vendored JS file. What persistence did not do was overcome attention: a passive queue does not compete with whatever you are actually working on, so the reviews accumulated unread. Locality and persistence are real; they are not sufficient.
 
 The switching cost is real. After three months, the violation database knows things about your codebase that don't exist anywhere else. That's the point.
 

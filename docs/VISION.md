@@ -24,18 +24,30 @@ that the research agent does call OpenAI when invoked).
 
 ## Where it is now
 
-Shipped, public on GitHub. The suite is healthy — run `pytest tests/ -q` for
-the live number (as of 2026-06-13: 803 passed / 16 skipped in ~10s; quote the
-command, not a frozen count). The product has moved well past the v0.1 "model
-that comments on your code" stage. Four things are true today that were
-aspirational a few months ago:
+**Parked as of 2026-08-25, after a 17-day trial on six live projects.** The
+code is shipped and public, the suite is green (`pytest tests/ -q` — quote the
+command, not a count), and nothing is running. Read
+[the verdict](session-notes/2026-08-25-bake-verdict-and-fleet-shutdown.md)
+before treating anything below as a plan.
+
+The short version, because it changes how to read this document: **the review
+engine and the memory both worked; the economics did not.** 18,864 findings in
+17 days is ~1,100/day against one developer. The vision below is intact as a
+description of what was built and why. It is *not* a roadmap anyone is
+currently executing.
+
+The product moved well past the v0.1 "model that comments on your code" stage.
+Four things are true today that were aspirational a few months ago:
 
 - **The memory is layered and grounded.** Prior-violation recall is semantic
   (embedding neighbors via `qwen3-embedding:4b` on the hot path — see Phase A
   below), structural (1-hop import-graph neighbors via the `ImportResolver` AST
   scanner, so a finding on `utils.py` surfaces when reviewing `app.py`), and
-  single-file. The README's "knows your blind spots" claim is load-bearing,
-  not marketing.
+  single-file. **The trial confirmed this one empirically** — reviews came back
+  carrying `STILL PRESENT (flagged 4× since 2026-08-10)` and prior-issue status
+  tables, i.e. the reviewer was demonstrably reasoning over its own history.
+  What the trial did *not* support was the older "after a month it's
+  indispensable" framing: recall working is necessary, not sufficient.
 - **Findings are no longer just opinions.** The v0.2 Finding/Incident split
   gives the memory a way to record what *objectively happened* — a failing
   test, a fix-shaped commit, a manual confirmation — not just what the model
@@ -203,6 +215,18 @@ becomes a rulebook the model enforces — exactly the north star below.
 
 ## What's still aspirational — v0.3: shared substrate between modules
 
+> **Demoted by the trial (2026-08-25).** This was the top of the roadmap for
+> months. It no longer is. 17 days of real use said the bottleneck is not
+> architectural reach — it's that findings are mislabeled and unactionable, so
+> a bigger substrate would only feed a firehose nobody drinks from. If this
+> project restarts, the [next-moves table](../CLAUDE.md) puts the severity
+> scanner and `verbatim_excerpt` capture ahead of everything below.
+>
+> Also worth weighing: `research_agent` is slated for cutting (OpenAI +
+> LangChain dead weight against a local-first pitch), and it is one half of the
+> substrate this section proposes unifying. Cutting it deletes this section's
+> premise.
+
 Today the two modules are architecturally independent. That was the right v0.1
 call. It's now the ceiling.
 
@@ -234,8 +258,13 @@ tools that share a process becomes one thing that has no external equivalent.
   own. Auto-intervention without curation would be nagware; that line stays.
 - **No multi-language for now.** Adding TypeScript/JS multiplies the AST
   surface 5x without enough Python signal yet to justify it.
-- **No web UI.** Rich TUI is the right surface for a tool that lives on a
-  single dev's machine.
+- ~~**No web UI.**~~ **Broken, knowingly, in 2026-08.** Running six watchers
+  across two machines made a per-machine TUI useless, so the trial shipped
+  `sentinel-dash` (separate private repo: FastAPI + SSE, tailnet-only) to see
+  the whole fleet at once. The non-goal was right for the single-machine case
+  and wrong for the fleet case. It is stopped and disabled now, along with
+  everything else. Recorded here rather than quietly deleted, because a
+  non-goal that got violated is more informative than one that held.
 
 ## North star
 

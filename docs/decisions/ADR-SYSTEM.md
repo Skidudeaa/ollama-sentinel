@@ -102,9 +102,10 @@ The vision, the user guide, the architecture overview.
   `docs(living):` so `git log --grep="docs(living)" docs/VISION.md`
   gives the evolution history.
 - Living documents reference decision records by number:
-  "see [ADR-0003](decisions/0003-structural-recall.md)" — not by
+  `see [ADR-0003](decisions/0003-structural-recall.md)` — not by
   restating the decision's content. The decision record is the
-  authority; the living document is the navigator.
+  authority; the living document is the navigator. (That path is an
+  illustrative example, not a real file.)
 - A living document must not exceed a word limit. VISION.md: 2500
   words. GUIDE.md: 5000 words. When an edit would exceed the limit,
   prune older content into a decision record or a retrospective

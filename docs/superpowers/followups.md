@@ -3,10 +3,66 @@
 Deferred-but-known items from the ContextBuilder and Triage landings.
 Not blockers — each entry has enough context to pick up in a fresh session.
 
+> **Project parked 2026-08-25.** Nothing below is being worked on. The items
+> here are historical engineering debt, and they are **not** the top of the
+> queue any more — a 17-day trial on six live projects surfaced three defects
+> that outrank everything in this file. Those live in the
+> [next-moves table](../../CLAUDE.md) with file:line pointers, and the
+> reasoning is in the
+> [verdict](../session-notes/2026-08-25-bake-verdict-and-fleet-shutdown.md).
+> Read that first; then this.
+
+- [Trial-surfaced defects](#trial-surfaced-defects-2026-08-25) (2026-08-25) — **highest priority**
 - [ContextBuilder](#contextbuilder-landed-2026-04-16) (2026-04-16)
 - [Triage](#triage-landed-2026-04-16) (2026-04-16)
 - [Operational DX](#operational-dx-filed-2026-05-02) (2026-05-02)
 - [Grounding graceful-degrade](#grounding-graceful-degrade-resolved-2026-05-17) (resolved 2026-05-17)
+
+---
+
+## Trial-surfaced defects (2026-08-25)
+
+Found by running the tool against six real projects, not by reading the code.
+All three are open. Full measurements in the verdict note.
+
+### TD-1. Severity is keyword-scanned over quoted code — OPEN
+
+`ollama_sentinel/extractor.py:161-164` substring-matches `_SEVERITY_KEYWORDS`
+against the whole finding block, code fence included, with `"critical"` first
+in dict order. A CSS `.critical` class or `{ critical_high: 'HH' }` promotes a
+style nit to critical. **Measured: 125/177 (71%)** of one project's critical
+tier, 7/14 in another. `_CATEGORY_KEYWORDS` has the identical flaw (`"bug"`
+and `"error"` lead, so any block quoting `error` becomes `category=bug`).
+
+**Fix:** strip fenced and inline code before the keyword scan. Roughly five
+lines. Highest-leverage single change in the repo.
+
+### TD-2. Legacy extraction never captures `verbatim_excerpt` — OPEN
+
+`extract_findings_legacy` returns findings with an empty excerpt by contract.
+`sarif.relocate_finding` (`sarif.py:88`) therefore returns status `"stored"`,
+which makes `fix` unable to bound an edit, `prune` unable to detect staleness,
+and `surface` anchor SARIF to drifted line numbers. **100% of one project's
+findings and ~97% of another's** were affected, because every `:cloud` model
+forces this path.
+
+**Fix:** synthesize the excerpt at persist time by slicing the cited line span
+out of the file — the content is already in hand at that point. Decide
+separately whether to backfill existing DBs.
+
+### TD-3. Watch scope admits non-source files — OPEN
+
+One project spent model calls reviewing `events_2026-08-11.jsonl` and
+analytics `.md`; **1,702 of 14,267 findings (12%)** were on non-source files.
+Config-only fix (tighten `watch` ignore rules), but it wastes real tokens.
+
+### TD-4. `persist_findings` upsert key drifts — OPEN, low priority
+
+Keys on `(file_path, line_start, line_end, category)`. Under legacy extraction
+both `line_end` and `category` are re-derived from prose that varies run to
+run, so re-reviews insert instead of incrementing `occurrence_count`.
+**Smaller than it looks** — ~8% and ~13% of rows in the two largest DBs; the
+bulk of findings are genuinely distinct. Do after TD-1 and TD-2.
 
 ---
 

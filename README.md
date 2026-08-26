@@ -1,10 +1,34 @@
 # Ollama Sentinel
 
+> ### ⏸ Status: parked (2026-08-25)
+>
+> This ran for real. From 2026-08-08 it watched **six live projects across two
+> machines** for 17 days and produced **18,864 findings**. Then it was shut
+> down, deliberately, and the project was parked.
+>
+> **What the trial showed:** the reviewer works. It found a zero-width space
+> (U+200B) hiding inside a regex, an XSS cluster, a hardcoded API-key fallback,
+> and a silent-data-loss race — the kind of defect that survives a human read.
+> The cumulative memory worked too: reviews came back annotated
+> `STILL PRESENT (flagged 4× since ...)`.
+>
+> **What it also showed:** ~1,100 findings a day is more than any one person
+> triages, and no amount of polish fixes that ratio. Continuous passive review
+> only pays if you read the review when it lands.
+>
+> - [The verdict, with measurements](docs/session-notes/2026-08-25-bake-verdict-and-fleet-shutdown.md)
+> - [The defects it found, triaged](docs/harvest/bake-harvest-2026-08-25.md)
+>
+> The code works and the test suite is green — nothing here is abandoned or
+> broken. It is simply not being developed, and nothing is running. If you want
+> the capability, read the verdict first; it says honestly which parts earned
+> their keep.
+
 > **▶ Visual guide:** open [`docs/index.html`](docs/index.html) in a browser for the full walkthrough — `open docs/index.html` on macOS, or `xdg-open docs/index.html` on Linux.
 
 A local AI development companion that remembers.
 
-**The sentinel** watches your code directory, reviews every change with a local Ollama model, and builds a cumulative violation database that tracks recurring issues across your codebase. After a week it knows your blind spots. After a month it's indispensable. It also turns recurring confirmed failures into **guardrails** — named rules the reviewer checks on every future change, either authored by you or auto-promoted from a shape it has flagged and corroborated three or more times.
+**The sentinel** watches your code directory, reviews every change with a local Ollama model, and builds a cumulative violation database that tracks recurring issues across your codebase. Recurring issues resurface in later reviews instead of being rediscovered from scratch. It also turns recurring confirmed failures into **guardrails** — named rules the reviewer checks on every future change, either authored by you or auto-promoted from a shape it has flagged and corroborated three or more times.
 
 **The research agent** produces dependency-aware impact analysis for library migrations, CVEs, and API changes -- not generic essays, but ranked lists of every call site in YOUR code that breaks, with severity and suggested fixes.
 
@@ -16,13 +40,14 @@ Both tools are local. Your code never leaves your machine.
 
 ```bash
 pip install -e .                        # install the sentinel
-ollama pull gemma3:4b                   # the reviewer model (~3 GB)
 ollama pull qwen3-embedding:4b          # the semantic-recall embedder (~2.5 GB)
 cd <your-project-dir>
 ollama-sentinel init                    # writes ollama-sentinel.yaml in cwd
 ```
 
-If you'd rather use a cloud model (e.g. `deepseek-v4-pro:cloud`) instead of `gemma3:4b`, skip the first `ollama pull`, run `ollama signin` once, and edit `ollama-sentinel.yaml` so `ollama.models.default.name` is your cloud model.
+`init` queries `/api/tags` and picks a reviewer model you already have installed, so you usually don't need to pull one. If nothing suitable is installed it falls back to `gemma3:4b` — `ollama pull gemma3:4b` (~3 GB) covers that case.
+
+To use a cloud model (e.g. `deepseek-v4-pro:cloud`), run `ollama signin` once and edit `ollama-sentinel.yaml` so `ollama.models.default.name` is your cloud model. **Note:** every `:cloud` model ignores Ollama's `format` JSON schema, so grounded extraction silently degrades to the regex path — set `processing.grounding: false` and see the [verdict note](docs/session-notes/2026-08-25-bake-verdict-and-fleet-shutdown.md) for what that costs you (chiefly: no `verbatim_excerpt`, so `fix` and `prune` can't act on those findings).
 
 ### Each time you want to use it
 
@@ -137,6 +162,18 @@ The "I always forget what to run" table.
 | Interactive research | `ollama-sentinel research -i` | REPL prompt — ask follow-up questions in the same session |
 | Run all tests | `pytest tests/ -q` | Green (run it for the live count — it drifts as tests land; the skips are intentional, exercised by the `[dev,research]` CI runner) |
 
+## Known limits
+
+Found by running this against six real projects for 17 days. None are fixed —
+the project was parked first — and all three are in the [next-moves
+table](CLAUDE.md) with file:line pointers.
+
+| Limit | Effect |
+|---|---|
+| **Severity is keyword-scanned over the whole finding, quoted code included** (`extractor.py`) | A CSS `.critical` class or a `{ critical_high: 'HH' }` map promotes a style nit to `critical`. Measured at **71%** of one project's critical tier. Sort by severity with that in mind. |
+| **The regex extraction path never captures `verbatim_excerpt`** | `fix`, `prune`, and accurate `surface` re-anchoring all need it, so on any `:cloud` model (which forces that path) those commands are inert. Grounded local models are unaffected. |
+| **Findings accumulate faster than anyone triages them** | Six projects produced ~1,100/day. Scope `watch.directory` tightly and treat `report`/`findings` as sampling tools, not a queue to drain. |
+
 ## When something looks wrong
 
 | Symptom | Fix |
@@ -167,7 +204,7 @@ pip install -e ".[dev]"
 pytest tests/ -q   # green in ~10s; run it for the live pass/skip count (it drifts as tests land)
 ```
 
-CI runs both `[dev]` and `[dev,research]` matrix runners on every push and PR — the second one exercises the 15 tests skipped on `[dev]`-only.
+CI runs both `[dev]` and `[dev,research]` matrix runners on every push and PR — the second one exercises the tests skipped on `[dev]`-only (the research-extras suite).
 
 ## License
 
