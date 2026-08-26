@@ -280,7 +280,12 @@ operator came back to it, do this in order:
    should not have — but `ssh root@100.84.74.15 'systemctl is-enabled
    ollama-sentinel-somanotes'` and `launchctl list | grep sentinel` are the
    two checks.
-4. `research_agent` is still slated for cutting.
+4. **`research_agent` stays.** It was slated for cutting for months (OpenAI +
+   LangChain dead weight against a local-first pitch), and that was reversed
+   2026-08-25: with the project parked, deleting working, tested code buys
+   nothing. Do not cut it without asking. Note it is one half of the v0.3
+   shared-substrate idea in `docs/VISION.md` — cutting it later would delete
+   that section's premise.
 
 ### Pickable next moves (ordered by leverage)
 

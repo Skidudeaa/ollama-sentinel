@@ -222,10 +222,12 @@ becomes a rulebook the model enforces — exactly the north star below.
 > project restarts, the [next-moves table](../CLAUDE.md) puts the severity
 > scanner and `verbatim_excerpt` capture ahead of everything below.
 >
-> Also worth weighing: `research_agent` is slated for cutting (OpenAI +
-> LangChain dead weight against a local-first pitch), and it is one half of the
-> substrate this section proposes unifying. Cutting it deletes this section's
-> premise.
+> `research_agent` was long slated for cutting (OpenAI + LangChain dead weight
+> against a local-first pitch). **That was reversed 2026-08-25 — it stays.**
+> Which matters here: it is one half of the substrate this section proposes
+> unifying, so the idea below remains structurally possible rather than
+> orphaned. It is also, still, untouched by the trial: nothing in 17 days
+> exercised it.
 
 Today the two modules are architecturally independent. That was the right v0.1
 call. It's now the ceiling.
