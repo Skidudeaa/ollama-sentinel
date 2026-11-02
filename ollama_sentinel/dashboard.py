@@ -92,6 +92,7 @@ class ViolationRow:
     line_start: int
     line_end: int
     description: str
+    id: Optional[int] = None
 
 
 @dataclass
@@ -145,7 +146,7 @@ def recent_reviews(reviews_dir: pathlib.Path, limit: int) -> List[ReviewRow]:
 
 
 def top_violations(db: ViolationDB, min_count: int, limit: int) -> List[ViolationRow]:
-    """Return recurring findings from the DB as ``ViolationRow`` objects."""
+    """Return unresolved recurring findings from the DB as ``ViolationRow`` objects."""
     raw = db.get_recurring(min_count=min_count, limit=limit)
     return [
         ViolationRow(
@@ -156,9 +157,40 @@ def top_violations(db: ViolationDB, min_count: int, limit: int) -> List[Violatio
             line_start=r["line_start"],
             line_end=r["line_end"],
             description=r["description"],
+            id=r.get("id"),
         )
         for r in raw
+        if not r.get("resolved")
     ]
+
+
+def execute_dashboard_action(
+    db: Optional[ViolationDB], action: str, row: ViolationRow,
+) -> str:
+    """Execute a triage action on *row* against *db* and return a status message.
+
+    Supported actions:
+      - ``"resolve"`` — marks the finding resolved with ``resolution="fixed"``
+      - ``"dismiss"`` — marks the finding resolved with ``resolution="dismissed"``
+      - ``"confirm"`` — persists a manual confirmation incident for the finding
+    """
+    if db is None or row.id is None:
+        return "Action unavailable (finding has no database ID)"
+    if action == "resolve":
+        db.mark_resolved(row.id, resolution="fixed")
+        return f"Resolved #{row.id} ({row.file_path}:{row.line_start}) as fixed"
+    if action == "dismiss":
+        db.mark_resolved(row.id, resolution="dismissed")
+        return f"Dismissed #{row.id} ({row.file_path}:{row.line_start}) as false positive"
+    if action == "confirm":
+        from .violation_db import Incident
+        db.persist_incident(Incident(
+            finding_id=row.id,
+            confirming_signal="manual_confirm",
+            confirming_artifact="dashboard",
+        ))
+        return f"Confirmed #{row.id} ({row.file_path}:{row.line_start}) as real incident"
+    return ""
 
 
 def _format_guardrail_scope(category: Optional[str], path_glob: Optional[str]) -> str:
@@ -565,13 +597,21 @@ def render_layout(
 
 def _footer_interactive(ui_state) -> Panel:
     """Mode-aware footer with contextual keyboard hints."""
-    from .dashboard_input import Mode
+    from .dashboard_input import Mode, PanelId
 
     if ui_state.mode == Mode.FILTER:
         ft = ui_state.filter_text or ""
         body = f"[bold white]/{ft}[/][dim]▏[/]  [dim]Type to filter[/]  [dim]│[/]  Enter apply  [dim]│[/]  Esc cancel"
     elif ui_state.mode == Mode.DETAIL:
-        body = "[dim]Esc[/] close  [dim]│[/]  Viewing detail"
+        if ui_state.focused_panel == PanelId.PATTERNS:
+            body = (
+                "[dim]Esc[/] close  [dim]│[/]  "
+                "[dim]r[/] resolve  [dim]│[/]  "
+                "[dim]d[/] dismiss  [dim]│[/]  "
+                "[dim]c[/] confirm"
+            )
+        else:
+            body = "[dim]Esc[/] close  [dim]│[/]  Viewing detail"
     else:
         body = (
             "[dim]q[/] quit  [dim]│[/]  "
@@ -580,6 +620,13 @@ def _footer_interactive(ui_state) -> Panel:
             "[dim]Enter[/] detail  [dim]│[/]  "
             "[dim]/[/] filter"
         )
+        if ui_state.focused_panel == PanelId.PATTERNS:
+            body += (
+                "  [dim]│[/]  [dim]r[/] resolve  "
+                "[dim]d[/] dismiss  [dim]c[/] confirm"
+            )
+    if getattr(ui_state, "status_message", ""):
+        body += f"  [dim]│[/]  [bold green]{ui_state.status_message}[/]"
     return Panel(Text.from_markup(body), border_style="dim", padding=(0, 1))
 
 
@@ -844,6 +891,34 @@ async def run_dashboard(
                         ui_state = apply_key(ui_state, event, item_counts)
                         if ui_state.quit_requested:
                             break
+                        if ui_state.pending_action:
+                            violations = data["violations"]
+                            if ui_state.filter_active and ui_state.filter_text:
+                                ft = ui_state.filter_text.lower()
+                                violations = [
+                                    v for v in violations
+                                    if ft in v.severity.lower() or ft in v.category.lower()
+                                ]
+                            ranked = blended_rank(violations)
+                            sel_idx = ui_state.selection.get(PanelId.PATTERNS, 0)
+                            status_msg = ""
+                            if 0 <= sel_idx < len(ranked):
+                                action = ui_state.pending_action
+                                target_row = ranked[sel_idx]
+                                try:
+                                    status_msg = await asyncio.to_thread(
+                                        execute_dashboard_action, db, action, target_row,
+                                    )
+                                except Exception as exc:
+                                    log.warning("Dashboard action %s failed: %s", action, exc)
+                                    status_msg = f"Action failed: {exc}"
+                                data = await asyncio.to_thread(_fetch_data)
+                                last_fetch = time.monotonic()
+                            from .dashboard_input import _copy
+                            ui_state = _copy(
+                                ui_state, pending_action=None, status_message=status_msg,
+                            )
+                            ui_state = _reclamp_selection(ui_state, data)
                         live.update(_build_layout(data, ui_state))
                     except asyncio.TimeoutError:
                         pass

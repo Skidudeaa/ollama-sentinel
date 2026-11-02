@@ -6,6 +6,7 @@ import datetime
 import json
 import logging
 import pathlib
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union, cast
 
@@ -144,6 +145,41 @@ def _number_lines(content: str) -> str:
     return "\n".join(
         f"{i}: {line}" for i, line in enumerate(content.splitlines(), 1)
     )
+
+
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _number_diff_lines(diff: str) -> str:
+    """Annotate unified diff hunks with 1-based target-file ``N: `` prefixes.
+
+    Tracks the new-file line counter across each ``@@ -old +new @@`` hunk and
+    prefixes added (``+``) and context (`` ``) lines with ``{new_line}: `` so
+    grounded reviews in ``git_diff_mode`` cite accurate working-tree line
+    numbers that validate against ``file_change.content``. Removed (``-``) and
+    header lines are left un-numbered.
+    """
+    if not diff:
+        return diff
+    out: List[str] = []
+    new_line: Optional[int] = None
+    for line in diff.splitlines():
+        m = _HUNK_HEADER_RE.match(line)
+        if m:
+            new_line = int(m.group(1))
+            out.append(line)
+        elif new_line is not None:
+            if line.startswith("+") and not line.startswith("+++"):
+                out.append(f"{new_line}: {line}")
+                new_line += 1
+            elif line.startswith(" "):
+                out.append(f"{new_line}: {line}")
+                new_line += 1
+            else:
+                out.append(line)
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 def attribute_guardrail_provenance(
@@ -502,10 +538,15 @@ class FileProcessor:
         """
         Prepare file content or git diff for review.
 
+        Always populates ``file_change.content`` with the working-tree file so
+        semantic recall and grounded verbatim validation have the raw source
+        even when ``git_diff_mode`` also populates ``file_change.diff``.
+
         Args:
             file_change: File change to prepare
         """
         path = file_change.path
+        file_change.content = safe_read(path, self.watch_dir)
 
         if self.config.processing.git_diff_mode and self.repo:
             try:
@@ -517,15 +558,8 @@ class FileProcessor:
 
                 if diff.strip():
                     file_change.diff = diff
-                else:
-                    # If no diff (new file), get the full content
-                    file_change.content = safe_read(path, self.watch_dir)
             except (git.GitCommandError, ValueError) as e:
                 log.warning(f"Git diff failed for {path}: {e}")
-                file_change.content = safe_read(path, self.watch_dir)
-        else:
-            # Use full file content
-            file_change.content = safe_read(path, self.watch_dir)
 
     def chunk_content(self, content: str, file_type: str) -> List[str]:
         """Split content into chunks using a token budget."""
@@ -767,9 +801,15 @@ class FileProcessor:
         guardrails = await self._get_active_guardrails()
 
         if file_change.diff is not None:
-            prompt = await self.format_prompt(
-                file_change, prior_violations=prior, guardrails=guardrails,
-            )
+            raw_diff = file_change.diff
+            if self.config.processing.grounding:
+                file_change.diff = _number_diff_lines(raw_diff)
+            try:
+                prompt = await self.format_prompt(
+                    file_change, prior_violations=prior, guardrails=guardrails,
+                )
+            finally:
+                file_change.diff = raw_diff
             raw = await self.ollama_client.generate_review(
                 model_role, prompt, response_format=_review_format(self.config),
             )

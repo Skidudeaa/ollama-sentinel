@@ -70,6 +70,8 @@ class UIState:
     filter_active: bool = False
     detail_item: Optional[dict] = None
     quit_requested: bool = False
+    pending_action: Optional[str] = None
+    status_message: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +85,20 @@ def apply_key(state: UIState, event: KeyEvent, item_counts: dict) -> UIState:
     if state.mode == Mode.DETAIL:
         if key in (Key.ESC, Key.QUIT):
             return _copy(state, mode=Mode.NORMAL, detail_item=None)
+        if key == Key.CHAR and state.focused_panel == PanelId.PATTERNS:
+            if item_counts.get(PanelId.PATTERNS, 0) > 0:
+                if event.char == "r":
+                    return _copy(
+                        state, mode=Mode.NORMAL, detail_item=None,
+                        pending_action="resolve",
+                    )
+                if event.char == "d":
+                    return _copy(
+                        state, mode=Mode.NORMAL, detail_item=None,
+                        pending_action="dismiss",
+                    )
+                if event.char == "c":
+                    return _copy(state, pending_action="confirm")
         return state
 
     if state.mode == Mode.FILTER:
@@ -111,6 +127,13 @@ def apply_key(state: UIState, event: KeyEvent, item_counts: dict) -> UIState:
         if ch == "/":
             return _copy(state, mode=Mode.FILTER, focused_panel=PanelId.PATTERNS,
                          filter_text="", filter_active=False)
+        if state.focused_panel == PanelId.PATTERNS and item_counts.get(PanelId.PATTERNS, 0) > 0:
+            if ch == "r":
+                return _copy(state, pending_action="resolve")
+            if ch == "d":
+                return _copy(state, pending_action="dismiss")
+            if ch == "c":
+                return _copy(state, pending_action="confirm")
         return state
 
     if key == Key.QUIT:
@@ -184,6 +207,8 @@ def _copy(state: UIState, **overrides) -> UIState:
         filter_active=overrides.get("filter_active", state.filter_active),
         detail_item=overrides.get("detail_item", state.detail_item),
         quit_requested=overrides.get("quit_requested", state.quit_requested),
+        pending_action=overrides.get("pending_action", None),
+        status_message=overrides.get("status_message", state.status_message),
     )
 
 

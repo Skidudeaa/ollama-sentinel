@@ -163,6 +163,26 @@ class TestGetRecurring:
         finally:
             db.close()
 
+    def test_get_recurring_excludes_resolved_before_limit(self, tmp_path):
+        """Resolved findings must not appear in get_recurring or consume its LIMIT."""
+        db = ViolationDB(str(tmp_path / "memory.db"))
+        try:
+            closed = _make_finding(file_path="a.py", line_start=1, line_end=1, category="bug")
+            active = _make_finding(file_path="b.py", line_start=2, line_end=2, category="bug")
+            for _ in range(5):
+                db.persist_findings("a.py", [closed])
+            for _ in range(3):
+                db.persist_findings("b.py", [active])
+            closed_id = db.get_unresolved("a.py")[0]["id"]
+            db.mark_resolved(closed_id, resolution="fixed")
+
+            recurring = db.get_recurring(min_count=2, limit=1)
+            assert len(recurring) == 1
+            assert recurring[0]["file_path"] == "b.py"
+            assert recurring[0]["resolved"] == 0
+        finally:
+            db.close()
+
 
 # ---------------------------------------------------------------------------
 # get_neighbors_unresolved
@@ -683,6 +703,50 @@ class TestVerbatimExcerptPersistence:
         assert len(rows) == 1  # upserted, not duplicated
         assert rows[0]["occurrence_count"] == 2
         assert rows[0]["verbatim_excerpt"] == "first = excerpt()"
+
+    def test_upsert_backfills_empty_excerpt(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings(
+                "src/app.py",
+                [_make_finding(verbatim_excerpt="")],
+            )
+            db.persist_findings(
+                "src/app.py",
+                [_make_finding(verbatim_excerpt="backfilled = excerpt()")],
+            )
+            rows = db.get_unresolved("src/app.py")
+        finally:
+            db.close()
+        assert len(rows) == 1
+        assert rows[0]["occurrence_count"] == 2
+        assert rows[0]["verbatim_excerpt"] == "backfilled = excerpt()"
+
+
+class TestUpdateFindingLocation:
+    def test_updates_line_span_and_embed_text(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            db.persist_findings(
+                "src/app.py",
+                [_make_finding(line_start=2, line_end=3, description="bad eval")],
+            )
+            fid = db.get_unresolved("src/app.py")[0]["id"]
+            n = db.update_finding_location(fid, 10, 11)
+            row = db.get_finding(fid)
+        finally:
+            db.close()
+        assert n == 1
+        assert row["line_start"] == 10
+        assert row["line_end"] == 11
+        assert "src/app.py:10: bad eval" in row["embed_text"]
+
+    def test_missing_id_returns_zero(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "v.db"))
+        try:
+            assert db.update_finding_location(999999, 1, 2) == 0
+        finally:
+            db.close()
 
 
 def _read_row(db, finding_id):
@@ -1347,5 +1411,46 @@ class TestGuardrailProvenance:
             assert len(rows) == 1  # existing row intact
             assert "guardrail_id" in rows[0]
             assert rows[0]["guardrail_id"] is None  # legacy row: no provenance
+        finally:
+            db.close()
+
+    def test_update_finding_location_merges_existing_duplicate_at_target_span(
+        self, tmp_path
+    ):
+        """Relocating onto a span that already has an unresolved row for the
+        same (file_path, line_start, line_end, category) merges occurrence_count
+        and incidents into the relocated row instead of leaving two duplicates."""
+        from ollama_sentinel.violation_db import Incident
+
+        db = ViolationDB(str(tmp_path / "memory.db"))
+        try:
+            f_old = _make_finding(
+                file_path="src/app.py", line_start=1, line_end=1,
+                category="bug", verbatim_excerpt="x = 1 / 0",
+            )
+            f_dup = _make_finding(
+                file_path="src/app.py", line_start=5, line_end=5,
+                category="bug", verbatim_excerpt="",
+            )
+            db.persist_findings("src/app.py", [f_old])
+            db.persist_findings("src/app.py", [f_old])
+            db.persist_findings("src/app.py", [f_dup])
+
+            rows_before = sorted(db.get_unresolved("src/app.py"), key=lambda r: r["line_start"])
+            old_id, dup_id = rows_before[0]["id"], rows_before[1]["id"]
+            db.persist_incident(Incident(
+                finding_id=dup_id,
+                confirming_signal="manual_confirm",
+                confirming_artifact="cli",
+            ))
+
+            assert db.update_finding_location(old_id, 5, 5) == 1
+            rows_after = db.get_unresolved("src/app.py")
+            assert len(rows_after) == 1
+            assert rows_after[0]["id"] == old_id
+            assert rows_after[0]["line_start"] == 5
+            assert rows_after[0]["occurrence_count"] == 3
+            assert rows_after[0]["verbatim_excerpt"] == "x = 1 / 0"
+            assert len(db.get_incidents_for_finding(old_id)) == 1
         finally:
             db.close()

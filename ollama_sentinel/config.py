@@ -147,6 +147,7 @@ def create_default_config(
             "ignore_patterns": [
                 "*.md",
                 "*.log",
+                "*.jsonl",
                 f"**/{output_dir}/**",
             ],
             "debounce_ms": 1500,

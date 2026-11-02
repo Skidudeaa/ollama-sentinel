@@ -252,6 +252,19 @@ class TestBuiltinIgnores:
         s = _sentinel_no_patterns(tmp_path)
         assert s._should_ignore(tmp_path / ".watcher_heartbeat") is True
 
+    def test_jsonl_and_csv_and_minified_ignored(self, tmp_path):
+        s = _sentinel_no_patterns(tmp_path)
+        assert s._should_ignore(tmp_path / "logs" / "events_2026-08-11.jsonl") is True
+        assert s._should_ignore(tmp_path / "data" / "export.csv") is True
+        assert s._should_ignore(tmp_path / "static" / "app.min.js") is True
+        assert s._should_ignore(tmp_path / "static" / "app.min.css") is True
+
+    def test_worktrees_and_playwright_dotdirs_ignored(self, tmp_path):
+        s = _sentinel_no_patterns(tmp_path)
+        assert s._should_ignore(tmp_path / ".worktrees" / "exp" / "app.py") is True
+        assert s._should_ignore(tmp_path / ".playwright-cli" / "trace.js") is True
+        assert s._should_ignore(tmp_path / ".design-handoff" / "spec.js") is True
+
     def test_python_file_not_ignored(self, tmp_path):
         """A regular .py file must still pass through with empty user patterns."""
         s = _sentinel_no_patterns(tmp_path)
@@ -576,3 +589,99 @@ class TestRunPrewarmsEmbedder:
         await sentinel.run()
 
         assert calls == ["prewarm", "watch"]
+
+
+class TestProcessChangeReconcileAndLegacyExcerpt:
+    """TD-2 + Step 4: legacy extraction populates verbatim_excerpt, and
+    process_change reconciles stale/shifted findings on save."""
+
+    async def test_legacy_degrade_populates_verbatim_excerpt_in_db(
+        self, tmp_path, monkeypatch
+    ):
+        cfg = _watcher_cfg(tmp_path)
+        src = tmp_path / "app.py"
+        src.write_text("def f(data):\n    x = eval(data)\n    return x\n")
+
+        async def _prose_review(file_change, model_role="default"):
+            return {
+                "summary": "- Line 2: security risk calling eval on untrusted input.",
+                "findings": [],
+                "grounding_parse_failed": True,
+            }
+
+        sentinel = FileSentinel(cfg)
+        monkeypatch.setattr(sentinel.processor, "generate_review", _prose_review)
+        try:
+            await sentinel.process_change(
+                FileChange(path=src, change_type=Change.modified)
+            )
+            rows = sentinel.violation_db.get_unresolved("app.py")
+        finally:
+            await sentinel.processor.close()
+
+        assert len(rows) == 1
+        assert rows[0]["verbatim_excerpt"] == "    x = eval(data)"
+        assert rows[0]["category"] == "security"
+
+    async def test_process_change_prunes_stale_and_deduplicates_shifted_lines(
+        self, tmp_path, monkeypatch
+    ):
+        from ollama_sentinel.violation_db import Finding
+
+        cfg = _watcher_cfg(tmp_path)
+        src = tmp_path / "app.py"
+        # Initial state: finding A at line 2, finding B at line 3.
+        sentinel = FileSentinel(cfg)
+        sentinel.violation_db.persist_findings("app.py", [
+            Finding(
+                file_path="app.py", line_start=2, line_end=2,
+                category="security", severity="high",
+                description="eval on untrusted input",
+                verbatim_excerpt="x = eval(data)",
+            ),
+            Finding(
+                file_path="app.py", line_start=3, line_end=3,
+                category="bug", severity="high",
+                description="division by zero",
+                verbatim_excerpt="return 1 / 0",
+            ),
+        ])
+
+        # User edits app.py: inserts two import lines at top (so `x = eval(data)`
+        # shifts from line 2 to line 4) and fixes `return 1 / 0`.
+        src.write_text(
+            "import os\n"
+            "import sys\n"
+            "def f(data):\n"
+            "    x = eval(data)\n"
+            "    return x\n"
+        )
+
+        async def _review_shifted(file_change, model_role="default"):
+            return {
+                "summary": "review",
+                "findings": [{
+                    "line_start": 4, "line_end": 4, "category": "security",
+                    "severity": "high", "verbatim_excerpt": "x = eval(data)",
+                    "description": "eval on untrusted input",
+                }],
+            }
+
+        monkeypatch.setattr(sentinel.processor, "generate_review", _review_shifted)
+        try:
+            await sentinel.process_change(
+                FileChange(path=src, change_type=Change.modified)
+            )
+            open_rows = sentinel.violation_db.get_unresolved("app.py")
+            fixed_row = sentinel.violation_db.get_finding(2)
+        finally:
+            await sentinel.processor.close()
+
+        # Finding B (id=2) was auto-closed as stale; Finding A (id=1) relocated
+        # to line 4 and upserted to occurrence_count == 2 (no duplicate row!).
+        assert len(open_rows) == 1
+        assert open_rows[0]["id"] == 1
+        assert open_rows[0]["line_start"] == 4
+        assert open_rows[0]["occurrence_count"] == 2
+        assert fixed_row["resolved"] == 1
+        assert fixed_row["resolution"] == "stale"

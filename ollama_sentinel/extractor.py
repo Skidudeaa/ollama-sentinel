@@ -65,6 +65,39 @@ _ISSUE_BOUNDARY_PATTERN = re.compile(r"\n(?=\s*(?:#{1,6}\s|[-*]\s|\d+[.)]\s))")
 # ``**Claim:**`` scaffolding so the Finding description reads cleanly.
 _CLAIM_PATTERN = re.compile(r"\bclaim\b\s*[:*`]*\s*(.+)", re.IGNORECASE | re.DOTALL)
 
+# Matches fenced code blocks (including unclosed trailing fences) and inline
+# backtick spans so quoted code identifiers are excluded from keyword scans.
+_FENCED_CODE_PATTERN = re.compile(r"```[\s\S]*?(?:```|$)")
+_INLINE_CODE_PATTERN = re.compile(r"`[^`\n]+`")
+
+# Explicit labels ("**Severity:** High", "Category: security") take precedence
+# over fallback keyword scanning.
+_EXPLICIT_SEVERITY_PATTERN = re.compile(
+    r"\bseverity\b\s*[:=\-]\s*[*`'\"]*\s*"
+    r"(critical|severe|high|important|medium|moderate|low|minor|style|nit)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_CATEGORY_PATTERN = re.compile(
+    r"\bcategory\b\s*[:=\-]\s*[*`'\"]*\s*"
+    r"(bug|error|security|performance|style|design)\b",
+    re.IGNORECASE,
+)
+
+# Negated severity phrases ("not critical", "non-critical") stripped before
+# fallback keyword matching so they don't promote a minor issue to critical.
+_NEGATED_SEVERITY_PATTERN = re.compile(
+    r"\b(?:not|non)[\s\-]+(?:critical|severe|high|important)\b",
+    re.IGNORECASE,
+)
+
+# Blocks where the model explicitly clears a construct ("non-issue",
+# "no SQL injection risk", "not a bug") should not be persisted as findings.
+_NON_ISSUE_PATTERN = re.compile(
+    r"\b(?:non-issue|no\s+issues?\b|not\s+a\s+(?:bug|problem|vulnerability|issue)|"
+    r"no\s+(?:sql\s+|xss\s+|command\s+)?injection\s+risk)\b",
+    re.IGNORECASE,
+)
+
 _SEVERITY_KEYWORDS = {
     "critical": "critical",
     "severe": "critical",
@@ -99,13 +132,53 @@ _CATEGORY_KEYWORDS = {
 }
 
 
+def _strip_code_spans(text: str) -> str:
+    """Remove fenced code blocks and inline backtick spans from *text*.
+
+    Used before keyword-scanning a review block for severity and category so
+    identifiers inside quoted source (e.g. a CSS ``.critical`` class, a
+    ``{ critical_high: 'HH' }`` map, or ``catch (error)``) do not leak into
+    the finding's classification.
+    """
+    without_fences = _FENCED_CODE_PATTERN.sub(" ", text)
+    return _INLINE_CODE_PATTERN.sub(" ", without_fences)
+
+
+def synthesize_excerpt(file_content: str, line_start: int, line_end: int) -> str:
+    """Slice 1-based inclusive lines ``[line_start..line_end]`` from *file_content*.
+
+    Returns ``""`` when *file_content* is empty or the cited range does not
+    fall within the file (``line_start < 1``, ``line_end < line_start``, or
+    ``line_start > len(lines)``). When ``line_end`` overshoots the end of
+    the file, clamps to ``len(lines)``.
+    """
+    if not file_content:
+        return ""
+    lines = file_content.splitlines()
+    if line_start < 1 or line_end < line_start or line_start > len(lines):
+        return ""
+    end = min(line_end, len(lines))
+    return "\n".join(lines[line_start - 1 : end])
+
+
+_PROMPT_LINE_PREFIX_RE = re.compile(r"^\s*(?:\d+:\s?(?:\+(?![+=]))?|\+(?![+=]))")
+
+
+def _strip_prompt_prefixes(excerpt: str) -> str:
+    """Strip accidental ``N: `` or unified-diff ``+`` prefixes per line."""
+    if not excerpt:
+        return excerpt
+    return "\n".join(_PROMPT_LINE_PREFIX_RE.sub("", ln) for ln in excerpt.splitlines())
+
+
 def _validate_verbatim(finding: dict, file_content: str) -> bool:
     """Return True if the finding's verbatim_excerpt is found in the cited lines.
 
     Slices ``file_content`` at the finding's ``line_start``..``line_end``,
     normalises whitespace (collapse runs to single spaces, strip), and checks
     that the finding's ``verbatim_excerpt`` (also whitespace-normalised) is
-    contained in that slice.
+    contained in that slice. Falls back to stripping accidental ``N: `` or diff
+    ``+`` line prefixes when the model copied them from the prompt.
     """
     lines = file_content.splitlines()
     try:
@@ -122,21 +195,33 @@ def _validate_verbatim(finding: dict, file_content: str) -> bool:
         import re as _re
         return _re.sub(r"\s+", " ", text).strip()
 
-    excerpt = _normalise(finding.get("verbatim_excerpt", ""))
+    raw_excerpt = str(finding.get("verbatim_excerpt", ""))
+    excerpt = _normalise(raw_excerpt)
     if not excerpt:
         return False
-    return excerpt in _normalise(slice_text)
+    norm_slice = _normalise(slice_text)
+    if excerpt in norm_slice:
+        return True
+    stripped_excerpt = _normalise(_strip_prompt_prefixes(raw_excerpt))
+    if stripped_excerpt and stripped_excerpt in norm_slice:
+        return True
+    return False
 
 
-def extract_findings_legacy(review_text: str, file_path: str) -> List[Finding]:
+def extract_findings_legacy(
+    review_text: str,
+    file_path: str,
+    file_content: str = "",
+) -> List[Finding]:
     """Regex-based extraction from free-form review markdown.
 
-    The pre-grounding extraction path: parses bullet points or numbered items
-    that reference line numbers, classifies severity and category by keyword
-    match. Pattern-matches without consulting the file under review, so it
-    cannot ground claims — but it's the only extraction path that works when
-    the schema-constrained output mode is disabled (e.g. via --no-grounding
-    for debug comparison). Returns Findings with empty ``verbatim_excerpt``.
+    The prose extraction path: parses issue blocks (headings, bullets, or
+    numbered items) that reference line numbers, classifies severity and
+    category from the prose (excluding fenced and inline code spans so quoted
+    identifiers like ``.critical`` or ``error`` don't skew ratings), and — when
+    *file_content* is provided — synthesizes ``verbatim_excerpt`` by slicing the
+    cited line range from the file so downstream relocation, ``fix``, and
+    ``prune`` remain operable.
     """
     findings: List[Finding] = []
     # One block per issue: heading ("### N."), bullet, or numbered item. The
@@ -157,18 +242,32 @@ def extract_findings_legacy(review_text: str, file_path: str) -> List[Finding]:
         line_start = int(line_match.group(1))
         line_end = int(line_match.group(2)) if line_match.group(2) else line_start
 
-        block_lower = block.lower()
-        severity = "medium"
-        for kw, sev in _SEVERITY_KEYWORDS.items():
-            if kw in block_lower:
-                severity = sev
-                break
+        prose_lower = _strip_code_spans(block).lower()
+        if _NON_ISSUE_PATTERN.search(prose_lower):
+            continue
 
-        category = "style"
-        for kw, cat in _CATEGORY_KEYWORDS.items():
-            if kw in block_lower:
-                category = cat
-                break
+        explicit_sev = _EXPLICIT_SEVERITY_PATTERN.search(block)
+        if explicit_sev:
+            severity = _SEVERITY_KEYWORDS[explicit_sev.group(1).lower()]
+        else:
+            cleaned_sev_prose = _NEGATED_SEVERITY_PATTERN.sub(" ", prose_lower)
+            severity = "medium"
+            for kw, sev in _SEVERITY_KEYWORDS.items():
+                if kw in cleaned_sev_prose:
+                    severity = sev
+                    break
+
+        explicit_cat = _EXPLICIT_CATEGORY_PATTERN.search(block)
+        if explicit_cat:
+            category = _CATEGORY_KEYWORDS[explicit_cat.group(1).lower()]
+        else:
+            category = "style"
+            for kw, cat in _CATEGORY_KEYWORDS.items():
+                if kw in prose_lower:
+                    category = cat
+                    break
+
+        excerpt = synthesize_excerpt(file_content, line_start, line_end)
 
         findings.append(Finding(
             file_path=file_path,
@@ -177,6 +276,7 @@ def extract_findings_legacy(review_text: str, file_path: str) -> List[Finding]:
             category=category,
             severity=severity,
             description=_block_description(block),
+            verbatim_excerpt=excerpt,
         ))
 
     return findings
@@ -229,6 +329,10 @@ async def validate_findings(
             continue
         finding = _parse_finding(entry, file_path)
         if finding is not None:
+            if finding.verbatim_excerpt and finding.verbatim_excerpt not in file_content:
+                cleaned = _strip_prompt_prefixes(finding.verbatim_excerpt)
+                if cleaned:
+                    finding.verbatim_excerpt = cleaned
             valid.append(finding)
         else:
             log.warning("Skipping malformed finding entry: %s", entry)

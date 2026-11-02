@@ -136,6 +136,47 @@ class TestTopViolations:
         finally:
             db.close()
 
+    def test_excludes_resolved_and_executes_dashboard_actions(self, tmp_path):
+        from ollama_sentinel.dashboard import execute_dashboard_action
+
+        db = ViolationDB(str(tmp_path / "m.db"))
+        try:
+            f1 = Finding(
+                file_path="a.py", line_start=10, line_end=10,
+                category="security", severity="high", description="SQL injection",
+            )
+            f2 = Finding(
+                file_path="b.py", line_start=20, line_end=20,
+                category="bug", severity="medium", description="Off by one",
+            )
+            db.persist_findings("a.py", [f1])
+            db.persist_findings("a.py", [f1])
+            db.persist_findings("b.py", [f2])
+            db.persist_findings("b.py", [f2])
+
+            rows = top_violations(db, min_count=2, limit=10)
+            assert len(rows) == 2
+            assert all(r.id is not None for r in rows)
+
+            # Confirming records an incident and keeps the row visible
+            msg_c = execute_dashboard_action(db, "confirm", rows[0])
+            assert "Confirmed" in msg_c
+            assert rows[0].id in {r["id"] for r in db.get_corroborated_findings()}
+
+            # Resolving marks fixed and removes from top_violations
+            msg_r = execute_dashboard_action(db, "resolve", rows[0])
+            assert "Resolved" in msg_r
+            remaining = top_violations(db, min_count=2, limit=10)
+            assert len(remaining) == 1
+            assert remaining[0].id == rows[1].id
+
+            # Dismissing marks dismissed and removes from top_violations
+            msg_d = execute_dashboard_action(db, "dismiss", remaining[0])
+            assert "Dismissed" in msg_d
+            assert top_violations(db, min_count=2, limit=10) == []
+        finally:
+            db.close()
+
 
 def _mock_live() -> MagicMock:
     live = MagicMock()

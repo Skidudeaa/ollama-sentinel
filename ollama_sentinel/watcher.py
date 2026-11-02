@@ -48,6 +48,20 @@ _BUILTIN_IGNORE_PATTERNS: list[str] = [
     "**/.gradle/**",
     "**/DerivedData/**",
     "**/.ollama_reviews/**",
+    # Scratch / agent worktree dotdirs
+    "**/.worktrees/**",
+    "**/.playwright-cli/**",
+    "**/.design-handoff/**",
+    "**/.aider*/**",
+    "**/.aider*",
+    # Non-source data /minified / map files
+    "**/*.jsonl",
+    "**/*.csv",
+    "**/*.tsv",
+    "**/*.svg",
+    "**/*.map",
+    "**/*.min.js",
+    "**/*.min.css",
     # Lock / DB / binary extensions
     "**/*.mdb",
     "**/*.lock",
@@ -233,6 +247,35 @@ class FileSentinel:
         log.info(f"Processing {rel_path}")
 
         try:
+            # Reconcile existing open findings for this file before generating
+            # a review so fixed issues are auto-closed (not re-injected as prior
+            # violations) and shifted line spans are re-anchored before upsert.
+            if self.violation_db:
+                try:
+                    from .sarif import reconcile_file_findings
+                    from .utils import safe_read
+
+                    pre_content = file_change.content
+                    if pre_content is None:
+                        pre_content = await asyncio.to_thread(
+                            safe_read, path, self.processor.watch_dir,
+                        )
+                    pruned, relocated = await asyncio.to_thread(
+                        reconcile_file_findings,
+                        self.violation_db,
+                        str(rel_path),
+                        pre_content,
+                    )
+                    if pruned or relocated:
+                        log.info(
+                            "Reconciled findings for %s (%d stale closed, %d relocated)",
+                            rel_path,
+                            pruned,
+                            relocated,
+                        )
+                except Exception as e:
+                    log.warning("Finding reconciliation failed for %s: %s", rel_path, e)
+
             # Generate review (returns dict with "summary" and "findings" keys)
             review = await self.processor.generate_review(file_change, model_role=model_role)
 
@@ -241,14 +284,14 @@ class FileSentinel:
                 try:
                     findings_list = review.get("findings", [])
                     valid_findings: list = []
+                    file_content = file_change.content
+                    if file_content is None:
+                        try:
+                            file_content = file_change.path.read_text(errors="replace")
+                        except OSError:
+                            file_content = ""
                     if findings_list:
                         # Grounded path: verbatim-validate pre-structured findings.
-                        file_content = file_change.content
-                        if file_content is None:
-                            try:
-                                file_content = file_change.path.read_text(errors="replace")
-                            except OSError:
-                                file_content = ""
                         valid_findings = await validate_findings(
                             findings_list, str(rel_path), file_content,
                         )
@@ -258,9 +301,13 @@ class FileSentinel:
                         # Ungrounded by config, OR grounded but the model
                         # ignored the schema and returned prose — regex-extract
                         # findings from the free-form text instead of dropping
-                        # them.
+                        # them, synthesizing verbatim_excerpt from file_content.
                         summary_text = review.get("summary", "")
-                        valid_findings = extract_findings_legacy(summary_text, str(rel_path))
+                        valid_findings = extract_findings_legacy(
+                            summary_text,
+                            str(rel_path),
+                            file_content=file_content,
+                        )
                     if valid_findings:
                         # Best-effort guardrail provenance: attribute each finding
                         # to the in-scope guardrail it corresponds to. Never blocks

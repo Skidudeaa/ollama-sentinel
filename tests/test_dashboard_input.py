@@ -77,6 +77,18 @@ class TestApplyKeyNormalMode:
         state = apply_key(state, KeyEvent(Key.ENTER), _counts())
         assert state.mode == Mode.NORMAL
 
+    def test_r_d_c_trigger_pending_action_on_patterns_panel(self):
+        state = UIState(focused_panel=PanelId.PATTERNS)
+        assert apply_key(state, KeyEvent(Key.CHAR, char="r"), _counts()).pending_action == "resolve"
+        assert apply_key(state, KeyEvent(Key.CHAR, char="d"), _counts()).pending_action == "dismiss"
+        assert apply_key(state, KeyEvent(Key.CHAR, char="c"), _counts()).pending_action == "confirm"
+
+    def test_r_d_c_noop_when_patterns_empty_or_other_panel_focused(self):
+        empty_state = UIState(focused_panel=PanelId.PATTERNS)
+        assert apply_key(empty_state, KeyEvent(Key.CHAR, char="r"), _counts(patterns=0)).pending_action is None
+        rev_state = UIState(focused_panel=PanelId.REVIEWS)
+        assert apply_key(rev_state, KeyEvent(Key.CHAR, char="r"), _counts()).pending_action is None
+
 
 class TestApplyKeyFilterMode:
     def test_typing_appends(self):
@@ -142,6 +154,18 @@ class TestApplyKeyDetailMode:
         state = UIState(mode=Mode.DETAIL)
         result = apply_key(state, KeyEvent(Key.TAB), _counts())
         assert result.mode == Mode.DETAIL
+
+    def test_detail_mode_r_d_resolve_or_dismiss_and_exit_detail(self):
+        state = UIState(mode=Mode.DETAIL, focused_panel=PanelId.PATTERNS)
+        res = apply_key(state, KeyEvent(Key.CHAR, char="r"), _counts())
+        assert res.mode == Mode.NORMAL
+        assert res.pending_action == "resolve"
+        dis = apply_key(state, KeyEvent(Key.CHAR, char="d"), _counts())
+        assert dis.mode == Mode.NORMAL
+        assert dis.pending_action == "dismiss"
+        conf = apply_key(state, KeyEvent(Key.CHAR, char="c"), _counts())
+        assert conf.mode == Mode.DETAIL
+        assert conf.pending_action == "confirm"
 
 
 class TestUIStateImmutability:

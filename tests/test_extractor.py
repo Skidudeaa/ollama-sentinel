@@ -77,6 +77,35 @@ class TestValidateVerbatim:
         }
         assert _validate_verbatim(finding, content) is False
 
+    def test_excerpt_with_accidental_prompt_or_diff_prefix_passes_and_cleans(self):
+        """If the model accidentally includes `N: ` or `+` from a numbered or
+        diff prompt in verbatim_excerpt, validation succeeds, strips the prefix,
+        and preserves source indentation."""
+        import asyncio
+        content = "def foo():\n    beta = eval(user_input)\n"
+        findings = [
+            {
+                "line_start": 1,
+                "line_end": 2,
+                "category": "security",
+                "severity": "critical",
+                "verbatim_excerpt": "1: def foo():\n2: +    beta = eval(user_input)",
+                "description": "Arbitrary code execution",
+            },
+            {
+                "line_start": 1,
+                "line_end": 2,
+                "category": "style",
+                "severity": "low",
+                "verbatim_excerpt": "1: def foo():\n2:     beta = eval(user_input)",
+                "description": "Indented numbered excerpt",
+            },
+        ]
+        result = asyncio.run(validate_findings(findings, "app.py", content))
+        assert len(result) == 2
+        assert result[0].verbatim_excerpt == "def foo():\n    beta = eval(user_input)"
+        assert result[1].verbatim_excerpt == "def foo():\n    beta = eval(user_input)"
+
 
 # ---------------------------------------------------------------------------
 # validate_findings — happy path
@@ -423,6 +452,85 @@ class TestExtractFindingsLegacyTerseLineRefs:
         """`URL31` and similar tokens must not be misread as line references."""
         text = "- The constant URL31 duplicates URL30; consolidate the config."
         assert extract_findings_legacy(text, "a.py") == []
+
+
+class TestLegacySeverityAndCategoryHygiene:
+    """TD-1: quoted code must not leak into severity/category keyword scans."""
+
+    def test_fenced_code_critical_class_does_not_promote_severity(self):
+        block = (
+            "### 1. Naming nit\n"
+            "**Line Range:** `10..12`\n"
+            "**Excerpt:**\n"
+            "```css\n"
+            ".critical-banner { color: red; }\n"
+            "```\n"
+            "**Claim:** Consider using a theme variable for readability (style nit)."
+        )
+        findings = extract_findings_legacy(block, "styles.css")
+        assert len(findings) == 1
+        assert findings[0].severity == "low"
+        assert findings[0].category == "style"
+
+    def test_inline_code_critical_identifier_does_not_promote_severity(self):
+        text = "- Line 15: Rename `{ critical_high: 'HH' }` to match naming style nit."
+        findings = extract_findings_legacy(text, "map.js")
+        assert len(findings) == 1
+        assert findings[0].severity == "low"
+        assert findings[0].category == "style"
+
+    def test_quoted_error_identifier_does_not_force_bug_category(self):
+        text = "- Line 20: `handle_error(err)` could be renamed for readability."
+        findings = extract_findings_legacy(text, "app.py")
+        assert len(findings) == 1
+        assert findings[0].category == "style"
+
+    def test_explicit_severity_and_category_labels_take_precedence(self):
+        block = (
+            "### 1. Helper layout\n"
+            "**Line Range:** `4..8`\n"
+            "**Severity:** Low\n"
+            "**Category:** Design\n"
+            "**Claim:** Important module boundary could be cleaner."
+        )
+        findings = extract_findings_legacy(block, "mod.py")
+        assert len(findings) == 1
+        assert findings[0].severity == "low"
+        assert findings[0].category == "design"
+
+    def test_negated_critical_does_not_promote(self):
+        text = "- Line 8: Minor naming nit; this is not critical."
+        findings = extract_findings_legacy(text, "app.py")
+        assert len(findings) == 1
+        assert findings[0].severity == "low"
+
+    def test_non_issue_block_skipped(self):
+        text = "- Line 12: Non-issue — query is parameterized so there is no SQL injection risk."
+        assert extract_findings_legacy(text, "db.py") == []
+
+
+class TestLegacyVerbatimExcerptSynthesis:
+    """TD-2: legacy extraction synthesizes verbatim_excerpt when file_content is given."""
+
+    def test_synthesizes_excerpt_from_file_content(self):
+        content = "import os\ndef divide(a, b):\n    return a / b\n"
+        text = "- Lines 2-3: division by zero bug if b is 0."
+        findings = extract_findings_legacy(text, "math.py", file_content=content)
+        assert len(findings) == 1
+        assert findings[0].verbatim_excerpt == "def divide(a, b):\n    return a / b"
+
+    def test_out_of_range_line_span_yields_empty_excerpt(self):
+        content = "x = 1\n"
+        text = "- Line 99: unreachable bug."
+        findings = extract_findings_legacy(text, "x.py", file_content=content)
+        assert len(findings) == 1
+        assert findings[0].verbatim_excerpt == ""
+
+    def test_omitted_file_content_yields_empty_excerpt(self):
+        text = "- Line 1: unused variable style nit."
+        findings = extract_findings_legacy(text, "x.py")
+        assert len(findings) == 1
+        assert findings[0].verbatim_excerpt == ""
 
 
 # ---------------------------------------------------------------------------

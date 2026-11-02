@@ -485,6 +485,89 @@ class TestLineNumbering:
         from ollama_sentinel.processor import _number_lines
         assert _number_lines("") == ""
 
+    def test_number_diff_lines_annotates_added_and_context_lines(self):
+        """Unified diff hunks get target-file `N: ` prefixes on `+` and context lines."""
+        from ollama_sentinel.processor import _number_diff_lines
+
+        diff = (
+            "--- a/app.py\n"
+            "+++ b/app.py\n"
+            "@@ -10,3 +12,4 @@ def foo():\n"
+            " context_before = 1\n"
+            "-removed = 2\n"
+            "+added_one = 3\n"
+            "+added_two = 4\n"
+            " context_after = 5"
+        )
+        numbered = _number_diff_lines(diff)
+        lines = numbered.splitlines()
+        assert lines[0] == "--- a/app.py"
+        assert lines[1] == "+++ b/app.py"
+        assert lines[2] == "@@ -10,3 +12,4 @@ def foo():"
+        assert lines[3] == "12:  context_before = 1"
+        assert lines[4] == "-removed = 2"
+        assert lines[5] == "13: +added_one = 3"
+        assert lines[6] == "14: +added_two = 4"
+        assert lines[7] == "15:  context_after = 5"
+
+    def test_prepare_file_content_git_diff_mode_also_populates_content(
+        self, sentinel_config, tmp_path
+    ):
+        """When git_diff_mode is enabled and a diff exists, prepare_file_content
+        populates BOTH file_change.diff AND file_change.content so verbatim
+        validation and semantic recall have the working-tree source."""
+        from unittest.mock import MagicMock
+
+        source = tmp_path / "app.py"
+        source.write_text("x = 1\ny = 2\n")
+        sentinel_config.processing.git_diff_mode = True
+        fp = FileProcessor(sentinel_config)
+        fp.config.processing.git_diff_mode = True
+        fake_repo = MagicMock()
+        fake_repo.working_dir = str(tmp_path)
+        fake_repo.git.diff.return_value = "--- a/app.py\n+++ b/app.py\n@@ -1 +1,2 @@\n x = 1\n+y = 2"
+        fp.repo = fake_repo
+
+        fc = FileChange(path=source, change_type=Change.modified)
+        fp.prepare_file_content(fc)
+
+        assert fc.diff is not None and "+y = 2" in fc.diff
+        assert fc.content == "x = 1\ny = 2\n"
+
+    async def test_generate_review_diff_mode_sends_numbered_diff(
+        self, sentinel_config, tmp_path, httpx_mock: HTTPXMock
+    ):
+        """Grounded generate_review on a diff numbers the diff hunks in the
+        prompt and restores raw file_change.diff afterwards."""
+        import json as _json
+        from unittest.mock import MagicMock
+
+        f = tmp_path / "app.py"
+        f.write_text("alpha = 1\nbeta = 2\n")
+        httpx_mock.add_response(
+            url=OLLAMA_CHAT_URL,
+            json={"message": {"content": '{"summary": "ok", "findings": []}'}},
+        )
+        fp = FileProcessor(sentinel_config)
+        fp.config.processing.git_diff_mode = True
+        raw_diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1,2 @@\n alpha = 1\n+beta = 2"
+        fake_repo = MagicMock()
+        fake_repo.working_dir = str(tmp_path)
+        fake_repo.git.diff.return_value = raw_diff
+        fp.repo = fake_repo
+
+        fc = FileChange(path=f, change_type=Change.modified)
+        try:
+            await fp.generate_review(fc)
+        finally:
+            await fp.ollama_client.close()
+
+        user_msg = _json.loads(httpx_mock.get_requests()[0].content)["messages"][-1]["content"]
+        assert "1:  alpha = 1" in user_msg
+        assert "2: +beta = 2" in user_msg
+        assert fc.diff == raw_diff
+        assert fc.content == "alpha = 1\nbeta = 2\n"
+
     async def test_generate_review_prompt_is_line_numbered(
         self, sentinel_config, tmp_path, httpx_mock: HTTPXMock
     ):

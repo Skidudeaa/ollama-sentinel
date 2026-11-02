@@ -212,10 +212,16 @@ class ViolationDB:
                             """
                             UPDATE findings
                             SET occurrence_count = occurrence_count + 1,
-                                last_seen       = ?
+                                last_seen        = ?,
+                                verbatim_excerpt = CASE
+                                    WHEN (verbatim_excerpt IS NULL OR verbatim_excerpt = '')
+                                         AND ? != ''
+                                    THEN ?
+                                    ELSE verbatim_excerpt
+                                END
                             WHERE id = ?
                             """,
-                            (now, row[0]),
+                            (now, f.verbatim_excerpt, f.verbatim_excerpt, row[0]),
                         )
                     else:
                         embed_text = (
@@ -292,6 +298,89 @@ class ViolationDB:
                 )
             )
         return rowcount
+
+    def update_finding_location(
+        self, finding_id: int, line_start: int, line_end: int
+    ) -> int:
+        """Update ``line_start``, ``line_end``, and ``embed_text`` for a finding.
+
+        Called when excerpt-based relocation detects that a finding's flagged
+        code moved to a new line span without changing content. Keeping stored
+        line numbers current ensures prior-violation recall cites accurate lines
+        and subsequent ``persist_findings`` upserts increment ``occurrence_count``
+        instead of inserting a duplicate row at the shifted span. Returns the
+        number of rows updated (0 if *finding_id* does not exist).
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT file_path, severity, category, description, "
+                "occurrence_count, first_seen, last_seen FROM findings WHERE id = ?",
+                (finding_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return 0
+            (
+                file_path,
+                severity,
+                category,
+                description,
+                occ_count,
+                first_seen,
+                last_seen,
+            ) = row
+            dup_cur = self._conn.execute(
+                """
+                SELECT id, occurrence_count, first_seen, last_seen
+                FROM findings
+                WHERE file_path  = ?
+                  AND line_start = ?
+                  AND line_end   = ?
+                  AND category   = ?
+                  AND resolved   = 0
+                  AND id        != ?
+                """,
+                (file_path, line_start, line_end, category, finding_id),
+            )
+            dups = dup_cur.fetchall()
+            for dup_id, dup_occ, dup_first, dup_last in dups:
+                occ_count += dup_occ
+                if dup_first and dup_first < first_seen:
+                    first_seen = dup_first
+                if dup_last and dup_last > last_seen:
+                    last_seen = dup_last
+                self._conn.execute(
+                    "UPDATE incidents SET finding_id = ? WHERE finding_id = ?",
+                    (finding_id, dup_id),
+                )
+                self._conn.execute("DELETE FROM findings WHERE id = ?", (dup_id,))
+
+            embed_text = (
+                f"[{severity}] {category} at {file_path}:{line_start}: {description}"
+            )
+            cur = self._conn.execute(
+                """
+                UPDATE findings
+                SET line_start       = ?,
+                    line_end         = ?,
+                    embed_text       = ?,
+                    occurrence_count = ?,
+                    first_seen       = ?,
+                    last_seen        = ?
+                WHERE id = ?
+                """,
+                (
+                    line_start,
+                    line_end,
+                    embed_text,
+                    occ_count,
+                    first_seen,
+                    last_seen,
+                    finding_id,
+                ),
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     def persist_incident(self, incident: Incident) -> int:
         """Insert an Incident row and return its new id. Never upserts."""
@@ -530,12 +619,12 @@ class ViolationDB:
             return self._rows_to_dicts(cur)
 
     def get_recurring(self, min_count: int = 2, limit: int = 20) -> List[dict]:
-        """Return findings with occurrence_count >= *min_count*, ordered desc."""
+        """Return unresolved findings with occurrence_count >= *min_count*, ordered desc."""
         with self._lock:
             cur = self._conn.execute(
                 """
                 SELECT * FROM findings
-                WHERE occurrence_count >= ?
+                WHERE occurrence_count >= ? AND resolved = 0
                 ORDER BY occurrence_count DESC
                 LIMIT ?
                 """,

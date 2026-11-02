@@ -333,3 +333,37 @@ def collect_stale_findings(db, watch_dir: "pathlib.Path | str") -> List[dict]:
         if relocate_finding(content, r).status == "stale":
             stale.append(r)
     return stale
+
+
+def reconcile_file_findings(
+    db, file_rel_path: str, content: str
+) -> Tuple[int, int]:
+    """Reconcile open findings for *file_rel_path* against its current *content*.
+
+    For each unresolved finding on *file_rel_path*:
+      - ``status == "stale"`` (its verbatim excerpt is no longer in *content*):
+        marks the finding resolved with ``resolution="stale"``.
+      - ``status == "relocated"`` and the span shifted: updates ``line_start``,
+        ``line_end``, and ``embed_text`` in *db* so prior-issue recall and
+        ``persist_findings`` deduplication see the current lines.
+      - ``status == "stored"`` (empty excerpt): left untouched.
+
+    Returns ``(pruned_count, relocated_count)``.
+    """
+    pruned = 0
+    relocated = 0
+    for row in db.get_unresolved(file_rel_path):
+        reloc = relocate_finding(content, row)
+        if reloc.status == "stale":
+            if db.mark_resolved(row["id"], resolution="stale") > 0:
+                pruned += 1
+        elif reloc.status == "relocated":
+            if (reloc.start_line, reloc.end_line) != (
+                row.get("line_start"),
+                row.get("line_end"),
+            ):
+                if db.update_finding_location(
+                    row["id"], reloc.start_line, reloc.end_line
+                ) > 0:
+                    relocated += 1
+    return pruned, relocated

@@ -406,3 +406,48 @@ class TestCollectStaleFindings:
         assert {r["description"] for r in stale} == {"gone", "filegone"}
         assert len(still_open) == 4
         assert all(r["resolved"] == 0 for r in still_open)
+
+
+class TestReconcileFileFindings:
+    """reconcile_file_findings auto-prunes stale findings and updates shifted lines."""
+
+    def test_auto_prunes_stale_and_relocates_shifted_findings(self, tmp_path):
+        from ollama_sentinel.sarif import reconcile_file_findings
+
+        db_path = tmp_path / "memory.db"
+        db = ViolationDB(str(db_path))
+        try:
+            db.persist_findings("app.py", [
+                Finding("app.py", 2, 2, "security", "high", "still present but shifted",
+                        verbatim_excerpt="x = eval(data)"),
+                Finding("app.py", 5, 5, "bug", "high", "fixed by user",
+                        verbatim_excerpt="return a / 0"),
+                Finding("app.py", 8, 8, "style", "low", "no excerpt legacy row",
+                        verbatim_excerpt=""),
+            ])
+            # New content: 2 lines inserted at top (x = eval(data) moved 2 -> 4),
+            # and `return a / 0` replaced with safe code.
+            new_content = (
+                "import os\n"
+                "import sys\n"
+                "def f(data, a, b):\n"
+                "    x = eval(data)\n"
+                "    return a / b if b else 0\n"
+            )
+            pruned, relocated = reconcile_file_findings(db, "app.py", new_content)
+            open_rows = db.get_unresolved("app.py")
+            all_rows = {
+                r["description"]: db.get_finding(r["id"])
+                for r in open_rows
+            }
+        finally:
+            db.close()
+
+        assert pruned == 1
+        assert relocated == 1
+        assert set(all_rows.keys()) == {
+            "still present but shifted",
+            "no excerpt legacy row",
+        }
+        shifted = all_rows["still present but shifted"]
+        assert (shifted["line_start"], shifted["line_end"]) == (4, 4)
