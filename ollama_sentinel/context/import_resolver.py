@@ -73,6 +73,33 @@ class ImportResolver:
     # Public API
     # ------------------------------------------------------------------
 
+    def invalidate(self, file_path: Optional[str] = None) -> None:
+        """Invalidate cached import graph entries.
+
+        When *file_path* is ``None``, clears the entire import cache and Swift
+        type map. When *file_path* is provided, refreshes that file's entry in
+        ``_import_cache`` (or removes it if the file was deleted), and resets
+        the Swift nominal type map when a ``.swift`` file changes so newly
+        declared or renamed types are picked up by ``resolve_dependents``.
+        """
+        if file_path is None:
+            self._import_cache = None
+            self._swift_type_map = None
+            return
+
+        target = Path(file_path).resolve()
+        target_str = str(target)
+        if target.suffix.lower() == ".swift":
+            self._swift_type_map = None
+            self._import_cache = None
+            return
+
+        if self._import_cache is not None:
+            if target.is_file():
+                self._import_cache[target_str] = self.resolve_imports(target_str)
+            else:
+                self._import_cache.pop(target_str, None)
+
     def resolve_imports(self, file_path: str) -> List[str]:
         """Return resolved absolute file paths imported/referenced by *file_path*.
 

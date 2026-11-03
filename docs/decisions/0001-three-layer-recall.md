@@ -37,10 +37,10 @@ A finding on `utils.py` now surfaces when reviewing `app.py` (and vice
 versa) via the import graph. The README's claim is load-bearing.
 Update (2026-11-02): `ImportResolver` has been promoted into
 `ollama_sentinel/context/import_resolver.py` (removing the cross-package
-import from `research_agent/tools/`) and extended to cover TypeScript/JavaScript
-and Swift in addition to Python.
-The resolver's `_import_cache` goes stale during long-running watcher
-sessions; restart-to-refresh is the current workaround.
+import from `research_agent/tools/`), extended to cover TypeScript/JavaScript
+and Swift in addition to Python, and given an `invalidate(file_path)` method
+called by `FileProcessor._resolve_import_neighbors` so the cached import graph
+and Swift nominal type map refresh automatically as files are edited.
 
 ## Alternatives considered
 

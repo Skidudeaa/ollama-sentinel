@@ -22,31 +22,72 @@ _POST_COMMIT_HOOK = """\
 ollama-sentinel record-commit
 """
 
+_PRE_COMMIT_HOOK_TEMPLATE = """\
+#!/bin/sh
+# Installed by ollama-sentinel install-hooks --pre-commit.
+# Reviews staged files and blocks the commit when findings meet --fail-on.
+ollama-sentinel check --staged --fail-on {fail_on}
+"""
 
-def install_hooks(repo_path) -> List[str]:
+_VALID_SEVERITIES = ("critical", "high", "medium", "low")
+
+
+def install_hooks(
+    repo_path,
+    *,
+    pre_commit: bool = False,
+    fail_on: str = "high",
+) -> List[str]:
     """Install git hooks into ``repo_path/.git/hooks/``.
 
-    Returns the list of hook names installed. An existing ``post-commit``
-    hook is left untouched (and not counted) — we never clobber a user's
-    own hook. Raises ``FileNotFoundError`` if ``repo_path`` is not a git
-    repository.
+    Always installs ``post-commit`` (unless already present). When
+    *pre_commit* is ``True``, also installs ``pre-commit`` configured to run
+    ``ollama-sentinel check --staged --fail-on <fail_on>``.
+
+    Returns the list of hook names installed. Existing hooks are left
+    untouched (and not counted) — we never clobber a user's own hook.
+    Raises ``FileNotFoundError`` if ``repo_path`` is not a git repository, or
+    ``ValueError`` if *fail_on* is not a valid severity.
     """
+    norm_fail_on = fail_on.strip().lower()
+    if norm_fail_on not in _VALID_SEVERITIES:
+        raise ValueError(
+            f"Invalid --fail-on severity {fail_on!r}; "
+            f"expected one of {', '.join(_VALID_SEVERITIES)}"
+        )
+
     hooks_dir = pathlib.Path(repo_path) / ".git" / "hooks"
     if not hooks_dir.is_dir():
         raise FileNotFoundError(f"Not a git repository: {hooks_dir} missing")
 
-    post_commit = hooks_dir / "post-commit"
-    if post_commit.exists():
-        return []
+    installed: List[str] = []
 
-    post_commit.write_text(_POST_COMMIT_HOOK)
-    post_commit.chmod(
-        post_commit.stat().st_mode
-        | stat.S_IXUSR
-        | stat.S_IXGRP
-        | stat.S_IXOTH
-    )
-    return ["post-commit"]
+    post_commit = hooks_dir / "post-commit"
+    if not post_commit.exists():
+        post_commit.write_text(_POST_COMMIT_HOOK)
+        post_commit.chmod(
+            post_commit.stat().st_mode
+            | stat.S_IXUSR
+            | stat.S_IXGRP
+            | stat.S_IXOTH
+        )
+        installed.append("post-commit")
+
+    if pre_commit:
+        pre_commit_path = hooks_dir / "pre-commit"
+        if not pre_commit_path.exists():
+            pre_commit_path.write_text(
+                _PRE_COMMIT_HOOK_TEMPLATE.format(fail_on=norm_fail_on)
+            )
+            pre_commit_path.chmod(
+                pre_commit_path.stat().st_mode
+                | stat.S_IXUSR
+                | stat.S_IXGRP
+                | stat.S_IXOTH
+            )
+            installed.append("pre-commit")
+
+    return installed
 
 
 def record_commit(

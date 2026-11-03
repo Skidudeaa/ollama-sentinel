@@ -198,11 +198,13 @@ ollama-sentinel dismiss 31                           # close as false-positive
 ollama-sentinel fix 42                               # localized model fix → preview diff → write on confirm (--yes)
 ollama-sentinel surface                              # emit open findings to .ollama_reviews/findings.sarif (editor + CI)
 ollama-sentinel prune                                # close findings whose flagged code is gone
+ollama-sentinel repair                               # repair historical severity/category + backfill excerpts (--yes)
 
-# Incidents (corroborated events)
+# Incidents (corroborated events) & Git Hooks
 ollama-sentinel confirm 42                           # manual corroboration → manual_confirm Incident (finding stays open)
 ollama-sentinel incidents                            # list corroborated events (table / -f json)
 ollama-sentinel install-hooks                        # git post-commit hook: link commits to open findings
+ollama-sentinel install-hooks --pre-commit           # also install pre-commit hook (`check --staged --fail-on high`)
 
 # Guardrails (project rules — see the section below)
 ollama-sentinel guardrail add no-eval -a "Never eval untrusted input." --category security --path "src/*.py"

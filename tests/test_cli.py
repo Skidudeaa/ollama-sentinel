@@ -1681,3 +1681,48 @@ class TestCheckCommand:
         )
         assert res_fail.exit_code == 1
         assert "at or above high severity" in res_fail.output
+
+    def test_repair_command_previews_and_applies_with_yes(self, tmp_path):
+        from ollama_sentinel.violation_db import Finding, ViolationDB
+
+        (tmp_path / "app.css").write_text(".critical { color: red; }\n")
+        cfg = _make_report_config(tmp_path)
+        db_path = tmp_path / ".ollama_reviews" / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = ViolationDB(str(db_path))
+        try:
+            db.persist_findings(
+                "app.css",
+                [
+                    Finding(
+                        file_path="app.css",
+                        line_start=1,
+                        line_end=1,
+                        category="style",
+                        severity="critical",
+                        description="Style nit in `.critical` selector",
+                        verbatim_excerpt="",
+                    )
+                ],
+            )
+        finally:
+            db.close()
+
+        # Preview only (non-TTY without --yes)
+        res_preview = runner.invoke(app, ["repair", "--config", str(cfg)])
+        assert res_preview.exit_code == 0, res_preview.output
+        assert "critical → low" in res_preview.output
+        assert "preview only; pass --yes to repair" in res_preview.output
+
+        # Apply with --yes
+        res_apply = runner.invoke(app, ["repair", "--config", str(cfg), "--yes"])
+        assert res_apply.exit_code == 0, res_apply.output
+        assert "Repaired 1 finding(s)." in res_apply.output
+
+        db2 = ViolationDB(str(db_path))
+        try:
+            row = db2.get_unresolved("app.css")[0]
+            assert row["severity"] == "low"
+            assert row["verbatim_excerpt"] == ".critical { color: red; }"
+        finally:
+            db2.close()

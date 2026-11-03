@@ -102,6 +102,24 @@ class TestInstallHooks:
         with pytest.raises(FileNotFoundError):
             install_hooks(tmp_path)  # no .git/hooks here
 
+    def test_install_hooks_pre_commit_option_and_fail_on_validation(self, tmp_path):
+        from ollama_sentinel.hooks import install_hooks
+
+        _git_repo(tmp_path)
+        installed = install_hooks(tmp_path, pre_commit=True, fail_on="critical")
+        assert installed == ["post-commit", "pre-commit"]
+
+        pre_hook = tmp_path / ".git" / "hooks" / "pre-commit"
+        assert pre_hook.exists()
+        assert "ollama-sentinel check --staged --fail-on critical" in pre_hook.read_text()
+        assert pre_hook.stat().st_mode & stat.S_IXUSR
+
+        # Re-running does not overwrite existing hooks
+        assert install_hooks(tmp_path, pre_commit=True) == []
+
+        with pytest.raises(ValueError):
+            install_hooks(tmp_path, pre_commit=True, fail_on="bogus")
+
 
 # ---------------------------------------------------------------------------
 # record_commit
@@ -224,6 +242,23 @@ class TestHookCLIVerbs:
         )
         assert result.exit_code == 0, result.output
         assert (tmp_path / ".git" / "hooks" / "post-commit").exists()
+        assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
+
+        result_pre = CliRunner().invoke(
+            app,
+            [
+                "install-hooks",
+                "--config",
+                str(cfg),
+                "--pre-commit",
+                "--fail-on",
+                "medium",
+            ],
+        )
+        assert result_pre.exit_code == 0, result_pre.output
+        pre_hook = tmp_path / ".git" / "hooks" / "pre-commit"
+        assert pre_hook.exists()
+        assert "--fail-on medium" in pre_hook.read_text()
 
     def test_record_commit_cli_links(self, tmp_path):
         from ollama_sentinel.cli import app

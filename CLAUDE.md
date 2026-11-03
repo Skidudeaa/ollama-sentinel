@@ -37,7 +37,7 @@ ollama-sentinel triage log.txt -o out.md   # triage a saved log, save result
 ollama-sentinel dashboard           # live TUI: reviews + recurring violations + interactive triage/fix (r/d/c/f/y)
 ollama-sentinel confirm 42          # manually corroborate a Finding -> Incident
 ollama-sentinel incidents           # list corroborated events (table or -f json)
-ollama-sentinel install-hooks       # install the git post-commit hook
+ollama-sentinel install-hooks       # install git post-commit hook (add --pre-commit for staged check gate)
 ollama-sentinel record-commit       # link HEAD to open Findings (called by the hook)
 ollama-sentinel surface             # emit open Findings to .ollama_reviews/findings.sarif (editor Problems panel + CI)
 ollama-sentinel findings            # list open Findings with ids (filter: --severity/--file)
@@ -45,6 +45,7 @@ ollama-sentinel resolve 42          # close Finding 42 as fixed (resolution='fix
 ollama-sentinel dismiss 31          # close Finding 31 as false-positive (resolution='dismissed')
 ollama-sentinel fix 42              # localized fix for Finding 42: preview diff, write on confirm, resolve (fixed)
 ollama-sentinel prune               # close findings whose flagged code is gone (preview + confirm, resolution='stale')
+ollama-sentinel repair              # re-evaluate historical code-span severity/category + backfill excerpts (--yes)
 
 # Guardrails (project rules injected into reviews; Finding->Incident->Pattern rung)
 ollama-sentinel guardrail add no-eval -a "Never call eval on untrusted input." --category security --path "src/*.py"

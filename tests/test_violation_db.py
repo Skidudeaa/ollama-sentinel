@@ -1454,3 +1454,71 @@ class TestGuardrailProvenance:
             assert len(db.get_incidents_for_finding(old_id)) == 1
         finally:
             db.close()
+
+    def test_repair_historical_findings_reclassifies_and_backfills_excerpts(
+        self, tmp_path
+    ):
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "style.css").write_text(".critical {\n  color: red;\n}\n")
+        (src_dir / "app.py").write_text("try:\n    run()\nexcept Exception as error:\n    pass\n")
+
+        db = ViolationDB(str(tmp_path / "memory.db"))
+        try:
+            # 1. Inflated critical due to `.critical` in inline code + missing excerpt
+            f_css = _make_finding(
+                file_path="src/style.css",
+                line_start=1,
+                line_end=2,
+                severity="critical",
+                category="style",
+                description="Style nit on `.critical` selector indentation",
+                verbatim_excerpt="",
+            )
+            # 2. Inflated bug category due to `catch (error)` in inline code + missing excerpt
+            f_py = _make_finding(
+                file_path="src/app.py",
+                line_start=3,
+                line_end=4,
+                severity="low",
+                category="bug",
+                description="Rename variable in `except Exception as error` handler",
+                verbatim_excerpt="",
+            )
+            # 3. Genuine grounded critical finding (no code span inflation) -> untouched
+            f_real = _make_finding(
+                file_path="src/app.py",
+                line_start=2,
+                line_end=2,
+                severity="critical",
+                category="security",
+                description="Arbitrary command execution via untrusted input",
+                verbatim_excerpt="    run()",
+            )
+            db.persist_findings("src/style.css", [f_css])
+            db.persist_findings("src/app.py", [f_py, f_real])
+
+            preview = db.repair_historical_findings(tmp_path, apply=False)
+            assert len(preview) == 2
+
+            # Database untouched when apply=False
+            css_before = db.get_unresolved("src/style.css")[0]
+            assert css_before["severity"] == "critical"
+            assert css_before["verbatim_excerpt"] == ""
+
+            applied = db.repair_historical_findings(tmp_path, apply=True)
+            assert len(applied) == 2
+
+            css_after = db.get_unresolved("src/style.css")[0]
+            assert css_after["severity"] == "low"
+            assert ".critical {" in css_after["verbatim_excerpt"]
+
+            py_rows = {
+                r["line_start"]: r for r in db.get_unresolved("src/app.py")
+            }
+            assert py_rows[3]["category"] == "style"
+            assert "except Exception as error:" in py_rows[3]["verbatim_excerpt"]
+            assert py_rows[2]["severity"] == "critical"
+            assert py_rows[2]["category"] == "security"
+        finally:
+            db.close()

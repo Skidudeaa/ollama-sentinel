@@ -336,3 +336,39 @@ class TestMultiLanguageImportResolver:
         assert imports == [str(model_swift.resolve())]
         dependents = resolver.resolve_dependents(str(model_swift))
         assert dependents == [str(view_swift.resolve())]
+
+    def test_invalidate_refreshes_cached_dependents_and_swift_types(
+        self, tmp_path: Path
+    ) -> None:
+        a_py = tmp_path / "a.py"
+        b_py = tmp_path / "b.py"
+        a_py.write_text("x = 1\n")
+        b_py.write_text("y = 2\n")
+
+        resolver = ImportResolver(str(tmp_path))
+        # Prime the cache before a.py imports b.py
+        assert resolver.resolve_dependents(str(b_py)) == []
+
+        # Edit a.py to import b.py; without invalidate, cache is stale
+        a_py.write_text("import b\nx = b.y\n")
+        assert resolver.resolve_dependents(str(b_py)) == []
+
+        # Invalidate a.py -> resolve_dependents immediately sees the new edge
+        resolver.invalidate(str(a_py))
+        assert resolver.resolve_dependents(str(b_py)) == [str(a_py.resolve())]
+
+        # Delete a.py and invalidate -> removed from cache
+        a_py.unlink()
+        resolver.invalidate(str(a_py))
+        assert resolver.resolve_dependents(str(b_py)) == []
+
+        # Swift nominal type map invalidation
+        s_model = tmp_path / "Model.swift"
+        s_view = tmp_path / "View.swift"
+        s_model.write_text("struct OldModel {}\n")
+        s_view.write_text("struct View {\n    var m: NewModel\n}\n")
+        assert resolver.resolve_imports(str(s_view)) == []
+
+        s_model.write_text("struct NewModel {}\n")
+        resolver.invalidate(str(s_model))
+        assert resolver.resolve_imports(str(s_view)) == [str(s_model.resolve())]

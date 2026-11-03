@@ -243,9 +243,9 @@ call. It's now the ceiling.
 
 **Lift `ImportResolver` out of `research_agent/tools/` into shared infra (shipped for sentinel 2026-11-02).**
 `ollama_sentinel/context/import_resolver.py` now provides multi-language 1-hop
-import resolution (`.py`, `.ts`/`.tsx`/`.js`/`.jsx`, `.swift`) without reaching
-into `research_agent`. Remaining: add incremental cache invalidation for
-long-running watcher sessions.
+import resolution (`.py`, `.ts`/`.tsx`/`.js`/`.jsx`, `.swift`) with per-file
+`invalidate(file_path)` cache refresh on save, without reaching into
+`research_agent`.
 
 **Unify `Finding` and `ImpactItem`.** Both describe the same noun — a
 concerning location in code — through different lenses. Common base:

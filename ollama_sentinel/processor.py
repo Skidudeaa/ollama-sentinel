@@ -709,6 +709,8 @@ class FileProcessor:
 
         def _scan() -> List[str]:
             try:
+                if hasattr(self._import_resolver, "invalidate"):
+                    self._import_resolver.invalidate(str(file_path))
                 imports = self._import_resolver.resolve_imports(str(file_path))
                 dependents = self._import_resolver.resolve_dependents(str(file_path))
             except Exception:

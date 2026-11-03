@@ -548,16 +548,27 @@ def install_hooks_cmd(
         "ollama-sentinel.yaml", "--config", "-c",
         help="Path to configuration file",
     ),
+    pre_commit: bool = typer.Option(
+        False, "--pre-commit",
+        help="Also install a pre-commit hook running `ollama-sentinel check --staged`",
+    ),
+    fail_on: str = typer.Option(
+        "high", "--fail-on",
+        help="Severity threshold for the pre-commit hook (critical, high, medium, low)",
+    ),
 ):
-    """Install the git post-commit hook into the watched repository."""
+    """Install the git post-commit hook (and optional --pre-commit hook) into the watched repository."""
     from .hooks import install_hooks
 
     config = _load_config_or_exit(config_path)
     repo_path = pathlib.Path(config.watch.directory).resolve()
     try:
-        installed = install_hooks(repo_path)
-    except FileNotFoundError as e:
+        installed = install_hooks(
+            repo_path, pre_commit=pre_commit, fail_on=fail_on,
+        )
+    except (FileNotFoundError, ValueError) as e:
         log.error(str(e))
+        console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=1)
 
     if installed:
@@ -565,8 +576,9 @@ def install_hooks_cmd(
             f"[green]Installed git hook(s): {', '.join(installed)}[/green]"
         )
     else:
+        hook_label = "post-commit/pre-commit" if pre_commit else "post-commit"
         console.print(
-            "[yellow]post-commit hook already exists — left untouched.[/yellow]"
+            f"[yellow]{hook_label} hook already exists — left untouched.[/yellow]"
         )
 
 
@@ -1177,6 +1189,95 @@ def prune(
 
     console.print(
         f"[green]Pruned {pruned} stale finding(s) (resolution=stale).[/green]"
+    )
+
+
+@app.command()
+def repair(
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml", "--config", "-c",
+        help="Path to configuration file",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Apply database repairs without the interactive confirmation prompt",
+    ),
+):
+    """Repair historical open findings in the database.
+
+    Re-evaluates stored descriptions with fenced/inline code spans and negated
+    severity phrases stripped (fixing inflated ``critical``/``bug`` labels from
+    older runs) and backfills missing ``verbatim_excerpt`` columns from the
+    watched source files on disk.
+    """
+    from rich.table import Table
+
+    from .violation_db import ViolationDB
+
+    config = _load_config_or_exit(config_path)
+    watch_dir = pathlib.Path(config.watch.directory).resolve()
+    db_path = watch_dir / config.memory.db_path
+    if not db_path.exists():
+        console.print(
+            "[yellow]No violation database found. Run some reviews first.[/yellow]"
+        )
+        raise typer.Exit()
+
+    db = ViolationDB(str(db_path))
+    try:
+        proposed = db.repair_historical_findings(watch_dir, apply=False)
+        if not proposed:
+            console.print("[green]No findings need repair.[/green]")
+            raise typer.Exit()
+
+        table = Table(
+            title=f"{len(proposed)} finding(s) eligible for repair"
+        )
+        table.add_column("ID", style="bold", width=5)
+        table.add_column("Location", style="cyan")
+        table.add_column("Severity", width=18)
+        table.add_column("Category", width=18)
+        table.add_column("Excerpt", width=10)
+        table.add_column("Description")
+        for item in proposed:
+            sev_cell = (
+                f"{item['old_severity']} → {item['new_severity']}"
+                if item["old_severity"] != item["new_severity"]
+                else item["old_severity"]
+            )
+            cat_cell = (
+                f"{item['old_category']} → {item['new_category']}"
+                if item["old_category"] != item["new_category"]
+                else item["old_category"]
+            )
+            exc_cell = "backfill" if item["excerpt_backfilled"] else "ok"
+            table.add_row(
+                str(item["id"]),
+                f"{item['file_path']}:{item['line_start']}",
+                sev_cell,
+                cat_cell,
+                exc_cell,
+                (item["description"] or "")[:50],
+            )
+        console.print(table)
+
+        if not yes:
+            if _is_stdin_tty():
+                if not typer.confirm(f"Repair these {len(proposed)} finding(s)?"):
+                    console.print(
+                        f"[yellow]Aborted; {len(proposed)} finding(s) left unchanged.[/yellow]"
+                    )
+                    raise typer.Exit()
+            else:
+                console.print("[dim](preview only; pass --yes to repair)[/dim]")
+                raise typer.Exit()
+
+        applied = db.repair_historical_findings(watch_dir, apply=True)
+    finally:
+        db.close()
+
+    console.print(
+        f"[green]Repaired {len(applied)} finding(s).[/green]"
     )
 
 

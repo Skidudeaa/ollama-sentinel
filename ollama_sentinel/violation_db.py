@@ -2,11 +2,12 @@
 SQLite persistence layer for tracking code review findings.
 """
 import json
+import pathlib
 import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # Sentinel distinguishing "argument not provided" from an explicit None
 # (used by update_guardrail so callers can *clear* a scope field with None).
@@ -381,6 +382,175 @@ class ViolationDB:
             )
             self._conn.commit()
             return cur.rowcount
+
+    def repair_historical_findings(
+        self,
+        watch_dir: Optional[Union[str, pathlib.Path]] = None,
+        *,
+        apply: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Scan open findings for historical code-span severity/category
+        inflation and missing ``verbatim_excerpt`` values.
+
+        When *apply* is ``False``, returns the list of proposed repair dicts
+        without mutating the database. When *apply* is ``True``, updates the
+        affected rows in place (merging any duplicate unresolved row if a
+        category change collides with an existing ``(file_path, line_start,
+        line_end, category)`` row).
+        """
+        from .extractor import reclassify_description, synthesize_excerpt
+        from .utils import safe_read
+
+        resolved_watch = (
+            pathlib.Path(watch_dir).resolve() if watch_dir is not None else None
+        )
+        content_cache: Dict[str, Optional[str]] = {}
+
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT id, file_path, line_start, line_end, severity, category,
+                       description, verbatim_excerpt, occurrence_count,
+                       first_seen, last_seen
+                FROM findings
+                WHERE resolved = 0
+                ORDER BY id ASC
+                """
+            )
+            rows = cur.fetchall()
+
+        repairs: List[Dict[str, Any]] = []
+        for (
+            fid,
+            file_path,
+            line_start,
+            line_end,
+            severity,
+            category,
+            description,
+            verbatim_excerpt,
+            occ_count,
+            first_seen,
+            last_seen,
+        ) in rows:
+            desc_str = description or ""
+            new_sev, new_cat = reclassify_description(desc_str, severity, category)
+            existing_excerpt = (verbatim_excerpt or "").strip()
+            new_excerpt = verbatim_excerpt or ""
+            excerpt_backfilled = False
+
+            if not existing_excerpt and resolved_watch is not None:
+                if file_path not in content_cache:
+                    content_cache[file_path] = safe_read(
+                        resolved_watch / file_path, resolved_watch
+                    )
+                file_text = content_cache[file_path]
+                if file_text:
+                    synthesized = synthesize_excerpt(file_text, line_start, line_end)
+                    if synthesized:
+                        new_excerpt = synthesized
+                        excerpt_backfilled = True
+
+            if new_sev != severity or new_cat != category or excerpt_backfilled:
+                repairs.append(
+                    {
+                        "id": fid,
+                        "file_path": file_path,
+                        "line_start": line_start,
+                        "line_end": line_end,
+                        "old_severity": severity,
+                        "new_severity": new_sev,
+                        "old_category": category,
+                        "new_category": new_cat,
+                        "excerpt_backfilled": excerpt_backfilled,
+                        "new_excerpt": new_excerpt,
+                        "description": desc_str,
+                        "occurrence_count": occ_count,
+                        "first_seen": first_seen,
+                        "last_seen": last_seen,
+                    }
+                )
+
+        if not apply or not repairs:
+            return repairs
+
+        with self._lock:
+            for item in repairs:
+                fid = item["id"]
+                # Verify row still exists (wasn't merged into an earlier row)
+                row_check = self._conn.execute(
+                    "SELECT occurrence_count, first_seen, last_seen "
+                    "FROM findings WHERE id = ? AND resolved = 0",
+                    (fid,),
+                ).fetchone()
+                if not row_check:
+                    continue
+                occ_count, first_seen, last_seen = row_check
+                file_path = item["file_path"]
+                line_start = item["line_start"]
+                line_end = item["line_end"]
+                new_sev = item["new_severity"]
+                new_cat = item["new_category"]
+                new_excerpt = item["new_excerpt"]
+                desc_str = item["description"]
+
+                if new_cat != item["old_category"]:
+                    dups = self._conn.execute(
+                        """
+                        SELECT id, occurrence_count, first_seen, last_seen
+                        FROM findings
+                        WHERE file_path  = ?
+                          AND line_start = ?
+                          AND line_end   = ?
+                          AND category   = ?
+                          AND resolved   = 0
+                          AND id        != ?
+                        """,
+                        (file_path, line_start, line_end, new_cat, fid),
+                    ).fetchall()
+                    for dup_id, dup_occ, dup_first, dup_last in dups:
+                        occ_count += dup_occ
+                        if dup_first and dup_first < first_seen:
+                            first_seen = dup_first
+                        if dup_last and dup_last > last_seen:
+                            last_seen = dup_last
+                        self._conn.execute(
+                            "UPDATE incidents SET finding_id = ? WHERE finding_id = ?",
+                            (fid, dup_id),
+                        )
+                        self._conn.execute(
+                            "DELETE FROM findings WHERE id = ?", (dup_id,)
+                        )
+
+                embed_text = (
+                    f"[{new_sev}] {new_cat} at {file_path}:{line_start}: {desc_str}"
+                )
+                self._conn.execute(
+                    """
+                    UPDATE findings
+                    SET severity         = ?,
+                        category         = ?,
+                        verbatim_excerpt = ?,
+                        embed_text       = ?,
+                        occurrence_count = ?,
+                        first_seen       = ?,
+                        last_seen        = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        new_sev,
+                        new_cat,
+                        new_excerpt,
+                        embed_text,
+                        occ_count,
+                        first_seen,
+                        last_seen,
+                        fid,
+                    ),
+                )
+            self._conn.commit()
+
+        return repairs
 
     def persist_incident(self, incident: Incident) -> int:
         """Insert an Incident row and return its new id. Never upserts."""

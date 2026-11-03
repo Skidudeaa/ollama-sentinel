@@ -144,6 +144,66 @@ def _strip_code_spans(text: str) -> str:
     return _INLINE_CODE_PATTERN.sub(" ", without_fences)
 
 
+def reclassify_description(
+    description: str, current_severity: str, current_category: str
+) -> tuple[str, str]:
+    """Re-evaluate *current_severity* and *current_category* against *description*
+    with fenced/inline code spans and negated severity phrases stripped.
+
+    Only changes a label when:
+    - an explicit ``Severity:`` or ``Category:`` marker in *description*
+      disagrees with the stored value, OR
+    - the raw *description* contained a keyword for the stored label inside a
+      code span or negated phrase that disappears after stripping.
+
+    Grounded JSON findings whose *description* never relied on a code-span or
+    negated keyword are preserved unchanged.
+    """
+    raw_lower = description.lower()
+    prose_lower = _strip_code_spans(description).lower()
+    cleaned_sev_prose = _NEGATED_SEVERITY_PATTERN.sub(" ", prose_lower)
+
+    new_severity = current_severity
+    explicit_sev = _EXPLICIT_SEVERITY_PATTERN.search(description)
+    if explicit_sev:
+        new_severity = _SEVERITY_KEYWORDS[explicit_sev.group(1).lower()]
+    else:
+        raw_matched_sev = "medium"
+        for kw, sev in _SEVERITY_KEYWORDS.items():
+            if kw in raw_lower:
+                raw_matched_sev = sev
+                break
+        if raw_matched_sev == current_severity and (
+            prose_lower != raw_lower or cleaned_sev_prose != prose_lower
+        ):
+            recomputed_sev = "medium"
+            for kw, sev in _SEVERITY_KEYWORDS.items():
+                if kw in cleaned_sev_prose:
+                    recomputed_sev = sev
+                    break
+            new_severity = recomputed_sev
+
+    new_category = current_category
+    explicit_cat = _EXPLICIT_CATEGORY_PATTERN.search(description)
+    if explicit_cat:
+        new_category = _CATEGORY_KEYWORDS[explicit_cat.group(1).lower()]
+    else:
+        raw_matched_cat = "style"
+        for kw, cat in _CATEGORY_KEYWORDS.items():
+            if kw in raw_lower:
+                raw_matched_cat = cat
+                break
+        if raw_matched_cat == current_category and prose_lower != raw_lower:
+            recomputed_cat = "style"
+            for kw, cat in _CATEGORY_KEYWORDS.items():
+                if kw in prose_lower:
+                    recomputed_cat = cat
+                    break
+            new_category = recomputed_cat
+
+    return new_severity, new_category
+
+
 def synthesize_excerpt(file_content: str, line_start: int, line_end: int) -> str:
     """Slice 1-based inclusive lines ``[line_start..line_end]`` from *file_content*.
 
