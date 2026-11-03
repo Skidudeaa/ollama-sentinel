@@ -124,13 +124,14 @@ Nothing becomes an enforced rule without your explicit `promote`, and a guardrai
 
 ## Documentation
 
-See **[docs/GUIDE.md](docs/GUIDE.md)** for the full user guide covering:
-- Sentinel setup, commands, and configuration
-- Violation memory and the `report` command
-- Project guardrails — authoring, lifecycle, and auto-promotion
-- Research agent installation and usage
-- Impact analysis output format
-- Project philosophy and architecture
+See **[docs/GUIDE.md](docs/GUIDE.md)** for the step-by-step user manual (plain-language, one task per section):
+- Install, start Ollama, and set up a project
+- Watch mode, check mode, and single-file review
+- The Control Center and its keys
+- Closing and fixing findings, pre-commit hooks, and `triage`
+- Guardrails, settings, and a problems-and-solutions table
+
+Design, philosophy, and architecture live in [docs/VISION.md](docs/VISION.md) and the visual guide [docs/index.html](docs/index.html).
 
 ## Cheat sheet
 
