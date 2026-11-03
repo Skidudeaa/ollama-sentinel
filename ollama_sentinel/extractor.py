@@ -11,7 +11,7 @@ file, kept only as a debug-comparison escape hatch.
 """
 import logging
 import re
-from typing import List
+from typing import List, Optional, Tuple
 
 from .violation_db import Finding
 
@@ -307,11 +307,21 @@ def _expand_to_whole_lines(
     for target in candidates:
         if not target:
             continue
+        # Keep the occurrence spanning the fewest lines (earliest on ties): the
+        # excerpt's tokens may also occur earlier straddling a line break, and
+        # the first hit would anchor the finding to fragments of the wrong lines.
+        best: Optional[Tuple[int, int]] = None
         pos = normalized.find(target)
-        if pos >= 0:
+        while pos >= 0:
             first = line_at[pos]
             last = line_at[pos + len(target) - 1]
-            return "\n".join(window[first:last + 1])
+            if best is None or last - first < best[1] - best[0]:
+                best = (first, last)
+                if first == last:
+                    break
+            pos = normalized.find(target, pos + 1)
+        if best is not None:
+            return "\n".join(window[best[0]:best[1] + 1])
     return ""
 
 

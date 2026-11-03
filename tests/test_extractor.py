@@ -987,3 +987,9 @@ class TestExpandToWholeLinesCost:
         out = _expand_to_whole_lines(excerpt, content, 1, 2000)
         assert _time.perf_counter() - t0 < 0.5
         assert out == "\n".join(lines[1990:1992])
+
+    def test_prefers_smallest_line_span_over_earlier_straddling_match(self):
+        from ollama_sentinel.extractor import _expand_to_whole_lines
+
+        content = "x a\nb y\na b\n"
+        assert _expand_to_whole_lines("a b", content, 1, 3) == "a b"
