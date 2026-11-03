@@ -96,9 +96,19 @@ class ImportResolver:
 
         if self._import_cache is not None:
             if target.is_file():
-                self._import_cache[target_str] = self.resolve_imports(target_str)
+                if target_str not in self._import_cache:
+                    # A newly created file may satisfy imports in existing files
+                    # that previously resolved to None; force a fresh scan.
+                    self._import_cache = None
+                else:
+                    self._import_cache[target_str] = self.resolve_imports(target_str)
             else:
                 self._import_cache.pop(target_str, None)
+                for src, imps in list(self._import_cache.items()):
+                    if target_str in imps:
+                        self._import_cache[src] = [
+                            p for p in imps if p != target_str
+                        ]
 
     def resolve_imports(self, file_path: str) -> List[str]:
         """Return resolved absolute file paths imported/referenced by *file_path*.

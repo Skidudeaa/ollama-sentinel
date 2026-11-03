@@ -372,3 +372,21 @@ class TestMultiLanguageImportResolver:
         s_model.write_text("struct NewModel {}\n")
         resolver.invalidate(str(s_model))
         assert resolver.resolve_imports(str(s_view)) == [str(s_model.resolve())]
+
+        # Newly created module target + deleted module target invalidation
+        caller_py = tmp_path / "caller.py"
+        callee_py = tmp_path / "callee.py"
+        caller_py.write_text("import callee\n")
+        resolver2 = ImportResolver(str(tmp_path))
+        # Prime cache while callee.py does not exist yet
+        assert resolver2.resolve_dependents(str(callee_py)) == []
+
+        # Create callee.py and invalidate it -> caller.py must now resolve as dependent
+        callee_py.write_text("z = 42\n")
+        resolver2.invalidate(str(callee_py))
+        assert resolver2.resolve_dependents(str(callee_py)) == [str(caller_py.resolve())]
+
+        # Delete callee.py and invalidate it -> dangling incoming edge from caller.py must be cleared
+        callee_py.unlink()
+        resolver2.invalidate(str(callee_py))
+        assert resolver2.resolve_dependents(str(callee_py)) == []

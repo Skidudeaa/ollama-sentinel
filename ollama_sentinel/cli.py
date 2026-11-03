@@ -203,8 +203,8 @@ _SEVERITY_ORDER = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 
 def _collect_git_changed_files(
     repo, watch_dir: pathlib.Path, *, staged: bool = False
-) -> list[tuple[pathlib.Path, Optional[str]]]:
-    """Return ``(abs_path, optional_diff)`` for modified/added files in *repo* under *watch_dir*."""
+) -> list[tuple[pathlib.Path, Optional[str], Optional[str]]]:
+    """Return ``(abs_path, optional_diff, optional_staged_content)`` for modified/added files in *repo* under *watch_dir*."""
     import git as _git
 
     repo_root = pathlib.Path(repo.working_dir).resolve()
@@ -244,7 +244,7 @@ def _collect_git_changed_files(
         except Exception:
             pass
 
-    results: list[tuple[pathlib.Path, Optional[str]]] = []
+    results: list[tuple[pathlib.Path, Optional[str], Optional[str]]] = []
     for rel in rel_names:
         abs_path = (repo_root / rel).resolve()
         if not abs_path.is_file():
@@ -254,12 +254,17 @@ def _collect_git_changed_files(
         except ValueError:
             continue
         diff_text: Optional[str] = None
+        staged_content: Optional[str] = None
         try:
             if staged:
                 d = repo.git.diff(
                     "--cached", "--", rel,
                     ignore_blank_lines=True, ignore_space_at_eol=True,
                 )
+                try:
+                    staged_content = repo.git.show(f":{rel}")
+                except _git.GitCommandError:
+                    staged_content = None
             else:
                 d = repo.git.diff(
                     "HEAD", "--", rel,
@@ -269,7 +274,7 @@ def _collect_git_changed_files(
                 diff_text = d
         except _git.GitCommandError:
             diff_text = None
-        results.append((abs_path, diff_text))
+        results.append((abs_path, diff_text, staged_content))
     return results
 
 
@@ -325,19 +330,20 @@ def check(
         sentinel = FileSentinel(config_file)
         try:
             reviewable = [
-                (p, d)
-                for (p, d) in candidates
+                (p, d, sc)
+                for (p, d, sc) in candidates
                 if not sentinel._should_ignore(p) and not _is_likely_binary(p)
             ]
             if not reviewable:
                 return []
             checked_rels: list[str] = []
-            for abs_path, diff_text in reviewable:
+            for abs_path, diff_text, staged_content in reviewable:
                 rel = str(abs_path.relative_to(watch_dir))
                 checked_rels.append(rel)
                 fc = FileChange(
                     path=abs_path,
                     change_type=Change.modified,
+                    content=staged_content,
                     diff=diff_text,
                 )
                 await sentinel.process_change(fc, model_role=model)

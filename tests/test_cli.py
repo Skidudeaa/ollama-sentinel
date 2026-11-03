@@ -1682,6 +1682,55 @@ class TestCheckCommand:
         assert res_fail.exit_code == 1
         assert "at or above high severity" in res_fail.output
 
+    def test_check_staged_grounds_against_index_blob_not_unstaged_worktree(
+        self, tmp_path, monkeypatch
+    ):
+        import git as _git
+        import ollama_sentinel.processor as proc
+
+        repo = _git.Repo.init(tmp_path)
+        cw = repo.config_writer()
+        cw.set_value("user", "name", "Test")
+        cw.set_value("user", "email", "test@example.com")
+        cw.release()
+
+        app_py = tmp_path / "app.py"
+        app_py.write_text("x = 1\n")
+        repo.index.add(["app.py"])
+        repo.index.commit("initial")
+
+        # Stage a dangerous change on line 2
+        app_py.write_text("x = 1\ny = eval(user_input)\n")
+        repo.index.add(["app.py"])
+
+        # Subsequent unstaged edit in working tree alters line 2 on disk
+        app_py.write_text("x = 1\ny = safe_call()\n")
+
+        cfg = _make_report_config(tmp_path)
+
+        async def _fake_generate_review(self, role, prompt, **kw):
+            return json.dumps({
+                "summary": "Found eval usage in staged diff.",
+                "findings": [
+                    {
+                        "line_start": 2,
+                        "line_end": 2,
+                        "category": "security",
+                        "severity": "high",
+                        "verbatim_excerpt": "y = eval(user_input)",
+                        "description": "Avoid eval on untrusted input",
+                    }
+                ],
+            })
+
+        monkeypatch.setattr(proc.OllamaClient, "generate_review", _fake_generate_review)
+
+        res = runner.invoke(
+            app, ["check", "--staged", "--fail-on", "high", "--config", str(cfg)]
+        )
+        assert res.exit_code == 1, res.output
+        assert "at or above high severity" in res.output
+
     def test_repair_command_previews_and_applies_with_yes(self, tmp_path):
         from ollama_sentinel.violation_db import Finding, ViolationDB
 
