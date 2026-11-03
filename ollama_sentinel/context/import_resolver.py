@@ -54,6 +54,24 @@ def _strip_c_comments(text: str) -> str:
     return _C_STYLE_COMMENT_RE.sub(" ", text)
 
 
+def _top_level_swift_decls(text: str) -> List[str]:
+    """Names declared at brace depth 0 in comment-stripped Swift *text*.
+
+    Nested declarations (``enum CodingKeys`` inside every Codable model) are
+    excluded: they are not referenceable by bare name from other files, and
+    indexing them globally links every file that shares a generic nested name.
+    """
+    depth_at = [0] * (len(text) + 1)
+    depth = 0
+    for i, ch in enumerate(text):
+        depth_at[i] = depth
+        if ch == "{":
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+    return [m.group(1) for m in _SWIFT_DECL_RE.finditer(text) if depth_at[m.start()] == 0]
+
+
 class ImportResolver:
     """Resolve Python imports to file paths within a repository.
 
@@ -325,8 +343,8 @@ class ImportResolver:
             except (OSError, UnicodeDecodeError):
                 continue
             fpath = str(swift_file)
-            for m in _SWIFT_DECL_RE.finditer(text):
-                type_map.setdefault(m.group(1), set()).add(fpath)
+            for name in _top_level_swift_decls(text):
+                type_map.setdefault(name, set()).add(fpath)
         self._swift_type_map = type_map
         return type_map
 

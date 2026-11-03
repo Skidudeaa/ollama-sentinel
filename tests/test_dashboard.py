@@ -863,3 +863,52 @@ class TestBuildLayoutWiring:
     def test_detail_mode_path_preserved(self):
         src = self._src()
         assert "Mode.DETAIL" in src and "_detail_panel(" in src
+
+
+class TestSelectionPinnedAcrossRefresh:
+    """A background re-rank must not retarget the open detail view or r/d/c/f/y."""
+
+    async def test_dismiss_acts_on_opened_finding_after_rerank(self, tmp_path, monkeypatch):
+        import io
+
+        from rich.console import Console
+
+        import ollama_sentinel.dashboard_input as di
+        from ollama_sentinel.dashboard_input import Key, KeyEvent
+
+        (tmp_path / "a.py").write_text("x = eval(input())\n")
+        (tmp_path / "b.py").write_text("y = 1\n")
+        dbp = tmp_path / "v.db"
+        ViolationDB(str(dbp)).close()
+        conn = sqlite3.connect(dbp)
+        ins = ("INSERT INTO findings(file_path,line_start,line_end,category,severity,"
+               "description,first_seen,last_seen,occurrence_count,verbatim_excerpt) "
+               "VALUES (?,?,?,?,?,?,?,?,?,?)")
+        conn.execute(ins, ("a.py", 1, 1, "security", "high", "X: eval", "2026", "2026", 5,
+                           "x = eval(input())"))
+        conn.execute(ins, ("b.py", 1, 1, "style", "high", "Y: magic", "2026", "2026", 3, "y = 1"))
+        conn.commit()
+
+        async def script(queue, shutdown):
+            for e in (KeyEvent(Key.TAB), KeyEvent(Key.TAB), KeyEvent(Key.ENTER)):
+                await queue.put(e)
+            await asyncio.sleep(0.4)
+            # Watcher re-review of b.py reorders the ranking under the open detail.
+            conn.execute("UPDATE findings SET occurrence_count = 10 WHERE id = 2")
+            conn.commit()
+            await asyncio.sleep(0.5)
+            await queue.put(KeyEvent(Key.CHAR, "d"))
+            await asyncio.sleep(0.4)
+            shutdown.set()
+
+        monkeypatch.setattr(di, "key_reader_loop", script)
+        await run_dashboard(
+            tmp_path, tmp_path / ".reviews", dbp, refresh_s=0.2,
+            console=Console(file=io.StringIO(), force_terminal=True, width=140),
+            config_path="x.yaml", model_name="m", interactive=True,
+        )
+        rows = dict(
+            (r[0], r[1]) for r in conn.execute("SELECT id, resolution FROM findings")
+        )
+        conn.close()
+        assert rows == {1: "dismissed", 2: None}

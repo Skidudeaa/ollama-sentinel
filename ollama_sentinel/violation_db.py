@@ -14,6 +14,26 @@ from typing import Any, Dict, List, Optional, Union
 _UNSET = object()
 
 
+def _unchanged_since(path: pathlib.Path, last_seen: Optional[str]) -> bool:
+    """True when *path* has not been modified after the ISO timestamp *last_seen*.
+
+    Excerpt-less findings are never relocated, so their stored line numbers are
+    only trustworthy if the file is unchanged since the finding was last seen;
+    otherwise slicing those lines would anchor the finding to unrelated code.
+    Returns False when the file is missing or *last_seen* is absent/unparseable.
+    """
+    if not last_seen:
+        return False
+    try:
+        seen = datetime.fromisoformat(last_seen)
+        mtime = path.stat().st_mtime
+    except (ValueError, OSError):
+        return False
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    return mtime <= seen.timestamp()
+
+
 @dataclass
 class Finding:
     """A single code review finding."""
@@ -439,7 +459,11 @@ class ViolationDB:
             new_excerpt = verbatim_excerpt or ""
             excerpt_backfilled = False
 
-            if not existing_excerpt and resolved_watch is not None:
+            if (
+                not existing_excerpt
+                and resolved_watch is not None
+                and _unchanged_since(resolved_watch / file_path, last_seen)
+            ):
                 if file_path not in content_cache:
                     content_cache[file_path] = safe_read(
                         resolved_watch / file_path, resolved_watch

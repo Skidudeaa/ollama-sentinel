@@ -1775,3 +1775,27 @@ class TestCheckCommand:
             assert row["verbatim_excerpt"] == ".critical { color: red; }"
         finally:
             db2.close()
+
+
+class TestCheckFailsClosed:
+    def test_check_exits_nonzero_when_review_fails(self, tmp_path, monkeypatch):
+        import git as _git
+        import ollama_sentinel.processor as proc
+
+        repo = _git.Repo.init(tmp_path)
+        app_py = tmp_path / "app.py"
+        app_py.write_text("x = 1\n")
+        repo.index.add(["app.py"])
+        repo.index.commit("initial")
+        app_py.write_text("x = 1\ny = eval(user_input)\n")
+        cfg = _make_report_config(tmp_path)
+
+        async def _unreachable(self, role, prompt, **kw):
+            raise ConnectionError("All connection attempts failed")
+
+        monkeypatch.setattr(proc.OllamaClient, "generate_review", _unreachable)
+
+        res = runner.invoke(app, ["check", "--config", str(cfg), "--fail-on", "low"])
+        assert res.exit_code == 1, res.output
+        assert "Review failed for" in res.output and "app.py" in res.output
+        assert "Check complete" not in res.output

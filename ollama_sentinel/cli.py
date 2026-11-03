@@ -326,7 +326,7 @@ def check(
 
     candidates = _collect_git_changed_files(repo, watch_dir, staged=staged)
 
-    async def _run_check() -> list[dict]:
+    async def _run_check() -> tuple[list[dict], list[str]]:
         sentinel = FileSentinel(config_file)
         try:
             reviewable = [
@@ -335,8 +335,9 @@ def check(
                 if not sentinel._should_ignore(p) and not _is_likely_binary(p)
             ]
             if not reviewable:
-                return []
+                return [], []
             checked_rels: list[str] = []
+            failed_rels: list[str] = []
             for abs_path, diff_text, staged_content in reviewable:
                 rel = str(abs_path.relative_to(watch_dir))
                 checked_rels.append(rel)
@@ -346,17 +347,21 @@ def check(
                     content=staged_content,
                     diff=diff_text,
                 )
-                await sentinel.process_change(fc, model_role=model)
+                if not await sentinel.process_change(fc, model_role=model):
+                    failed_rels.append(rel)
             if sentinel.violation_db:
-                return sentinel.violation_db.get_neighbors_unresolved(checked_rels)
-            return []
+                return (
+                    sentinel.violation_db.get_neighbors_unresolved(checked_rels),
+                    failed_rels,
+                )
+            return [], failed_rels
         finally:
             await sentinel.processor.close()
             if sentinel.violation_db:
                 sentinel.violation_db.close()
 
     try:
-        findings = asyncio.run(_run_check())
+        findings, failed_rels = asyncio.run(_run_check())
     except KeyboardInterrupt:
         log.info("Stopped by user")
         raise typer.Exit(code=130)
@@ -367,6 +372,15 @@ def check(
     if not candidates:
         console.print("[green]No changed files to review.[/green]")
         return
+
+    # A gate must fail closed: an unreviewed file (reviewer unreachable, model
+    # missing) is not evidence of "no findings".
+    if failed_rels:
+        console.print(
+            f"[red]Review failed for {len(failed_rels)} file(s): "
+            f"{', '.join(failed_rels)} — check did not complete.[/red]"
+        )
+        raise typer.Exit(code=1)
 
     if not findings:
         console.print("[green]Check complete — no open findings on changed files.[/green]")

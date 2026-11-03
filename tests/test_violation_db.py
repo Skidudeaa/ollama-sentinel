@@ -1,6 +1,8 @@
 """Tests for ollama_sentinel.violation_db persistence layer."""
 
+import os
 import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -1520,5 +1522,43 @@ class TestGuardrailProvenance:
             assert "except Exception as error:" in py_rows[3]["verbatim_excerpt"]
             assert py_rows[2]["severity"] == "critical"
             assert py_rows[2]["category"] == "security"
+        finally:
+            db.close()
+
+
+class TestRepairBackfillRequiresUnchangedFile:
+    """repair must not synthesize an excerpt from lines that moved since the
+    finding was last seen — that anchors the finding to unrelated code."""
+
+    def _seed(self, tmp_path):
+        db = ViolationDB(str(tmp_path / "memory.db"))
+        db.persist_findings("app.py", [Finding(
+            file_path="app.py", line_start=3, line_end=3, category="security",
+            severity="high", description="eval on environment input",
+        )])
+        return db
+
+    def test_skips_backfill_when_file_modified_after_last_seen(self, tmp_path):
+        db = self._seed(tmp_path)
+        try:
+            app = tmp_path / "app.py"
+            app.write_text("import os\nimport sys\nLIMIT = 10\n\nx = eval(os.environ['Q'])\n")
+            future = time.time() + 3600
+            os.utime(app, (future, future))
+            db.repair_historical_findings(tmp_path, apply=True)
+            assert (db.get_unresolved("app.py")[0]["verbatim_excerpt"] or "") == ""
+        finally:
+            db.close()
+
+    def test_backfills_when_file_unchanged_since_last_seen(self, tmp_path):
+        app = tmp_path / "app.py"
+        app.write_text("import os\n\nx = eval(os.environ['Q'])\n")
+        past = time.time() - 3600
+        os.utime(app, (past, past))
+        db = self._seed(tmp_path)
+        try:
+            db.repair_historical_findings(tmp_path, apply=True)
+            row = db.get_unresolved("app.py")[0]
+            assert row["verbatim_excerpt"] == "x = eval(os.environ['Q'])"
         finally:
             db.close()

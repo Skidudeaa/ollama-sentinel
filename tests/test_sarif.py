@@ -451,3 +451,37 @@ class TestReconcileFileFindings:
         }
         shifted = all_rows["still present but shifted"]
         assert (shifted["line_start"], shifted["line_end"]) == (4, 4)
+
+
+class TestReconcileKeepsValidatorAdmittedFragments:
+    """A sub-token excerpt admitted by grounded validation must not be auto-closed
+    as stale while it is still present in the file."""
+
+    def test_fragment_excerpt_survives_unchanged_save_and_closes_when_removed(self, tmp_path):
+        import asyncio as _asyncio
+
+        from ollama_sentinel.extractor import validate_findings
+        from ollama_sentinel.sarif import reconcile_file_findings
+
+        content = 'import os\n\ndb_password = "hunter2"\nprint(db_password)\n'
+        entry = {
+            "line_start": 3, "line_end": 3, "category": "security",
+            "severity": "high", "verbatim_excerpt": 'password = "hunter2"',
+            "description": "Hardcoded credential",
+        }
+        db = ViolationDB(str(tmp_path / "memory.db"))
+        try:
+            valid = _asyncio.run(validate_findings([entry], "app.py", content))
+            assert len(valid) == 1
+            db.persist_findings("app.py", valid)
+            db.persist_findings("app.py", valid)
+
+            assert reconcile_file_findings(db, "app.py", content) == (0, 0)
+            rows = db.get_unresolved("app.py")
+            assert len(rows) == 1 and rows[0]["occurrence_count"] == 2
+
+            fixed = 'import os\n\ndb_password = os.environ["DB_PW"]\nprint(db_password)\n'
+            assert reconcile_file_findings(db, "app.py", fixed) == (1, 0)
+            assert db.get_unresolved("app.py") == []
+        finally:
+            db.close()

@@ -390,3 +390,19 @@ class TestMultiLanguageImportResolver:
         callee_py.unlink()
         resolver2.invalidate(str(callee_py))
         assert resolver2.resolve_dependents(str(callee_py)) == []
+
+
+class TestSwiftNestedTypeNames:
+    def test_shared_nested_codingkeys_do_not_link_unrelated_files(self, tmp_path: Path) -> None:
+        for name, field in (("User", "id"), ("Invoice", "total"), ("Weather", "t")):
+            (tmp_path / f"{name}.swift").write_text(
+                f"struct {name}: Codable {{\n  let {field}: Int\n"
+                f"  enum CodingKeys: String, CodingKey {{ case {field} }}\n}}\n"
+            )
+        (tmp_path / "Screen.swift").write_text("struct Screen {\n  let user: User\n}\n")
+        resolver = ImportResolver(str(tmp_path))
+        user = str((tmp_path / "User.swift").resolve())
+
+        assert resolver.resolve_imports(user) == []
+        deps = [Path(p).name for p in resolver.resolve_dependents(user)]
+        assert deps == ["Screen.swift"]

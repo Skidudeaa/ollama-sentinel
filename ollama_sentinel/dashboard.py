@@ -973,6 +973,54 @@ async def run_dashboard(
             PanelId.PATTERNS: len(violations),
         }
 
+    def _ranked_patterns(data: dict, state: UIState) -> list:
+        """Patterns rows exactly as rendered and acted on: filtered, then ranked."""
+        violations = data["violations"]
+        if state.filter_active and state.filter_text:
+            ft = state.filter_text.lower()
+            violations = [v for v in violations
+                          if ft in v.severity.lower() or ft in v.category.lower()]
+        return blended_rank(violations)
+
+    def _selected_pattern_id(data: dict, state: UIState) -> Optional[int]:
+        """Finding id under the Patterns cursor, or None if nothing is selected."""
+        ranked = _ranked_patterns(data, state)
+        idx = state.selection.get(PanelId.PATTERNS, 0)
+        return ranked[idx].id if 0 <= idx < len(ranked) else None
+
+    def _repin_selection(
+        state: UIState, data: dict, pinned_id: Optional[int], *, leave_detail_if_gone: bool,
+    ) -> UIState:
+        """Re-clamp after a refresh, keeping the Patterns cursor on *pinned_id*.
+
+        A refresh re-ranks findings (the watcher bumps occurrence_count), so a
+        bare index would silently point the detail view and r/d/c/f/y at a
+        different finding. If the pinned finding is gone while its detail view
+        is open, drop back to NORMAL instead of showing a neighbour.
+        """
+        from .dashboard_input import _copy
+        state = _reclamp_selection(state, data)
+        if pinned_id is None:
+            return state
+        ranked = _ranked_patterns(data, state)
+        for i, v in enumerate(ranked):
+            if v.id == pinned_id:
+                if state.selection.get(PanelId.PATTERNS, 0) != i:
+                    new_sel = dict(state.selection)
+                    new_sel[PanelId.PATTERNS] = i
+                    state = _copy(state, selection=new_sel)
+                return state
+        if (
+            leave_detail_if_gone
+            and state.mode == Mode.DETAIL
+            and state.focused_panel == PanelId.PATTERNS
+        ):
+            state = _copy(
+                state, mode=Mode.NORMAL, detail_item=None,
+                status_message=f"Finding #{pinned_id} is no longer open.",
+            )
+        return state
+
     def _reclamp_selection(state: UIState, data: dict) -> UIState:
         """Re-clamp selection indices after data refresh."""
         counts = _effective_counts(data, state)
@@ -1016,15 +1064,9 @@ async def run_dashboard(
                         if ui_state.quit_requested:
                             break
                         if ui_state.pending_action:
-                            violations = data["violations"]
-                            if ui_state.filter_active and ui_state.filter_text:
-                                ft = ui_state.filter_text.lower()
-                                violations = [
-                                    v for v in violations
-                                    if ft in v.severity.lower() or ft in v.category.lower()
-                                ]
-                            ranked = blended_rank(violations)
+                            ranked = _ranked_patterns(data, ui_state)
                             sel_idx = ui_state.selection.get(PanelId.PATTERNS, 0)
+                            pinned_id = _selected_pattern_id(data, ui_state)
                             status_msg = ""
                             action = ui_state.pending_action
                             new_detail_item = ui_state.detail_item
@@ -1074,7 +1116,9 @@ async def run_dashboard(
                                 pending_action=None,
                                 status_message=status_msg,
                             )
-                            ui_state = _reclamp_selection(ui_state, data)
+                            ui_state = _repin_selection(
+                                ui_state, data, pinned_id, leave_detail_if_gone=False,
+                            )
                         live.update(_build_layout(data, ui_state))
                     except asyncio.TimeoutError:
                         pass
@@ -1086,8 +1130,11 @@ async def run_dashboard(
 
                 # Refresh data on timer if due
                 if time.monotonic() - last_fetch >= refresh_s:
+                    pinned_id = _selected_pattern_id(data, ui_state)
                     data = await asyncio.to_thread(_fetch_data)
-                    ui_state = _reclamp_selection(ui_state, data)
+                    ui_state = _repin_selection(
+                        ui_state, data, pinned_id, leave_detail_if_gone=True,
+                    )
                     live.update(_build_layout(data, ui_state))
                     last_fetch = time.monotonic()
 

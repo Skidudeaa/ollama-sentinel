@@ -226,23 +226,29 @@ class FileSentinel:
             # Path is not relative to watch_dir
             return True
     
-    async def process_change(self, file_change: FileChange, model_role: str = "default") -> None:
+    async def process_change(self, file_change: FileChange, model_role: str = "default") -> bool:
         """
         Process a single file change.
 
         Args:
             file_change: File change to process
             model_role: Model role to use for review
+
+        Returns:
+            False when review generation or saving raised (the error is logged
+            and swallowed so the watch loop keeps running); True when the file
+            was reviewed or intentionally skipped (missing, ignored, binary).
+            ``check`` uses this to refuse to report success for unreviewed files.
         """
         path = file_change.path
         rel_path = path.relative_to(self.processor.watch_dir)
 
         if not path.is_file() or self._should_ignore(path):
-            return
+            return True
 
         if _is_likely_binary(path):
             log.debug("Skipping binary file %s", rel_path)
-            return
+            return True
 
         log.info(f"Processing {rel_path}")
 
@@ -363,6 +369,8 @@ class FileSentinel:
 
         except Exception as e:
             log.error(f"Failed to process {rel_path}: {e}")
+            return False
+        return True
     
     async def process_pending_changes(self) -> None:
         """Process all pending file changes."""
