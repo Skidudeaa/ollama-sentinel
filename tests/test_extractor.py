@@ -972,3 +972,18 @@ def sentinel_config(tmp_path):
             },
         ),
     )
+
+
+class TestExpandToWholeLinesCost:
+    def test_wide_cited_range_expands_in_linear_time(self):
+        import time as _time
+
+        from ollama_sentinel.extractor import _expand_to_whole_lines
+
+        lines = [f"    v{i} = g{i}(a{i})" for i in range(2000)]
+        content = "\n".join(lines) + "\n"
+        excerpt = "\n".join(f"{n + 1}: {lines[n]}" for n in (1990, 1991))
+        t0 = _time.perf_counter()
+        out = _expand_to_whole_lines(excerpt, content, 1, 2000)
+        assert _time.perf_counter() - t0 < 0.5
+        assert out == "\n".join(lines[1990:1992])

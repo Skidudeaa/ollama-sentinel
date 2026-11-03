@@ -289,18 +289,29 @@ def _expand_to_whole_lines(
     window = lines[start:end]
     if not window:
         return ""
-    candidates = [" ".join(excerpt.split())]
-    stripped = " ".join(_strip_prompt_prefixes(excerpt).split())
-    if stripped and stripped != candidates[0]:
-        candidates.append(stripped)
-    norm = [" ".join(ln.split()) for ln in window]
+    # Normalize the whole window exactly as the validator does (whitespace runs,
+    # including blank lines, collapse to one space) while recording which window
+    # line each normalized character came from, so one str.find locates the
+    # excerpt and its end offsets map straight back to whole lines (linear).
+    parts: List[str] = []
+    line_at: List[int] = []
+    for idx, ln in enumerate(window):
+        for tok in ln.split():
+            if parts:
+                parts.append(" ")
+                line_at.append(idx)
+            parts.append(tok)
+            line_at.extend([idx] * len(tok))
+    normalized = "".join(parts)
+    candidates = [" ".join(excerpt.split()), " ".join(_strip_prompt_prefixes(excerpt).split())]
     for target in candidates:
         if not target:
             continue
-        for span in range(1, len(window) + 1):
-            for i in range(len(window) - span + 1):
-                if target in " ".join(norm[i:i + span]).strip():
-                    return "\n".join(window[i:i + span])
+        pos = normalized.find(target)
+        if pos >= 0:
+            first = line_at[pos]
+            last = line_at[pos + len(target) - 1]
+            return "\n".join(window[first:last + 1])
     return ""
 
 
@@ -431,6 +442,10 @@ async def validate_findings(
             )
             if expanded:
                 finding.verbatim_excerpt = expanded
+            elif finding.verbatim_excerpt and finding.verbatim_excerpt not in file_content:
+                cleaned = _strip_prompt_prefixes(finding.verbatim_excerpt)
+                if cleaned:
+                    finding.verbatim_excerpt = cleaned
             valid.append(finding)
         else:
             log.warning("Skipping malformed finding entry: %s", entry)

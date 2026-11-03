@@ -509,3 +509,28 @@ class TestReconcileKeepsValidatorAdmittedFragments:
             assert db.get_unresolved("a.py") == []
         finally:
             db.close()
+
+    def test_excerpt_spanning_blank_line_survives_unchanged_save(self, tmp_path):
+        import asyncio as _asyncio
+
+        from ollama_sentinel.extractor import validate_findings
+        from ollama_sentinel.sarif import reconcile_file_findings
+
+        content = "def f():\n    db_password = load()\n\n    send(db_password)\n"
+        entry = {
+            "line_start": 2, "line_end": 4, "category": "security",
+            "severity": "high",
+            "verbatim_excerpt": "2:     db_password = load()\n3:\n4:     send(db_password)",
+            "description": "Credential sent unencrypted",
+        }
+        db = ViolationDB(str(tmp_path / "memory.db"))
+        try:
+            valid = _asyncio.run(validate_findings([entry], "a.py", content))
+            assert valid[0].verbatim_excerpt == (
+                "    db_password = load()\n\n    send(db_password)"
+            )
+            db.persist_findings("a.py", valid)
+            assert reconcile_file_findings(db, "a.py", content) == (0, 0)
+            assert len(db.get_unresolved("a.py")) == 1
+        finally:
+            db.close()
