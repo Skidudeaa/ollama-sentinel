@@ -268,6 +268,42 @@ def _validate_verbatim(finding: dict, file_content: str) -> bool:
     return False
 
 
+def _expand_to_whole_lines(
+    excerpt: str, file_content: str, line_start: int, line_end: int
+) -> str:
+    """Return the full source line(s) inside the cited range that contain *excerpt*.
+
+    The grounding validator admits any whitespace-normalized substring of the
+    cited slice, but downstream relocation (reconcile, prune, surface, fix)
+    matches whole lines. Storing a sub-line fragment (``password = "x"`` from
+    ``db_password = "x"``) makes the finding look stale on an unchanged file,
+    and substring-based workarounds keep genuinely fixed code open
+    (``eval(e)`` survives inside ``ast.literal_eval(e)``). Anchoring to the
+    smallest run of whole lines containing the excerpt removes both failure
+    modes. Tries the raw excerpt, then one with prompt prefixes stripped.
+    Returns ``""`` when the excerpt is not found in the cited range.
+    """
+    lines = file_content.splitlines()
+    start = max(0, line_start - 1)
+    end = min(line_end, len(lines))
+    window = lines[start:end]
+    if not window:
+        return ""
+    candidates = [" ".join(excerpt.split())]
+    stripped = " ".join(_strip_prompt_prefixes(excerpt).split())
+    if stripped and stripped != candidates[0]:
+        candidates.append(stripped)
+    norm = [" ".join(ln.split()) for ln in window]
+    for target in candidates:
+        if not target:
+            continue
+        for span in range(1, len(window) + 1):
+            for i in range(len(window) - span + 1):
+                if target in " ".join(norm[i:i + span]).strip():
+                    return "\n".join(window[i:i + span])
+    return ""
+
+
 def extract_findings_legacy(
     review_text: str,
     file_path: str,
@@ -389,10 +425,12 @@ async def validate_findings(
             continue
         finding = _parse_finding(entry, file_path)
         if finding is not None:
-            if finding.verbatim_excerpt and finding.verbatim_excerpt not in file_content:
-                cleaned = _strip_prompt_prefixes(finding.verbatim_excerpt)
-                if cleaned:
-                    finding.verbatim_excerpt = cleaned
+            expanded = _expand_to_whole_lines(
+                finding.verbatim_excerpt, file_content,
+                finding.line_start, finding.line_end,
+            )
+            if expanded:
+                finding.verbatim_excerpt = expanded
             valid.append(finding)
         else:
             log.warning("Skipping malformed finding entry: %s", entry)

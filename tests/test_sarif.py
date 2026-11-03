@@ -485,3 +485,27 @@ class TestReconcileKeepsValidatorAdmittedFragments:
             assert db.get_unresolved("app.py") == []
         finally:
             db.close()
+
+    def test_fix_that_wraps_the_flagged_expression_closes_the_finding(self, tmp_path):
+        import asyncio as _asyncio
+
+        from ollama_sentinel.extractor import validate_findings
+        from ollama_sentinel.sarif import reconcile_file_findings
+
+        before = "import ast\nx = eval(expr)\n"
+        entry = {
+            "line_start": 2, "line_end": 2, "category": "security",
+            "severity": "critical", "verbatim_excerpt": "eval(expr)",
+            "description": "eval on untrusted input",
+        }
+        db = ViolationDB(str(tmp_path / "memory.db"))
+        try:
+            valid = _asyncio.run(validate_findings([entry], "a.py", before))
+            db.persist_findings("a.py", valid)
+            assert reconcile_file_findings(db, "a.py", before) == (0, 0)
+
+            after = "import ast\nx = ast.literal_eval(expr)\n"
+            assert reconcile_file_findings(db, "a.py", after) == (1, 0)
+            assert db.get_unresolved("a.py") == []
+        finally:
+            db.close()

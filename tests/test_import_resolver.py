@@ -406,3 +406,17 @@ class TestSwiftNestedTypeNames:
         assert resolver.resolve_imports(user) == []
         deps = [Path(p).name for p in resolver.resolve_dependents(user)]
         assert deps == ["Screen.swift"]
+
+    def test_brace_inside_string_does_not_hide_later_top_level_types(self, tmp_path: Path) -> None:
+        (tmp_path / "App.swift").write_text(
+            'struct Parser {\n'
+            '  func ok(_ s: String) -> Bool { s.hasPrefix("{") }\n'
+            '  let url = "https://example.com"\n'
+            '}\n'
+            'final class NewsViewModel {\n  var n = 0\n}\n'
+        )
+        (tmp_path / "Screen.swift").write_text("struct Screen {\n  let vm: NewsViewModel\n}\n")
+        resolver = ImportResolver(str(tmp_path))
+        screen = str((tmp_path / "Screen.swift").resolve())
+
+        assert [Path(p).name for p in resolver.resolve_imports(screen)] == ["App.swift"]

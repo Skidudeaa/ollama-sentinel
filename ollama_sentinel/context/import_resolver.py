@@ -55,21 +55,21 @@ def _strip_c_comments(text: str) -> str:
 
 
 def _top_level_swift_decls(text: str) -> List[str]:
-    """Names declared at brace depth 0 in comment-stripped Swift *text*.
+    """Names declared on unindented lines of comment-stripped Swift *text*.
 
     Nested declarations (``enum CodingKeys`` inside every Codable model) are
-    excluded: they are not referenceable by bare name from other files, and
-    indexing them globally links every file that shares a generic nested name.
+    indented and excluded: they are not referenceable by bare name from other
+    files, and indexing them globally links every file sharing a generic
+    nested name. Indentation is used instead of brace depth because braces
+    inside string literals (``hasPrefix("{")``) unbalance a depth count and
+    would drop every later top-level type in the file.
     """
-    depth_at = [0] * (len(text) + 1)
-    depth = 0
-    for i, ch in enumerate(text):
-        depth_at[i] = depth
-        if ch == "{":
-            depth += 1
-        elif ch == "}" and depth > 0:
-            depth -= 1
-    return [m.group(1) for m in _SWIFT_DECL_RE.finditer(text) if depth_at[m.start()] == 0]
+    names: List[str] = []
+    for m in _SWIFT_DECL_RE.finditer(text):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        if line_start < len(text) and text[line_start] not in " \t":
+            names.append(m.group(1))
+    return names
 
 
 class ImportResolver:

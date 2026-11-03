@@ -112,7 +112,8 @@ def test_whitespace_drift_excerpt_is_accepted():
         validate_findings([finding], "indented.py", file_content)
     )
     assert len(result) == 1, "whitespace-drift excerpt should be accepted"
-    assert result[0].verbatim_excerpt == "if foo: bar()"
+    # Stored excerpt is anchored to the real source lines (whole-line relocation).
+    assert result[0].verbatim_excerpt == "\tif foo:\n\t\tbar()"
     assert result[0].category == "style"
 
 
@@ -335,7 +336,10 @@ def test_correct_finding_on_real_source_is_not_rejected(
 
     assert len(result) == 1, f"{case_id}: correct finding must survive validation"
     survived = result[0]
-    assert survived.verbatim_excerpt == finding["verbatim_excerpt"]
+    # The stored excerpt is the whole source line(s) containing the model's
+    # excerpt — raw file text, so whole-line relocation finds it unchanged.
+    assert survived.verbatim_excerpt in file_content
+    assert _norm(finding["verbatim_excerpt"]) in _norm(survived.verbatim_excerpt)
     assert survived.category == finding["category"]
     assert survived.description == finding["description"]
 

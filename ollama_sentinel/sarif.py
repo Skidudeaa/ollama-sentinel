@@ -335,11 +335,6 @@ def collect_stale_findings(db, watch_dir: "pathlib.Path | str") -> List[dict]:
     return stale
 
 
-def _collapse_ws(text: str) -> str:
-    """Collapse whitespace runs to one space and strip (the validator's rule)."""
-    return " ".join(text.split())
-
-
 def reconcile_file_findings(
     db, file_rel_path: str, content: str
 ) -> Tuple[int, int]:
@@ -353,23 +348,17 @@ def reconcile_file_findings(
         ``persist_findings`` deduplication see the current lines.
       - ``status == "stored"`` (empty excerpt): left untouched.
 
-    A finding is only auto-closed when its excerpt is also absent under the
-    grounding validator's looser rule (whitespace-normalized substring of the
-    whole file). ``relocate_finding`` matches whole lines or whole tokens, so a
-    validator-admitted sub-token fragment (``password = "x"`` cited from
-    ``db_password = "x"``) would otherwise be closed on an unchanged file.
+    Grounded excerpts are stored as whole source lines
+    (``extractor._expand_to_whole_lines``), so line-based relocation is the
+    sole staleness test here.
 
     Returns ``(pruned_count, relocated_count)``.
     """
     pruned = 0
     relocated = 0
-    normalized_content = _collapse_ws(content)
     for row in db.get_unresolved(file_rel_path):
         reloc = relocate_finding(content, row)
         if reloc.status == "stale":
-            excerpt = _collapse_ws(row.get("verbatim_excerpt") or "")
-            if excerpt and excerpt in normalized_content:
-                continue
             if db.mark_resolved(row["id"], resolution="stale") > 0:
                 pruned += 1
         elif reloc.status == "relocated":
