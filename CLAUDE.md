@@ -28,11 +28,13 @@ pip install -e ".[dev]"             # + pytest/testing deps
 ollama-sentinel run                 # watch directory, auto-review
 ollama-sentinel review file.py      # review a single file
 ollama-sentinel review file.py -m security   # use security model role
+ollama-sentinel check               # review git-modified + untracked files
+ollama-sentinel check --staged --fail-on high   # pre-commit / CI gate on staged files
 ollama-sentinel report              # show recurring violations
 ollama-sentinel init                # create config file
 ollama-sentinel triage < pytest.log # diagnose tool output via local model
 ollama-sentinel triage log.txt -o out.md   # triage a saved log, save result
-ollama-sentinel dashboard           # live TUI: recent reviews + recurring violations
+ollama-sentinel dashboard           # live TUI: reviews + recurring violations + interactive triage/fix (r/d/c/f/y)
 ollama-sentinel confirm 42          # manually corroborate a Finding -> Incident
 ollama-sentinel incidents           # list corroborated events (table or -f json)
 ollama-sentinel install-hooks       # install the git post-commit hook
@@ -78,22 +80,25 @@ pytest tests/test_violation_db.py   # run one module's tests
 ```
 CLI (Typer) -> FileSentinel -> awatch loop (debounce)
                                  |
+                           reconcile_file_findings() (auto-close stale + relocate shifted spans)
+                                 |
                            FileProcessor.generate_review()
-                             |- prepare_file_content() via asyncio.to_thread
+                             |- prepare_file_content() via asyncio.to_thread (always loads content + optional diff)
                              |- _get_ranked_prior_violations()
-                             |    semantic: ViolationDB.get_neighbors_by_similarity()
-                             |    fallback:  ViolationDB.get_unresolved(path)
+                             |    1. semantic:   ViolationDB.get_neighbors_by_similarity()
+                             |    2. structural: ImportResolver (.py, .ts/.tsx/.js/.jsx, .swift) -> get_neighbors_unresolved()
+                             |    3. fallback:   ViolationDB.get_unresolved(path)
                              |- _get_active_guardrails() (active project rules)
                              |- format_prompt() -> build_review_context() recipe
-                             |    MUST_FIT: active file / diff block
+                             |    MUST_FIT: active file / numbered diff block
                              |    OPTIONAL: PROJECT GUARDRAILS (scope-filtered, ranked)
                              |    OPTIONAL: PRIOR UNRESOLVED (retriever-ranked)
                              |- chunk_content() -> chunk_by_lines (token-aware)
                              |- OllamaClient.generate_review() (httpx, tenacity retry)
                                  |
-                           extract_findings() (LLM JSON + regex fallback)
+                           extract_findings() (LLM JSON + regex fallback w/ code-span strip & excerpt synthesis)
                              |- attribute_guardrail_provenance() (best-effort: finding -> guardrail)
-                             |- ViolationDB.persist_findings() (SQLite upsert,
+                             |- ViolationDB.persist_findings() (SQLite upsert + excerpt backfill,
                                 populates embed_text + guardrail_id provenance)
                                  |
                            FileProcessor.save_review()
@@ -159,18 +164,20 @@ Click CLI -> ResearchAgent -> LangGraph StateGraph
 
 | Module | Purpose |
 |--------|---------|
-| `ollama_sentinel/processor.py` | FileProcessor, OllamaClient, async prompt formatting via recipe, review generation |
-| `ollama_sentinel/violation_db.py` | SQLite-backed Finding persistence with upsert, `embed_text` column, `get_neighbors_by_similarity`; `guardrails` table + CRUD (`Guardrail`); finding `guardrail_id` provenance; `get_corroborated_findings` (clustering selector) |
+| `ollama_sentinel/processor.py` | FileProcessor, OllamaClient, async prompt formatting via recipe, `_number_diff_lines`, multi-language structural recall, review generation |
+| `ollama_sentinel/violation_db.py` | SQLite-backed Finding persistence with upsert + `verbatim_excerpt` backfill, `update_finding_location` (merging duplicate rows), `embed_text` column, `get_neighbors_by_similarity`; `guardrails` table + CRUD (`Guardrail`); finding `guardrail_id` provenance; `get_corroborated_findings` (clustering selector) |
 | `ollama_sentinel/guardrails.py` | Guardrail shape clustering + candidate detection (leaf): `Candidate`, async `detect_candidates`, `draft_assertion`, `derive_scope`, `candidate_signature`/`filter_suppressed`, and the `counts_toward_strength` evidence-integrity gate |
-| `ollama_sentinel/extractor.py` | LLM JSON extraction + regex fallback for parsing review findings |
-| `ollama_sentinel/watcher.py` | FileSentinel, file watching, ignore logic, pipeline orchestration |
+| `ollama_sentinel/extractor.py` | LLM JSON extraction (`validate_findings` with prompt line-prefix stripping) + regex fallback (`extract_findings_legacy` with `_strip_code_spans`, explicit label parsing, negated-severity filtering, and `synthesize_excerpt`) |
+| `ollama_sentinel/watcher.py` | FileSentinel, file watching, built-in non-source ignore rules, `reconcile_file_findings` on save, pipeline orchestration |
 | `ollama_sentinel/models.py` | Pydantic v2 config models: Ollama/Embedding/Memory/Processing with validators |
-| `ollama_sentinel/cli.py` | Typer CLI: run, review, init, report, triage, dashboard, confirm, incidents, install-hooks, record-commit, surface, findings, resolve, dismiss, fix, prune + `guardrail` sub-app (add/list/edit/disable/enable/dismiss, candidates/promote/reject) |
-| `ollama_sentinel/remediate.py` | Localized fix generation for `fix <id>`: `splice_lines`/`parse_fix_response`/`build_fix_prompt` (pure) + `propose_fix` (I/O); bounds the model edit to the finding's exact whole-line span |
+| `ollama_sentinel/cli.py` | Typer CLI: run, review, check (`--staged`/`--fail-on`), init, report, triage, dashboard, confirm, incidents, install-hooks, record-commit, surface, findings, resolve, dismiss, fix, prune + `guardrail` sub-app (add/list/edit/disable/enable/dismiss, candidates/promote/reject) |
+| `ollama_sentinel/remediate.py` | Localized fix generation for `fix <id>` and dashboard `f`: `splice_lines`/`parse_fix_response`/`build_fix_prompt` (pure) + `propose_fix` (I/O); bounds the model edit to the finding's exact whole-line span |
 | `ollama_sentinel/pytest_plugin.py` | Opt-in pytest plugin: matches test failures to open Findings, records `test_failure` Incidents (`pytest11` entry point) |
 | `ollama_sentinel/hooks.py` | Git post-commit hook installer + `record_commit` (links commits to open Findings) |
-| `ollama_sentinel/dashboard.py` | Live Rich TUI for `ollama-sentinel dashboard` — polls reviews dir + ViolationDB read-only; includes a read-only active-guardrails panel (`active_guardrails`/`_guardrails_panel`) |
-| `ollama_sentinel/sarif.py` | SARIF 2.1.0 surface: excerpt-based `relocate_finding`, `build_sarif` document, `generate_sarif_file` (read-only orchestration) — backs the `surface` command + watcher auto-refresh; `collect_stale_findings` (read-only) backs `prune` |
+| `ollama_sentinel/dashboard.py` | Live Rich TUI for `ollama-sentinel dashboard` — polls reviews dir + ViolationDB, includes active-guardrails panel and interactive finding triage (`r` resolve, `d` dismiss, `c` confirm) + localized fix preview/apply (`f`/`y`/`n`) |
+| `ollama_sentinel/dashboard_input.py` | Pure state reducer (`DashboardUIState`, `handle_key`) for Control Center keyboard navigation, filtering, triage actions, and fix preview confirmation |
+| `ollama_sentinel/sarif.py` | SARIF 2.1.0 surface: excerpt-based `relocate_finding`, `reconcile_file_findings` (auto-close stale + relocate shifted findings on save), `build_sarif` document, `generate_sarif_file` — backs `surface`, `prune` (`collect_stale_findings`), and watcher auto-reconciliation |
+| `ollama_sentinel/context/import_resolver.py` | Multi-language 1-hop import graph resolver (`ImportResolver`) supporting Python (`.py` AST), TypeScript/JavaScript (`.ts`/`.tsx`/`.js`/`.jsx`/`.mjs`/`.cjs`), and Swift (`.swift`) |
 | `ollama_sentinel/context/assembler.py` | `Section` / `Priority` / `ContextItem` dataclasses + `assemble()` + `chunk_by_lines` — pure, token-budgeted |
 | `ollama_sentinel/context/tokens.py` | `TokenCounter` (tiktoken `cl100k_base` with char-based fallback) |
 | `ollama_sentinel/context/embeddings.py` | `OllamaEmbedder` — async `/api/embeddings` client, cache-backed, `EmbeddingUnavailable` on failure |
@@ -289,20 +296,17 @@ operator came back to it, do this in order:
 
 ### Pickable next moves (ordered by leverage)
 
-**The bake reordered this table.** The v0.3 architecture work is no longer the
-top of the list — the bake showed the reviewer is good and the *presentation*
-is what fails. Items 1–3 are what the fleet actually earned; they are the only
-things worth doing if this project is picked back up.
+**Items 1–4 from the 2026-08-25 bake verdict shipped on 2026-11-02**, along with interactive Control Center triage/remediation (`r`/`d`/`c`/`f`/`y`), `ollama-sentinel check [--staged] [--fail-on]`, and multi-language `ImportResolver` (`.py`, `.ts`/`.tsx`/`.js`/`.jsx`, `.swift`).
 
-| # | Item | Effort | Risk | Notes |
-|---|---|---|---|---|
-| 1 | **Severity is scanned out of quoted code.** `extractor.py:161-164` substring-matches the whole block, code fence included, with `"critical"` first in dict order — a CSS `.critical` class or `{ critical_high: 'HH' }` promotes a style nit to critical. Strip fenced/inline code before the keyword scan. Measured: **125/177 (71%)** of soma's criticals and 7/14 of theater6's are this bug. Same flaw in `_CATEGORY_KEYWORDS` (`"bug"`/`"error"` first). | S | low | Highest leverage single fix in the repo. |
-| 2 | **Legacy path never sets `verbatim_excerpt`**, so the whole actionability arc is inert: `relocate_finding` returns `"stored"` (`sarif.py:88`) → `fix` can't bound an edit, `prune` never sees staleness, `surface` anchors SARIF to drifted lines. 100% of theater6 and ~97% of dictum findings are affected. Fix: synthesize the excerpt at persist time by slicing the cited line span out of the file. Decide separately whether to backfill existing DBs. | M | low | Without this, findings can be read but never acted on. |
-| 3 | **Watch scope is too wide.** soma spent K3 calls reviewing `events_2026-08-11.jsonl` and analytics `.md`; **1,702 of its 14,267 findings (12%)** are on non-source files. Config-only fix. | XS | none | — |
-| 4 | **Dedup:** `persist_findings` keys on `(file, line_start, line_end, category)`; both `line_end` and `category` drift under legacy extraction, so re-reviews insert instead of incrementing. Real, but only ~8% (soma) / ~13% (theater6) of rows — **smaller than it looks**, the bulk of the 18,864 are genuinely distinct observations. | S | low | Do after 1–2. |
-| 5 | **v0.3 shared substrate** — lift `ImportResolver` to shared infra, unify `Finding`/`ImpactItem`, bidirectional impact↔incident flow. | L | med | The moat play (`docs/VISION.md`). Demoted: the bake says fix presentation before architecture. |
-| 6 | **Guardrail deferrals** — (a) live dashboard pending-candidate view; (b) whether U8's *global* self-caused-soft exclusion should narrow to *scoped-to-originating-guardrail*. | S–M | low | Flagged in the U7/U8 PR bodies. Only if the gap is actually felt. |
-| 7 | **Cosmetic:** `tests/test_cli.py` has one unused `Guardrail` import (Pyright-only lint, no test impact). | XS | none | — |
+| # | Item | Status | Notes |
+|---|---|---|---|
+| 1 | **Severity is scanned out of quoted code.** Strip fenced/inline code (`_strip_code_spans`), honor explicit `Severity:`/`Category:` labels, filter negated severity (`not critical`), and drop non-issue blocks in `extractor.py`. | **SHIPPED** (2026-11-02) | Eliminates false-critical promotion from CSS `.critical` or `error` identifiers inside code spans. |
+| 2 | **Legacy path never sets `verbatim_excerpt`.** Synthesize `verbatim_excerpt` from `file_content` in `extract_findings_legacy`, backfill empty excerpts in `ViolationDB.persist_findings`, and strip prompt `N: `/diff `+` prefixes in `validate_findings`. | **SHIPPED** (2026-11-02) | Unblocks `fix`, `prune`, and `surface` relocation on `:cloud` models and `git_diff_mode: true`. |
+| 3 | **Watch scope is too wide.** Expand `_BUILTIN_IGNORE_PATTERNS` in `watcher.py` and default `config.py` ignore patterns to skip `.jsonl`, `.csv`, `.tsv`, `.svg`, `.map`, `.min.js`, `.min.css`, `.worktrees/`, `.playwright-cli/`, `.design-handoff/`, `.aider*`. | **SHIPPED** (2026-11-02) | Prevents reviewing telemetry/data dumps out of the box. |
+| 4 | **Line-drift dedup & stale auto-reconcile.** Run `reconcile_file_findings` on file save before review generation to auto-close vanished findings (`resolution='stale'`) and relocate shifted line spans via `ViolationDB.update_finding_location` (merging duplicate rows). | **SHIPPED** (2026-11-02) | Keeps open findings anchored to current line numbers as files are edited. |
+| 5 | **v0.3 shared substrate** — `ImportResolver` is now lifted to `ollama_sentinel/context/import_resolver.py` with Python, TS/JS, and Swift support. Remaining: unify `Finding`/`ImpactItem` and bidirectional impact↔incident flow. | M–L | Partial: `ImportResolver` promotion + multi-language support shipped 2026-11-02. |
+| 6 | **Guardrail deferrals** — (a) live dashboard pending-candidate view; (b) whether U8's *global* self-caused-soft exclusion should narrow to *scoped-to-originating-guardrail*. | S–M | Flagged in the U7/U8 PR bodies. Only if the gap is actually felt. |
+| 7 | **Cosmetic:** `tests/test_cli.py` has one unused `Guardrail` import (Pyright-only lint, no test impact). | XS | — |
 
 Skip TR-3 — deliberate spec deviation, documented in followups.md. Qwen3
 Phases B/C stay parked (no demand; the Phase-A plan forbids pulling the models
@@ -336,6 +340,12 @@ speculatively).
 
 ### Recent landings
 
+- 2026-11-02: **Bake-verdict reliability fixes (Tier 1 & 2) + active review/remediation workflow (Tier 3).**
+  - **Extraction & grounding (`0088785`):** `extractor.py` now strips fenced/inline code (`_strip_code_spans`), honors explicit `Severity:`/`Category:` labels, strips negated severity (`not critical`), drops non-issue praise blocks, synthesizes `verbatim_excerpt` from `file_content` in `extract_findings_legacy`, and strips accidental prompt `N: ` or diff `+` prefixes in `validate_findings` while preserving source indentation. `ViolationDB.persist_findings` backfills empty `verbatim_excerpt` on upsert. `FileProcessor.prepare_file_content` always populates `file_change.content` and numbers diff lines (`_number_diff_lines`) so `git_diff_mode: true` still grounds findings against the real file.
+  - **Auto-reconciliation & watch hygiene (`0088785`):** `reconcile_file_findings` in `sarif.py` runs in `FileSentinel.process_change` on save before review generation, auto-closing vanished findings (`resolution='stale'`) and relocating shifted spans via `ViolationDB.update_finding_location` (merging duplicate rows and repointing incidents). `ViolationDB.get_recurring` filters `AND resolved = 0` before `LIMIT`. Expanded `_BUILTIN_IGNORE_PATTERNS` in `watcher.py` and default `config.py` ignores (`.jsonl`, `.csv`, `.tsv`, `.svg`, `.map`, `.min.js`, `.min.css`, `.worktrees/`, `.playwright-cli/`, `.design-handoff/`, `.aider*`).
+  - **Interactive Control Center triage & fix (`dashboard.py`, `dashboard_input.py`):** Added `r` (resolve), `d` (dismiss), `c` (confirm incident), and `f` (generate localized fix preview via `remediate.propose_fix`, with `y` to apply and `n`/`Esc` to cancel) in the Patterns panel and Detail modal.
+  - **Multi-language structural recall (`ollama_sentinel/context/import_resolver.py`, `processor.py`):** Promoted `ImportResolver` into `ollama_sentinel/context/import_resolver.py` and added TypeScript/JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs` — relative imports, barrel `index.*`, extensionless imports, same-directory siblings) and Swift (`.swift` — sibling files in the same module/target directory) alongside Python AST resolution.
+  - **Git working-tree & staged check (`cli.py`):** Added `ollama-sentinel check [--staged] [--model <role>] [--fail-on <severity>]` to review git-modified/untracked or staged files concurrently and exit `1` when findings meet or exceed `--fail-on`.
 - 2026-08-25: **Bake verdict rendered + entire fleet shut down.** 17 days of
   dogfooding judged on its actual criterion (review quality, not engagement —
   the resolve/incident counters were structurally zero because those paths

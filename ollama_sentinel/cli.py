@@ -198,6 +198,203 @@ def review(
         raise typer.Exit(code=1)
 
 
+_SEVERITY_ORDER = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+
+
+def _collect_git_changed_files(
+    repo, watch_dir: pathlib.Path, *, staged: bool = False
+) -> list[tuple[pathlib.Path, Optional[str]]]:
+    """Return ``(abs_path, optional_diff)`` for modified/added files in *repo* under *watch_dir*."""
+    import git as _git
+
+    repo_root = pathlib.Path(repo.working_dir).resolve()
+    rel_names: list[str] = []
+    seen: set[str] = set()
+
+    def _add(names):
+        for n in names:
+            n = n.strip()
+            if n and n not in seen:
+                seen.add(n)
+                rel_names.append(n)
+
+    if staged:
+        try:
+            out = repo.git.diff("--cached", "--name-only", "--diff-filter=ACMR")
+            _add(out.splitlines())
+        except _git.GitCommandError:
+            pass
+    else:
+        try:
+            out = repo.git.diff("HEAD", "--name-only", "--diff-filter=ACMR")
+            _add(out.splitlines())
+        except _git.GitCommandError:
+            try:
+                out = repo.git.diff("--cached", "--name-only", "--diff-filter=ACMR")
+                _add(out.splitlines())
+            except _git.GitCommandError:
+                pass
+            try:
+                out = repo.git.diff("--name-only", "--diff-filter=ACMR")
+                _add(out.splitlines())
+            except _git.GitCommandError:
+                pass
+        try:
+            _add(repo.untracked_files)
+        except Exception:
+            pass
+
+    results: list[tuple[pathlib.Path, Optional[str]]] = []
+    for rel in rel_names:
+        abs_path = (repo_root / rel).resolve()
+        if not abs_path.is_file():
+            continue
+        try:
+            abs_path.relative_to(watch_dir)
+        except ValueError:
+            continue
+        diff_text: Optional[str] = None
+        try:
+            if staged:
+                d = repo.git.diff(
+                    "--cached", "--", rel,
+                    ignore_blank_lines=True, ignore_space_at_eol=True,
+                )
+            else:
+                d = repo.git.diff(
+                    "HEAD", "--", rel,
+                    ignore_blank_lines=True, ignore_space_at_eol=True,
+                )
+            if d and d.strip():
+                diff_text = d
+        except _git.GitCommandError:
+            diff_text = None
+        results.append((abs_path, diff_text))
+    return results
+
+
+@app.command()
+def check(
+    config_path: str = typer.Option(
+        "ollama-sentinel.yaml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+    staged: bool = typer.Option(
+        False,
+        "--staged",
+        help="Review only staged (cached) git changes",
+    ),
+    model: str = typer.Option(
+        "default",
+        "--model",
+        "-m",
+        help="Model role to use for review",
+    ),
+    fail_on: Optional[str] = typer.Option(
+        None,
+        "--fail-on",
+        help="Exit with code 1 if any open finding on checked files meets or exceeds this severity (critical, high, medium, low)",
+    ),
+):
+    """Review all modified (or --staged) git files and summarize open findings."""
+    import git as _git
+    from rich.table import Table
+    from .watcher import _is_likely_binary
+
+    if fail_on is not None and fail_on.lower() not in _SEVERITY_ORDER:
+        console.print(
+            f"[red]Invalid --fail-on severity {fail_on!r}; choose critical, high, medium, or low.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    config_file = pathlib.Path(config_path)
+    config = _load_config_or_exit(config_path)
+    watch_dir = pathlib.Path(config.watch.directory).resolve()
+
+    try:
+        repo = _git.Repo(watch_dir, search_parent_directories=True)
+    except _git.InvalidGitRepositoryError:
+        console.print(f"[red]No git repository found at {watch_dir}[/red]")
+        raise typer.Exit(code=1)
+
+    candidates = _collect_git_changed_files(repo, watch_dir, staged=staged)
+
+    async def _run_check() -> list[dict]:
+        sentinel = FileSentinel(config_file)
+        try:
+            reviewable = [
+                (p, d)
+                for (p, d) in candidates
+                if not sentinel._should_ignore(p) and not _is_likely_binary(p)
+            ]
+            if not reviewable:
+                return []
+            checked_rels: list[str] = []
+            for abs_path, diff_text in reviewable:
+                rel = str(abs_path.relative_to(watch_dir))
+                checked_rels.append(rel)
+                fc = FileChange(
+                    path=abs_path,
+                    change_type=Change.modified,
+                    diff=diff_text,
+                )
+                await sentinel.process_change(fc, model_role=model)
+            if sentinel.violation_db:
+                return sentinel.violation_db.get_neighbors_unresolved(checked_rels)
+            return []
+        finally:
+            await sentinel.processor.close()
+            if sentinel.violation_db:
+                sentinel.violation_db.close()
+
+    try:
+        findings = asyncio.run(_run_check())
+    except KeyboardInterrupt:
+        log.info("Stopped by user")
+        raise typer.Exit(code=130)
+    except Exception as e:
+        log.error(f"Error running check: {e}")
+        raise typer.Exit(code=1)
+
+    if not candidates:
+        console.print("[green]No changed files to review.[/green]")
+        return
+
+    if not findings:
+        console.print("[green]Check complete — no open findings on changed files.[/green]")
+        return
+
+    table = Table(title=f"Open Findings on Changed Files ({len(findings)})")
+    table.add_column("ID", style="dim", width=5)
+    table.add_column("Severity", width=10)
+    table.add_column("Category", width=12)
+    table.add_column("Location", style="cyan")
+    table.add_column("Description")
+    for f in findings:
+        table.add_row(
+            str(f.get("id", "")),
+            str(f.get("severity", "")),
+            str(f.get("category", "")),
+            f"{f.get('file_path')}:{f.get('line_start')}-{f.get('line_end')}",
+            str(f.get("description", ""))[:80],
+        )
+    console.print(table)
+
+    if fail_on is not None:
+        threshold = _SEVERITY_ORDER[fail_on.lower()]
+        blocking = [
+            f for f in findings
+            if _SEVERITY_ORDER.get(str(f.get("severity", "")).lower(), 0) >= threshold
+        ]
+        if blocking:
+            console.print(
+                f"[red]{len(blocking)} finding(s) at or above {fail_on.lower()} severity.[/red]"
+            )
+            raise typer.Exit(code=1)
+
+
 @app.command()
 def init(
     directory: str = typer.Argument(

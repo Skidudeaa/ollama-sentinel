@@ -1632,3 +1632,52 @@ class TestGuardrailCandidatesCLI:
         r = runner.invoke(app, ["guardrail", "promote", "1", "--config", str(cfg)])
         assert r.exit_code == 1
         assert "No candidate at index" in r.output
+
+
+class TestCheckCommand:
+    """Tests for `ollama-sentinel check [--staged] [--fail-on <severity>]`."""
+
+    def test_check_reviews_modified_git_files_and_enforces_fail_on(
+        self, tmp_path, monkeypatch
+    ):
+        import git as _git
+        import ollama_sentinel.processor as proc
+
+        repo = _git.Repo.init(tmp_path)
+        app_py = tmp_path / "app.py"
+        app_py.write_text("x = 1\n")
+        repo.index.add(["app.py"])
+        repo.index.commit("initial")
+
+        # Modify app.py in working tree
+        app_py.write_text("x = 1\ny = eval(user_input)\n")
+        cfg = _make_report_config(tmp_path)
+
+        async def _fake_generate_review(self, role, prompt, **kw):
+            return json.dumps({
+                "summary": "Found eval usage.",
+                "findings": [
+                    {
+                        "line_start": 2,
+                        "line_end": 2,
+                        "category": "security",
+                        "severity": "high",
+                        "verbatim_excerpt": "y = eval(user_input)",
+                        "description": "Avoid eval on untrusted input",
+                    }
+                ],
+            })
+
+        monkeypatch.setattr(proc.OllamaClient, "generate_review", _fake_generate_review)
+
+        # Without --fail-on, exits 0 and prints the finding table
+        res_ok = runner.invoke(app, ["check", "--config", str(cfg)])
+        assert res_ok.exit_code == 0, res_ok.output
+        assert "app.py:2-2" in res_ok.output
+
+        # With --fail-on high, exits 1
+        res_fail = runner.invoke(
+            app, ["check", "--config", str(cfg), "--fail-on", "high"]
+        )
+        assert res_fail.exit_code == 1
+        assert "at or above high severity" in res_fail.output

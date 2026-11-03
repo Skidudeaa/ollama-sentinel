@@ -828,7 +828,7 @@ ollama-sentinel run">copy</button></pre>
 <section id="cmds">
   <div class="wrap">
     <div class="stamp"><span class="t">t+1m</span><span>SURFACE AREA</span></div>
-    <h2>Seven moves cover the daily loop.</h2>
+    <h2>Eight moves cover the daily loop.</h2>
     <p class="lead">Each fits on one line; defaults are sensible. A fuller surface sits behind them —
       a findings lifecycle (<code>findings</code>, <code>resolve</code>, <code>fix</code>,
       <code>surface</code>, <code>prune</code>), corroboration (<code>confirm</code>,
@@ -850,30 +850,36 @@ ollama-sentinel run">copy</button></pre>
       </div>
       <div class="cmd">
         <div class="glyph">·──── 03</div>
+        <div class="name">check</div>
+        <div class="desc">Review git-modified or <code>--staged</code> files and gate CI/commits with <code>--fail-on</code>.</div>
+        <div class="ex"><span class="pr">$</span> ollama-sentinel check --staged --fail-on high</div>
+      </div>
+      <div class="cmd">
+        <div class="glyph">·──── 04</div>
         <div class="name">report</div>
         <div class="desc">Show recurring violations ranked by frequency. <code>-f json</code> for tooling.</div>
         <div class="ex"><span class="pr">$</span> ollama-sentinel report -n 3</div>
       </div>
       <div class="cmd">
-        <div class="glyph">·──── 04</div>
+        <div class="glyph">·──── 05</div>
         <div class="name">triage</div>
         <div class="desc">Pipe tool output (pytest, mypy, traceback). Get a diagnosis with auto-extracted source.</div>
         <div class="ex"><span class="pr">$</span> pytest 2&gt;&amp;1 | ollama-sentinel triage</div>
       </div>
       <div class="cmd">
-        <div class="glyph">·──── 05</div>
+        <div class="glyph">·──── 06</div>
         <div class="name">dashboard</div>
-        <div class="desc">Live Rich TUI — recent reviews + recurring violations, polled read-only.</div>
+        <div class="desc">Live Rich TUI — reviews, patterns, and interactive triage/fix (<code>r</code>/<code>d</code>/<code>c</code>/<code>f</code>).</div>
         <div class="ex"><span class="pr">$</span> ollama-sentinel dashboard -r 0.5</div>
       </div>
       <div class="cmd">
-        <div class="glyph">·──── 06</div>
+        <div class="glyph">·──── 07</div>
         <div class="name">init</div>
         <div class="desc">Drop a sane <code>ollama-sentinel.yaml</code> in the current directory.</div>
         <div class="ex"><span class="pr">$</span> ollama-sentinel init</div>
       </div>
       <div class="cmd">
-        <div class="glyph">·──── 07</div>
+        <div class="glyph">·──── 08</div>
         <div class="name">guardrail</div>
         <div class="desc">Author project rules the reviewer checks every time — or promote ones it proposes from recurring patterns.</div>
         <div class="ex"><span class="pr">$</span> ollama-sentinel guardrail add no-eval -a "Never eval untrusted input."</div>
@@ -1097,10 +1103,11 @@ ollama-sentinel run">copy</button></pre>
 <section id="dash">
   <div class="wrap">
     <div class="stamp"><span class="t">live</span><span>THE DASHBOARD</span></div>
-    <h2>A read-only TUI that watches the watcher.</h2>
+    <h2>An interactive TUI that watches the watcher.</h2>
     <p class="lead">Run <code>ollama-sentinel dashboard</code> in a second pane. It polls the reviews
-      directory and the violation DB, refreshes on a tunable interval, and
-      never writes anything.</p>
+      directory and the violation DB non-destructively, and lets you resolve (<code>r</code>),
+      dismiss (<code>d</code>), corroborate (<code>c</code>), or preview and apply a localized
+      fix (<code>f</code> → <code>y</code>) right from the Patterns list.</p>
 
     <div class="terminal dash reveal">
       <div class="bar">

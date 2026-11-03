@@ -82,6 +82,9 @@ class TestApplyKeyNormalMode:
         assert apply_key(state, KeyEvent(Key.CHAR, char="r"), _counts()).pending_action == "resolve"
         assert apply_key(state, KeyEvent(Key.CHAR, char="d"), _counts()).pending_action == "dismiss"
         assert apply_key(state, KeyEvent(Key.CHAR, char="c"), _counts()).pending_action == "confirm"
+        fix_state = apply_key(state, KeyEvent(Key.CHAR, char="f"), _counts())
+        assert fix_state.pending_action == "fix_preview"
+        assert fix_state.mode == Mode.DETAIL
 
     def test_r_d_c_noop_when_patterns_empty_or_other_panel_focused(self):
         empty_state = UIState(focused_panel=PanelId.PATTERNS)
@@ -166,6 +169,21 @@ class TestApplyKeyDetailMode:
         conf = apply_key(state, KeyEvent(Key.CHAR, char="c"), _counts())
         assert conf.mode == Mode.DETAIL
         assert conf.pending_action == "confirm"
+        fix_p = apply_key(state, KeyEvent(Key.CHAR, char="f"), _counts())
+        assert fix_p.mode == Mode.DETAIL
+        assert fix_p.pending_action == "fix_preview"
+
+    def test_detail_mode_y_applies_fix_and_n_cancels_preview(self):
+        state = UIState(
+            mode=Mode.DETAIL,
+            focused_panel=PanelId.PATTERNS,
+            detail_item={"finding_id": 1, "diff": "--- a\n+++ b\n"},
+        )
+        applied = apply_key(state, KeyEvent(Key.CHAR, char="y"), _counts())
+        assert applied.pending_action == "fix_apply"
+        cancelled = apply_key(state, KeyEvent(Key.CHAR, char="n"), _counts())
+        assert cancelled.detail_item is None
+        assert cancelled.mode == Mode.DETAIL
 
 
 class TestUIStateImmutability:

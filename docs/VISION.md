@@ -41,8 +41,9 @@ Four things are true today that were aspirational a few months ago:
 
 - **The memory is layered and grounded.** Prior-violation recall is semantic
   (embedding neighbors via `qwen3-embedding:4b` on the hot path — see Phase A
-  below), structural (1-hop import-graph neighbors via the `ImportResolver` AST
-  scanner, so a finding on `utils.py` surfaces when reviewing `app.py`), and
+  below), structural (1-hop import-graph neighbors via `ollama_sentinel/context/import_resolver.py`
+  across Python `.py`, TypeScript/JavaScript `.ts`/`.tsx`/`.js`/`.jsx`, and Swift `.swift`,
+  so a finding on `utils.py` or `utils.ts` surfaces when reviewing `app.py` or `app.ts`), and
   single-file. **The trial confirmed this one empirically** — reviews came back
   carrying `STILL PRESENT (flagged 4× since 2026-08-10)` and prior-issue status
   tables, i.e. the reviewer was demonstrably reasoning over its own history.
@@ -156,12 +157,19 @@ Four verbs, plus their supporting cast:
 - **`prune`** — close Findings whose flagged code is gone: the file no longer
   exists, or the verbatim excerpt no longer relocates. Preview + confirm, then
   close with `resolution='stale'` (no Incident — a vanished finding isn't a
-  corroborated event). Read-only on source.
+  corroborated event). Read-only on source. On top of explicit `prune`, saving a
+  watched file now automatically runs `reconcile_file_findings` before review
+  generation, closing vanished findings (`resolution='stale'`) and updating
+  shifted line spans in place.
+- **`check`** — review all git-modified/untracked or staged (`--staged`) files
+  in one command, with an optional `--fail-on <severity>` exit gate for
+  pre-commit hooks and CI.
 
 Supporting verbs round out the lifecycle: `findings` (list open Findings with
 ids), `resolve` / `dismiss` (close as fixed / false-positive, idempotent), and
-`dashboard` (a live Rich TUI of recent reviews and recurring violations,
-polling the DB read-only).
+`dashboard` (a live Rich TUI of recent reviews and recurring violations that
+also supports interactive triage via `r`/`d`/`c` and excerpt-bounded fix
+preview/apply via `f`/`y`/`n`).
 
 The throughline: a Finding now has a full lifecycle — proposed by the model,
 corroborated by events, surfaced where you work, acted on, and retired — rather
@@ -215,12 +223,13 @@ becomes a rulebook the model enforces — exactly the north star below.
 
 ## What's still aspirational — v0.3: shared substrate between modules
 
-> **Demoted by the trial (2026-08-25).** This was the top of the roadmap for
-> months. It no longer is. 17 days of real use said the bottleneck is not
-> architectural reach — it's that findings are mislabeled and unactionable, so
-> a bigger substrate would only feed a firehose nobody drinks from. If this
-> project restarts, the [next-moves table](../CLAUDE.md) puts the severity
-> scanner and `verbatim_excerpt` capture ahead of everything below.
+> **Updated 2026-11-02:** The extraction/presentation bottlenecks identified by
+> the 17-day trial — severity keyword scanning over quoted code, missing
+> `verbatim_excerpt` on the legacy regex path, stale findings lingering across
+> saves, and single-language structural recall — have been fixed (see the
+> [next-moves table](../CLAUDE.md)). `ImportResolver` has also been lifted into
+> `ollama_sentinel/context/import_resolver.py` with Python, TypeScript/JS, and
+> Swift support.
 >
 > `research_agent` was long slated for cutting (OpenAI + LangChain dead weight
 > against a local-first pitch). **That was reversed 2026-08-25 — it stays.**
@@ -232,9 +241,11 @@ becomes a rulebook the model enforces — exactly the north star below.
 Today the two modules are architecturally independent. That was the right v0.1
 call. It's now the ceiling.
 
-**Lift `ImportResolver` out of `research_agent/tools/` into shared infra.** The
-sentinel now uses it; promote it. Add incremental invalidation so the cache
-doesn't stale during long-running watcher sessions.
+**Lift `ImportResolver` out of `research_agent/tools/` into shared infra (shipped for sentinel 2026-11-02).**
+`ollama_sentinel/context/import_resolver.py` now provides multi-language 1-hop
+import resolution (`.py`, `.ts`/`.tsx`/`.js`/`.jsx`, `.swift`) without reaching
+into `research_agent`. Remaining: add incremental cache invalidation for
+long-running watcher sessions.
 
 **Unify `Finding` and `ImpactItem`.** Both describe the same noun — a
 concerning location in code — through different lenses. Common base:
@@ -258,8 +269,10 @@ tools that share a process becomes one thing that has no external equivalent.
   — nothing becomes an enforced rule without a human confirm, and a guardrail
   surfaces concerns into the review, it does not block, rewrite, or act on its
   own. Auto-intervention without curation would be nagware; that line stays.
-- **No multi-language for now.** Adding TypeScript/JS multiplies the AST
-  surface 5x without enough Python signal yet to justify it.
+- ~~**No multi-language for now.**~~ **Relaxed 2026-11-02.** `ImportResolver` in
+  `ollama_sentinel/context/import_resolver.py` now supports Python AST,
+  TypeScript/JavaScript relative/barrel imports, and Swift module-sibling
+  resolution so structural recall works across all three stacks.
 - ~~**No web UI.**~~ **Broken, knowingly, in 2026-08.** Running six watchers
   across two machines made a per-machine TUI useless, so the trial shipped
   `sentinel-dash` (separate private repo: FastAPI + SSE, tailnet-only) to see

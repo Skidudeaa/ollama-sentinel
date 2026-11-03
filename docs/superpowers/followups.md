@@ -20,49 +20,58 @@ Not blockers — each entry has enough context to pick up in a fresh session.
 
 ---
 
-## Trial-surfaced defects (2026-08-25)
+## Trial-surfaced defects (2026-08-25 — RESOLVED 2026-11-02)
 
 Found by running the tool against six real projects, not by reading the code.
-All three are open. Full measurements in the verdict note.
+All four items below were resolved on 2026-11-02 (`0088785`). Full measurements in the verdict note.
 
-### TD-1. Severity is keyword-scanned over quoted code — OPEN
+### TD-1. Severity is keyword-scanned over quoted code — DONE (2026-11-02, commit `0088785`)
 
-`ollama_sentinel/extractor.py:161-164` substring-matches `_SEVERITY_KEYWORDS`
+`ollama_sentinel/extractor.py` previously substring-matched `_SEVERITY_KEYWORDS`
 against the whole finding block, code fence included, with `"critical"` first
-in dict order. A CSS `.critical` class or `{ critical_high: 'HH' }` promotes a
-style nit to critical. **Measured: 125/177 (71%)** of one project's critical
-tier, 7/14 in another. `_CATEGORY_KEYWORDS` has the identical flaw (`"bug"`
-and `"error"` lead, so any block quoting `error` becomes `category=bug`).
+in dict order. A CSS `.critical` class or `{ critical_high: 'HH' }` promoted a
+style nit to critical (**125/177 (71%)** of one project's critical tier, 7/14
+in another), and `_CATEGORY_KEYWORDS` had the identical flaw.
 
-**Fix:** strip fenced and inline code before the keyword scan. Roughly five
-lines. Highest-leverage single change in the repo.
+**Resolution:** `_strip_code_spans` now strips fenced and inline code before
+keyword scanning; explicit `Severity:` and `Category:` labels take precedence;
+negated phrases (`not critical`) are stripped before severity scanning; and
+non-issue praise blocks are dropped.
 
-### TD-2. Legacy extraction never captures `verbatim_excerpt` — OPEN
+### TD-2. Legacy extraction never captures `verbatim_excerpt` — DONE (2026-11-02, commit `0088785`)
 
-`extract_findings_legacy` returns findings with an empty excerpt by contract.
-`sarif.relocate_finding` (`sarif.py:88`) therefore returns status `"stored"`,
-which makes `fix` unable to bound an edit, `prune` unable to detect staleness,
-and `surface` anchor SARIF to drifted line numbers. **100% of one project's
-findings and ~97% of another's** were affected, because every `:cloud` model
-forces this path.
+`extract_findings_legacy` previously returned findings with an empty excerpt,
+causing `sarif.relocate_finding` (`sarif.py:88`) to return `"stored"` and
+leaving `fix`, `prune`, and `surface` relocation inert on `:cloud` models.
 
-**Fix:** synthesize the excerpt at persist time by slicing the cited line span
-out of the file — the content is already in hand at that point. Decide
-separately whether to backfill existing DBs.
+**Resolution:** `extract_findings_legacy` now synthesizes `verbatim_excerpt`
+from `file_content` via `synthesize_excerpt`, `ViolationDB.persist_findings`
+backfills empty `verbatim_excerpt` on upsert, `validate_findings` strips
+accidental prompt `N: ` or diff `+` prefixes while preserving indentation, and
+`FileProcessor.prepare_file_content` always populates `file_change.content`
+even when `git_diff_mode: true` is active.
 
-### TD-3. Watch scope admits non-source files — OPEN
+### TD-3. Watch scope admits non-source files — DONE (2026-11-02, commit `0088785`)
 
 One project spent model calls reviewing `events_2026-08-11.jsonl` and
-analytics `.md`; **1,702 of 14,267 findings (12%)** were on non-source files.
-Config-only fix (tighten `watch` ignore rules), but it wastes real tokens.
+analytics `.md` (**1,702 of 14,267 findings (12%)** on non-source files).
 
-### TD-4. `persist_findings` upsert key drifts — OPEN, low priority
+**Resolution:** Expanded `_BUILTIN_IGNORE_PATTERNS` in `ollama_sentinel/watcher.py`
+and default `ignore_patterns` in `ollama_sentinel/config.py` to ignore `.jsonl`,
+`.csv`, `.tsv`, `.svg`, `.map`, `.min.js`, `.min.css`, `.worktrees/`,
+`.playwright-cli/`, `.design-handoff/`, and `.aider*`.
 
-Keys on `(file_path, line_start, line_end, category)`. Under legacy extraction
-both `line_end` and `category` are re-derived from prose that varies run to
-run, so re-reviews insert instead of incrementing `occurrence_count`.
-**Smaller than it looks** — ~8% and ~13% of rows in the two largest DBs; the
-bulk of findings are genuinely distinct. Do after TD-1 and TD-2.
+### TD-4. `persist_findings` upsert key drifts — DONE (2026-11-02, commit `0088785`)
+
+Keys on `(file_path, line_start, line_end, category)`. When lines shifted across
+edits, re-reviews inserted duplicate rows instead of updating the existing open
+finding.
+
+**Resolution:** `FileSentinel.process_change` now calls
+`reconcile_file_findings(db, rel_path, content)` before generating a new review,
+auto-closing vanished findings (`resolution='stale'`) and updating shifted line
+spans in place via `ViolationDB.update_finding_location` (merging any duplicate
+unresolved row and repointing incidents).
 
 ---
 

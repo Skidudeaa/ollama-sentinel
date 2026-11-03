@@ -47,7 +47,7 @@ ollama-sentinel init                    # writes ollama-sentinel.yaml in cwd
 
 `init` queries `/api/tags` and picks a reviewer model you already have installed, so you usually don't need to pull one. If nothing suitable is installed it falls back to `gemma3:4b` — `ollama pull gemma3:4b` (~3 GB) covers that case.
 
-To use a cloud model (e.g. `deepseek-v4-pro:cloud`), run `ollama signin` once and edit `ollama-sentinel.yaml` so `ollama.models.default.name` is your cloud model. **Note:** every `:cloud` model ignores Ollama's `format` JSON schema, so grounded extraction silently degrades to the regex path — set `processing.grounding: false` and see the [verdict note](docs/session-notes/2026-08-25-bake-verdict-and-fleet-shutdown.md) for what that costs you (chiefly: no `verbatim_excerpt`, so `fix` and `prune` can't act on those findings).
+To use a cloud model (e.g. `deepseek-v4-pro:cloud`), run `ollama signin` once and edit `ollama-sentinel.yaml` so `ollama.models.default.name` is your cloud model. **Note:** every `:cloud` model ignores Ollama's `format` JSON schema, so grounded extraction degrades to the regex path (`extract_findings_legacy`), which synthesizes `verbatim_excerpt` directly from the cited source lines so `fix`, `prune`, and `surface` still work. Set `processing.grounding: false` to skip the schema attempt and see the [verdict note](docs/session-notes/2026-08-25-bake-verdict-and-fleet-shutdown.md) for background.
 
 ### Each time you want to use it
 
@@ -86,7 +86,9 @@ The Control Center shows:
 - **Recent Reviews** — latest review output with timestamps
 - **Patterns** — recurring violations ranked by frequency (the issues that keep coming back)
 
-This is the primary product surface. Everything the sentinel knows is visible here at a glance.
+You can also triage and fix findings directly inside the Control Center: select a pattern (or press `Enter` for Detail mode) and press `r` to resolve, `d` to dismiss, `c` to corroborate as an Incident, or `f` to generate an excerpt-bounded fix preview (`y` to apply, `n`/`Esc` to cancel).
+
+This is the primary product surface. Everything the sentinel knows is visible and actionable here at a glance.
 
 > **Heads up — directory matters.** `ollama-sentinel run` reads `ollama-sentinel.yaml` from the **current working directory**. If you have stale YAMLs in multiple project folders, the cwd one wins. Run from anywhere with `ollama-sentinel run --config <abs-path-to-ollama-sentinel.yaml>` if that's a problem.
 
@@ -139,6 +141,7 @@ The "I always forget what to run" table.
 | Open the Control Center | `ollama-sentinel` | Full-screen TUI with overview, reviews, and patterns |
 | Start the watcher | `ollama-sentinel init && ollama-sentinel run` | "Watching `<dir>` for changes". Edit a file → review lands in `.ollama_reviews/<name>.md` within seconds |
 | Review one file | `ollama-sentinel review src/foo.py` | Markdown review prints to stdout AND lands in `.ollama_reviews/foo.py.md` |
+| Review git-changed or staged files | `ollama-sentinel check`<br>or `ollama-sentinel check --staged --fail-on high` | Reviews modified/staged files concurrently, prints a findings table, and exits `1` when findings meet `--fail-on` |
 | Use a model role | `ollama-sentinel review src/foo.py -m security` | Review references security concerns specifically (vs the default reviewer's broader feedback) |
 | See recurring violations | `ollama-sentinel report` | Rich table ranked by occurrence count |
 | Same, machine-readable | `ollama-sentinel report -f json` | JSON array on stdout |
@@ -162,17 +165,16 @@ The "I always forget what to run" table.
 | Interactive research | `ollama-sentinel research -i` | REPL prompt — ask follow-up questions in the same session |
 | Run all tests | `pytest tests/ -q` | Green (run it for the live count — it drifts as tests land; the skips are intentional, exercised by the `[dev,research]` CI runner) |
 
-## Known limits
+## Known limits & resolved trial defects
 
-Found by running this against six real projects for 17 days. None are fixed —
-the project was parked first — and all three are in the [next-moves
-table](CLAUDE.md) with file:line pointers.
+Found by running this against six real projects for 17 days (see [CLAUDE.md](CLAUDE.md) for details):
 
-| Limit | Effect |
-|---|---|
-| **Severity is keyword-scanned over the whole finding, quoted code included** (`extractor.py`) | A CSS `.critical` class or a `{ critical_high: 'HH' }` map promotes a style nit to `critical`. Measured at **71%** of one project's critical tier. Sort by severity with that in mind. |
-| **The regex extraction path never captures `verbatim_excerpt`** | `fix`, `prune`, and accurate `surface` re-anchoring all need it, so on any `:cloud` model (which forces that path) those commands are inert. Grounded local models are unaffected. |
-| **Findings accumulate faster than anyone triages them** | Six projects produced ~1,100/day. Scope `watch.directory` tightly and treat `report`/`findings` as sampling tools, not a queue to drain. |
+| Item | Status | Effect |
+|---|---|---|
+| **Severity keyword-scanned over quoted code** (`extractor.py`) | **Fixed** | Fenced/inline code spans and negated phrases (`not critical`) are now stripped before keyword scanning, and explicit `Severity:`/`Category:` labels take precedence. |
+| **Regex extraction path missing `verbatim_excerpt`** (`extractor.py`, `violation_db.py`) | **Fixed** | `extract_findings_legacy` now synthesizes `verbatim_excerpt` from the cited source line span (and `persist_findings` backfills empty excerpts on upsert), so `fix`, `prune`, and `surface` work with `:cloud` models. |
+| **Stale findings lingering after edits** (`watcher.py`, `sarif.py`) | **Fixed** | Saving a file now runs `reconcile_file_findings` before review generation, auto-closing vanished findings (`resolution='stale'`) and updating shifted line spans in place. |
+| **Findings accumulate faster than anyone triages them in passive mode** | **Structural** | Six projects produced ~1,100/day under continuous watching. Scope `watch.directory` tightly, use `ollama-sentinel check --staged` for pre-commit gating, or triage directly in the Control Center (`r`/`d`/`c`/`f`). |
 
 ## When something looks wrong
 

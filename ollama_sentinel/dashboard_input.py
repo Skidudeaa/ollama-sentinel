@@ -86,6 +86,10 @@ def apply_key(state: UIState, event: KeyEvent, item_counts: dict) -> UIState:
         if key in (Key.ESC, Key.QUIT):
             return _copy(state, mode=Mode.NORMAL, detail_item=None)
         if key == Key.CHAR and state.focused_panel == PanelId.PATTERNS:
+            if event.char == "n" and state.detail_item and state.detail_item.get("diff"):
+                return _copy(state, detail_item=None)
+            if event.char == "y" and state.detail_item and state.detail_item.get("diff"):
+                return _copy(state, pending_action="fix_apply")
             if item_counts.get(PanelId.PATTERNS, 0) > 0:
                 if event.char == "r":
                     return _copy(
@@ -99,6 +103,8 @@ def apply_key(state: UIState, event: KeyEvent, item_counts: dict) -> UIState:
                     )
                 if event.char == "c":
                     return _copy(state, pending_action="confirm")
+                if event.char == "f":
+                    return _copy(state, pending_action="fix_preview")
         return state
 
     if state.mode == Mode.FILTER:
@@ -134,6 +140,8 @@ def apply_key(state: UIState, event: KeyEvent, item_counts: dict) -> UIState:
                 return _copy(state, pending_action="dismiss")
             if ch == "c":
                 return _copy(state, pending_action="confirm")
+            if ch == "f":
+                return _copy(state, mode=Mode.DETAIL, pending_action="fix_preview")
         return state
 
     if key == Key.QUIT:

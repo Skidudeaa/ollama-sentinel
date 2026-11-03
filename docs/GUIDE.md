@@ -1,11 +1,11 @@
 # Ollama Sentinel -- User Guide
 
-> **⏸ The project is parked (2026-08-25) and nothing is running.** Every command
-> below still works — this guide is accurate — but see
+> **⏸ The project was parked on 2026-08-25 (with fleet units stopped) and updated on 2026-11-02.**
+> Every command below works — this guide is accurate — and the extraction,
+> `verbatim_excerpt` synthesis, and stale-finding auto-reconciliation defects
+> surfaced during the 17-day trial on six live projects have been fixed. See
 > [the verdict](session-notes/2026-08-25-bake-verdict-and-fleet-shutdown.md) for
-> what a 17-day trial on six live projects actually showed, and the README's
-> "Known limits" for three unfixed defects worth knowing before you rely on
-> severity sorting or the `fix`/`prune` commands.
+> what that trial showed about continuous passive watching vs. active review.
 
 > **▶ Prefer the visual walkthrough?** Open [`index.html`](index.html) in a browser
 > for the same content as a single-page infographic — hero, architecture diagram,
@@ -84,7 +84,7 @@ ollama-sentinel dashboard -r 0.5   # half-second refresh rate
 
 ### What You See
 
-The Control Center is a full-screen read-only TUI with three main areas:
+The Control Center is a full-screen interactive TUI with four main areas:
 
 **Overview** (top-left) — aggregate system state:
 - Open findings count with severity breakdown (critical/high/medium/low)
@@ -94,7 +94,7 @@ The Control Center is a full-screen read-only TUI with three main areas:
 
 **Recent Reviews** (bottom-left) — the latest review output files with relative timestamps, showing what was reviewed and when.
 
-**Patterns** (right) — recurring violations ranked by frequency. These are the issues the model keeps flagging across multiple reviews. If something shows up here repeatedly, it needs real attention.
+**Patterns** (right) — recurring violations ranked by frequency. These are the issues the model keeps flagging across multiple reviews. If something shows up here repeatedly, you can triage or fix it directly from this panel.
 
 **Guardrails** (right, below Recent Reviews) — your active project rules, with their scope and source (✎ authored by hand, `auto` promoted from a pattern). Read-only here; curate them with the `guardrail` commands below.
 
@@ -106,7 +106,7 @@ The header shows:
 - **Model** — which Ollama model is configured
 - **Update time** — when the display last refreshed
 
-The Control Center polls every 1 second by default. It doesn't modify any state — it's purely a read-only view of what the watcher has produced.
+The Control Center polls every 1 second by default. Polling is read-only; changes only happen when you explicitly trigger a triage or fix action (`r`, `d`, `c`, `f`).
 
 ### Keyboard Navigation
 
@@ -120,12 +120,17 @@ The Control Center is interactive. When running in a terminal (TTY), these keys 
 | `j` / `↓` | Move selection down in the focused list |
 | `k` / `↑` | Move selection up in the focused list |
 | `Enter` | Open detail view for the selected item |
-| `Esc` | Close detail view or cancel filter |
+| `Esc` | Close detail view, cancel fix preview, or cancel filter |
 | `/` | Enter filter mode (filters Patterns by severity or category) |
+| `r` | Resolve the selected Pattern finding as fixed (`resolution='fixed'`) |
+| `d` | Dismiss the selected Pattern finding as a false positive (`resolution='dismissed'`) |
+| `c` | Corroborate the selected Pattern finding (`manual_confirm` Incident) |
+| `f` | Generate an excerpt-bounded localized fix preview for the selected Pattern finding |
+| `y` / `n` | Apply (`y`) or cancel (`n`) the pending fix preview in Detail mode |
 
 **Filter mode:** Type a severity (`high`, `crit`) or category (`security`, `perf`) to narrow the Patterns list. Press Enter to lock the filter, Esc to cancel. All keys (including `q`, `j`, `k`) type normally while filtering.
 
-**Detail mode:** Press Enter on a review or pattern to see full details in a dedicated panel. Press Esc to return to the normal view.
+**Detail & Fix Preview mode:** Press Enter on a review or pattern to see full details in a dedicated panel. On a pattern, press `f` to ask the local model for a localized fix bounded to the finding's verbatim excerpt; the Detail modal renders the unified diff and prompts `y` to write the fix atomically (and mark the finding resolved) or `n`/`Esc` to cancel.
 
 The focused panel has a bright cyan border. The selected row is highlighted with reverse video.
 
@@ -137,13 +142,14 @@ The focused panel has a bright cyan border. The selected row is highlighted with
 
 1. You save a file
 2. The watcher detects the change (with debounce to avoid reviewing mid-keystroke)
-3. The file content is read (or git diff, if configured)
-4. If violation memory is enabled, prior unresolved findings for this file are fetched from the SQLite database
-5. Active guardrails whose scope matches the file are loaded and (with the prior findings) injected into the prompt — relevance-ranked and token-budgeted
-6. The content + guardrails + prior findings are sent to your Ollama model
-7. The model returns a review
-8. Findings are extracted (LLM JSON parsing with regex fallback), best-effort tagged with the guardrail that produced them, and persisted to the database
-9. The review is saved as a versioned markdown file
+3. The file content is read (plus numbered git diff lines if `git_diff_mode` is configured)
+4. Existing open findings for the file are reconciled against current source lines (`reconcile_file_findings`): vanished excerpts are auto-closed (`resolution='stale'`) and shifted line spans are updated in place
+5. If violation memory is enabled, prior unresolved findings are fetched via the three-layer recall cascade: semantic similarity (`qwen3-embedding:4b`), 1-hop structural import neighbors (`ImportResolver` across Python, TypeScript/JavaScript, and Swift), or single-file fallback
+6. Active guardrails whose scope matches the file are loaded and (with the prior findings) injected into the prompt — relevance-ranked and token-budgeted
+7. The content + guardrails + prior findings are sent to your Ollama model
+8. The model returns a review
+9. Findings are extracted (LLM JSON parsing with regex fallback that strips code spans and synthesizes `verbatim_excerpt` from source lines), best-effort tagged with the guardrail that produced them, and persisted to the database
+10. The review is saved as a versioned markdown file
 
 Every review makes the next one smarter.
 
@@ -158,6 +164,11 @@ ollama-sentinel run -c my.yaml      # custom config
 # Review one file manually
 ollama-sentinel review src/auth.py
 ollama-sentinel review src/auth.py -m security    # use security-focused model
+
+# Review git-modified or staged files (pre-commit / CI gate)
+ollama-sentinel check                             # review modified + untracked files
+ollama-sentinel check --staged                    # review only staged files
+ollama-sentinel check --staged --fail-on high     # exit 1 if any finding is >= high
 
 # See what keeps breaking
 ollama-sentinel report
@@ -175,7 +186,7 @@ ollama-sentinel triage error.log -o triage.md
 ollama-sentinel triage error.log --no-extract        # skip source extraction
 ollama-sentinel triage error.log --context src/foo.py:42  # add explicit context
 
-# Control Center (live TUI, read-only, polls the DB)
+# Control Center (live interactive TUI: overview, reviews, patterns, triage & fix)
 ollama-sentinel                                      # default: opens Control Center
 ollama-sentinel dashboard                            # same thing, explicit command
 ollama-sentinel dashboard -r 0.5 -n 3                # half-second refresh, min count 3
@@ -460,28 +471,30 @@ The switching cost is real. After three months, the violation database knows thi
 ```
 ollama-sentinel/
   ollama_sentinel/           # sentinel module
-    cli.py                   # Typer CLI (run, review, init, report, triage, dashboard,
+    cli.py                   # Typer CLI (run, review, check, init, report, triage, dashboard,
                              #   findings lifecycle, incidents, guardrail sub-app)
     config.py                # YAML config loading
     models.py                # Pydantic v2 config models
     processor.py             # FileProcessor, OllamaClient, async prompt formatting,
-                             #   guardrail loading + provenance attribution
-    watcher.py               # FileSentinel, file watching, pipeline orchestration
+                             #   multi-language structural recall, guardrail loading + provenance
+    watcher.py               # FileSentinel, file watching, auto-reconcile on save, pipeline orchestration
     violation_db.py          # SQLite memory: findings + incidents + guardrails tables,
-                             #   semantic recall (embed_text), corroborated-findings selector
+                             #   semantic recall (embed_text), span relocation, corroborated selector
     guardrails.py            # Guardrail shape clustering, candidate detection,
                              #   assertion drafting, evidence-integrity gate
-    extractor.py             # Finding extraction (LLM + regex fallback)
-    dashboard.py             # Live TUI (Rich): reviews + recurring violations + guardrails
-    sarif.py                 # SARIF surface (`surface`) + stale-prune selector (`prune`)
-    remediate.py             # Localized model fix for `fix <id>` (excerpt-bounded, atomic)
+    extractor.py             # Finding extraction (LLM JSON + regex fallback w/ code-span strip & excerpt synthesis)
+    dashboard.py             # Live TUI (Rich): reviews + recurring violations + guardrails + triage/fix
+    dashboard_input.py       # Pure keyboard state reducer for Control Center navigation, triage, and fix preview
+    sarif.py                 # SARIF surface (`surface`), stale-prune selector (`prune`), save reconciliation
+    remediate.py             # Localized model fix for `fix <id>` and dashboard `f` (excerpt-bounded, atomic)
     hooks.py                 # Git post-commit hook installer + record_commit
     pytest_plugin.py         # Opt-in plugin: test failure → test_failure Incident
     utils.py                 # safe_read, chunking, diff, compression
-    context/                 # token-budgeted prompt assembly + semantic retrieval
+    context/                 # token-budgeted prompt assembly + semantic/structural retrieval
       assembler.py           # Section / Priority / ContextItem + assemble + chunk_by_lines
       tokens.py              # TokenCounter (tiktoken cl100k_base, char fallback)
       embeddings.py          # OllamaEmbedder (async /api/embeddings, cache-backed)
+      import_resolver.py     # Multi-language 1-hop import graph resolver (.py, .ts/.tsx/.js/.jsx, .swift)
       retrievers.py          # NullRetriever, SemanticRetriever (cosine, pure Python)
       recipes.py             # build_review_context / build_research_context / build_triage_context
     triage/                  # `ollama-sentinel triage` pipeline

@@ -546,9 +546,10 @@ class FileProcessor:
             file_change: File change to prepare
         """
         path = file_change.path
-        file_change.content = safe_read(path, self.watch_dir)
+        if file_change.content is None:
+            file_change.content = safe_read(path, self.watch_dir)
 
-        if self.config.processing.git_diff_mode and self.repo:
+        if file_change.diff is None and self.config.processing.git_diff_mode and self.repo:
             try:
                 # Get the git diff for the file
                 rel_path = path.relative_to(pathlib.Path(self.repo.working_dir))
@@ -695,8 +696,13 @@ class FileProcessor:
         silently dropped. Returns ``[]`` if the resolver is unavailable or
         *file_path* is not Python — letting Layer 3 take over for those cases.
         """
-        # Resolver is Python-only; non-Python files skip Layer 2 entirely.
-        if self._import_resolver is None or file_path.suffix != ".py":
+        # Supported source languages for structural 1-hop recall (Python,
+        # TypeScript/JavaScript, and Swift); other file types skip Layer 2.
+        from ollama_sentinel.context.import_resolver import _SUPPORTED_SUFFIXES
+        if (
+            self._import_resolver is None
+            or file_path.suffix.lower() not in _SUPPORTED_SUFFIXES
+        ):
             return []
 
         rel = str(file_path.relative_to(self.watch_dir))

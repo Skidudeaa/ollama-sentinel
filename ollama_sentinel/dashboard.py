@@ -193,6 +193,121 @@ def execute_dashboard_action(
     return ""
 
 
+async def generate_dashboard_fix_preview(
+    db: Optional[ViolationDB],
+    watch_dir: pathlib.Path,
+    config_path: str,
+    row: ViolationRow,
+) -> tuple[Optional[dict], str]:
+    """Generate a localized fix preview for *row* without writing to disk.
+
+    Returns ``(preview_dict, status_message)`` where *preview_dict* is ``None``
+    when the finding cannot be relocated exactly or the model proposes no
+    change.
+    """
+    import difflib
+    from .config import load_config
+    from .processor import OllamaClient
+    from .remediate import propose_fix
+    from .sarif import relocate_finding
+    from .utils import read_strict
+
+    if db is None or row.id is None:
+        return None, "Cannot generate fix (finding has no database ID)"
+
+    finding = await asyncio.to_thread(db.get_finding, row.id)
+    if finding is None:
+        return None, f"Finding #{row.id} not found"
+    if finding.get("resolved"):
+        return None, f"Finding #{row.id} is already resolved"
+
+    rel = finding["file_path"]
+    watch_dir = pathlib.Path(watch_dir).resolve()
+    target = watch_dir / rel
+    try:
+        before = target.stat()
+        before_sig = (before.st_mtime_ns, before.st_size)
+        content = await asyncio.to_thread(read_strict, target, watch_dir)
+    except (ValueError, OSError) as exc:
+        return None, f"Cannot read {rel}: {exc}"
+
+    reloc = relocate_finding(content, finding)
+    if not (reloc.status == "relocated" and reloc.exact):
+        return None, f"Cannot auto-fix #{row.id}: excerpt is {reloc.status}"
+
+    cfg = load_config(pathlib.Path(config_path)) if config_path else None
+    if cfg is not None:
+        ollama_cfg = cfg.ollama.model_dump()
+    else:
+        from .models import OllamaConfig, OllamaModelConfig
+        ollama_cfg = OllamaConfig(
+            models={
+                "default": OllamaModelConfig(
+                    name="gemma3:4b", system_prompt="Fix the code finding."
+                )
+            }
+        ).model_dump()
+
+    client = OllamaClient(ollama_cfg)
+    try:
+        proposed = await propose_fix(content, finding, reloc, client, model_role="fix")
+    except Exception as exc:
+        return None, f"Fix generation failed: {exc}"
+    finally:
+        await client.close()
+
+    if proposed.status == "no_change":
+        return None, f"Model proposed no change for #{row.id}"
+
+    diff_lines = list(
+        difflib.unified_diff(
+            content.splitlines(keepends=True),
+            proposed.new_content.splitlines(keepends=True),
+            fromfile=f"a/{rel}",
+            tofile=f"b/{rel}",
+        )
+    )
+    diff_text = "".join(diff_lines)
+    preview = {
+        "finding_id": row.id,
+        "file_path": rel,
+        "new_content": proposed.new_content,
+        "diff": diff_text,
+        "before_sig": before_sig,
+        "start": proposed.start,
+        "end": proposed.end,
+    }
+    return preview, f"Fix preview ready for #{row.id} — press y to apply or n/Esc to cancel"
+
+
+def apply_dashboard_fix(
+    db: Optional[ViolationDB],
+    watch_dir: pathlib.Path,
+    fix_preview: dict,
+) -> str:
+    """Write a confirmed *fix_preview* atomically and mark the finding fixed."""
+    from .utils import safe_write
+
+    if db is None or not fix_preview:
+        return "No fix preview to apply"
+    finding_id = fix_preview["finding_id"]
+    rel = fix_preview["file_path"]
+    watch_dir = pathlib.Path(watch_dir).resolve()
+    target = watch_dir / rel
+    try:
+        now_stat = target.stat()
+    except OSError as exc:
+        return f"Refusing to write {rel}: {exc}"
+    if (now_stat.st_mtime_ns, now_stat.st_size) != tuple(fix_preview["before_sig"]):
+        return f"Refusing to write {rel}: file changed since preview was generated"
+    try:
+        safe_write(target, fix_preview["new_content"], watch_dir)
+    except (ValueError, OSError) as exc:
+        return f"Write failed for {rel}: {exc}"
+    db.mark_resolved(finding_id, resolution="fixed")
+    return f"Applied fix for #{finding_id} ({rel}:{fix_preview['start']}-{fix_preview['end']})"
+
+
 def _format_guardrail_scope(category: Optional[str], path_glob: Optional[str]) -> str:
     """Human-readable scope label for a guardrail row."""
     bits = [b for b in (category, path_glob) if b]
@@ -604,12 +719,21 @@ def _footer_interactive(ui_state) -> Panel:
         body = f"[bold white]/{ft}[/][dim]▏[/]  [dim]Type to filter[/]  [dim]│[/]  Enter apply  [dim]│[/]  Esc cancel"
     elif ui_state.mode == Mode.DETAIL:
         if ui_state.focused_panel == PanelId.PATTERNS:
-            body = (
-                "[dim]Esc[/] close  [dim]│[/]  "
-                "[dim]r[/] resolve  [dim]│[/]  "
-                "[dim]d[/] dismiss  [dim]│[/]  "
-                "[dim]c[/] confirm"
-            )
+            if ui_state.detail_item and ui_state.detail_item.get("diff"):
+                body = (
+                    "[bold yellow]y[/] apply fix  [dim]│[/]  "
+                    "[dim]n / Esc[/] cancel  [dim]│[/]  "
+                    "[dim]r[/] resolve  [dim]│[/]  "
+                    "[dim]d[/] dismiss"
+                )
+            else:
+                body = (
+                    "[dim]Esc[/] close  [dim]│[/]  "
+                    "[dim]f[/] fix  [dim]│[/]  "
+                    "[dim]r[/] resolve  [dim]│[/]  "
+                    "[dim]d[/] dismiss  [dim]│[/]  "
+                    "[dim]c[/] confirm"
+                )
         else:
             body = "[dim]Esc[/] close  [dim]│[/]  Viewing detail"
     else:
@@ -622,7 +746,7 @@ def _footer_interactive(ui_state) -> Panel:
         )
         if ui_state.focused_panel == PanelId.PATTERNS:
             body += (
-                "  [dim]│[/]  [dim]r[/] resolve  "
+                "  [dim]│[/]  [dim]f[/] fix  [dim]r[/] resolve  "
                 "[dim]d[/] dismiss  [dim]c[/] confirm"
             )
     if getattr(ui_state, "status_message", ""):
@@ -902,8 +1026,36 @@ async def run_dashboard(
                             ranked = blended_rank(violations)
                             sel_idx = ui_state.selection.get(PanelId.PATTERNS, 0)
                             status_msg = ""
-                            if 0 <= sel_idx < len(ranked):
-                                action = ui_state.pending_action
+                            action = ui_state.pending_action
+                            new_detail_item = ui_state.detail_item
+                            new_mode = ui_state.mode
+                            if action == "fix_apply" and ui_state.detail_item:
+                                try:
+                                    status_msg = await asyncio.to_thread(
+                                        apply_dashboard_fix,
+                                        db,
+                                        watch_dir,
+                                        ui_state.detail_item,
+                                    )
+                                except Exception as exc:
+                                    log.warning("Dashboard fix apply failed: %s", exc)
+                                    status_msg = f"Fix apply failed: {exc}"
+                                new_detail_item = None
+                                new_mode = Mode.NORMAL
+                                data = await asyncio.to_thread(_fetch_data)
+                                last_fetch = time.monotonic()
+                            elif action == "fix_preview" and 0 <= sel_idx < len(ranked):
+                                target_row = ranked[sel_idx]
+                                try:
+                                    preview, status_msg = await generate_dashboard_fix_preview(
+                                        db, watch_dir, config_path, target_row,
+                                    )
+                                    new_detail_item = preview
+                                except Exception as exc:
+                                    log.warning("Dashboard fix preview failed: %s", exc)
+                                    status_msg = f"Fix preview failed: {exc}"
+                                    new_detail_item = None
+                            elif 0 <= sel_idx < len(ranked):
                                 target_row = ranked[sel_idx]
                                 try:
                                     status_msg = await asyncio.to_thread(
@@ -916,7 +1068,11 @@ async def run_dashboard(
                                 last_fetch = time.monotonic()
                             from .dashboard_input import _copy
                             ui_state = _copy(
-                                ui_state, pending_action=None, status_message=status_msg,
+                                ui_state,
+                                mode=new_mode,
+                                detail_item=new_detail_item,
+                                pending_action=None,
+                                status_message=status_msg,
                             )
                             ui_state = _reclamp_selection(ui_state, data)
                         live.update(_build_layout(data, ui_state))
@@ -998,6 +1154,9 @@ def _detail_panel(state, reviews: List[ReviewRow], violations: List[ViolationRow
         table.add_row("File:", f"{v.file_path}:{v.line_start}-{v.line_end}")
         table.add_row("Occurrences:", f"{v.count}x")
         table.add_row("Description:", v.description)
+        detail = getattr(state, "detail_item", None)
+        if isinstance(detail, dict) and detail.get("diff"):
+            table.add_row("Proposed Fix:", Text(detail["diff"].rstrip(), style="green"))
         return Panel(table, title=f"Pattern: {v.category} in {v.file_path}", border_style="bold magenta")
 
     return Panel(Text("No item selected", style="dim"), border_style="dim")

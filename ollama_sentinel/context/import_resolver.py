@@ -10,10 +10,48 @@ from __future__ import annotations
 
 import ast
 import logging
+import os
+import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Set
 
 logger = logging.getLogger("ollama-sentinel.import-resolver")
+
+_JS_TS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_SUPPORTED_SUFFIXES = (".py", *_JS_TS_SUFFIXES, ".swift")
+_IGNORED_DIRS = {
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "dist",
+    "build",
+    ".build",
+    ".next",
+    ".ollama_reviews",
+    ".worktrees",
+}
+
+_C_STYLE_COMMENT_RE = re.compile(
+    r"//[^\n]*|/\*[\s\S]*?\*/",
+)
+_JS_IMPORT_RE = re.compile(
+    r"""(?:
+        \b(?:import|export)\b[\s\S]*?\bfrom\s*['"]([^'"]+)['"]
+      | \bimport\s*['"]([^'"]+)['"]
+      | \b(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\)
+    )""",
+    re.VERBOSE,
+)
+_SWIFT_DECL_RE = re.compile(
+    r"\b(?:class|struct|enum|protocol|actor)\s+([A-Z][A-Za-z0-9_]*)\b"
+)
+_SWIFT_IDENT_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\b")
+
+
+def _strip_c_comments(text: str) -> str:
+    return _C_STYLE_COMMENT_RE.sub(" ", text)
 
 
 class ImportResolver:
@@ -29,17 +67,19 @@ class ImportResolver:
         self.repo_path = Path(repo_path).resolve()
         self.language = language
         self._import_cache: Optional[Dict[str, List[str]]] = None
+        self._swift_type_map: Optional[Dict[str, Set[str]]] = None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def resolve_imports(self, file_path: str) -> List[str]:
-        """Return resolved absolute file paths imported by *file_path*.
+        """Return resolved absolute file paths imported/referenced by *file_path*.
 
-        Handles ``import module``, ``from module import name``, and
-        relative imports (``from .x import y``).  Files with syntax
-        errors return an empty list and emit a warning.
+        Supports Python (``.py`` via ``ast``), TypeScript/JavaScript
+        (``.ts``/``.tsx``/``.js``/``.jsx``/``.mjs``/``.cjs``), and Swift
+        (``.swift`` intra-module nominal type references). Files with syntax or
+        read errors return an empty list and emit a warning.
         """
         source_path = Path(file_path).resolve()
         try:
@@ -47,6 +87,12 @@ class ImportResolver:
         except (OSError, UnicodeDecodeError) as exc:
             logger.warning("Cannot read %s: %s", source_path, exc)
             return []
+
+        suffix = source_path.suffix.lower()
+        if suffix in _JS_TS_SUFFIXES:
+            return self._resolve_js_ts_imports(source_path, source_text)
+        if suffix == ".swift":
+            return self._resolve_swift_references(source_path, source_text)
 
         try:
             tree = ast.parse(source_text, filename=str(source_path))
@@ -121,11 +167,7 @@ class ImportResolver:
         if entry_files is not None:
             files = [str(Path(f).resolve()) for f in entry_files]
         else:
-            files = [
-                str(p.resolve())
-                for p in self.repo_path.rglob("*.py")
-                if p.is_file()
-            ]
+            files = [str(p) for p in self._iter_repo_files(_SUPPORTED_SUFFIXES)]
 
         graph: Dict[str, Dict[str, List[str]]] = {}
 
@@ -152,20 +194,123 @@ class ImportResolver:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _iter_repo_files(self, suffixes: Iterable[str]) -> List[Path]:
+        """Yield resolved files under ``repo_path`` matching *suffixes*, skipping ignored dirs."""
+        suffix_set = {s.lower() for s in suffixes}
+        results: List[Path] = []
+        for root, dirs, filenames in os.walk(self.repo_path):
+            dirs[:] = [
+                d for d in dirs
+                if d not in _IGNORED_DIRS and not d.startswith(".git")
+            ]
+            root_path = Path(root)
+            for fname in filenames:
+                p = root_path / fname
+                if p.suffix.lower() in suffix_set and p.is_file():
+                    results.append(p.resolve())
+        return results
+
     def _scan_all_imports(self) -> Dict[str, List[str]]:
-        """Cached scan of every Python file's imports in the repo."""
+        """Cached scan of every supported source file's imports in the repo."""
         if self._import_cache is not None:
             return self._import_cache
 
         cache: Dict[str, List[str]] = {}
-        for py_file in self.repo_path.rglob("*.py"):
-            if not py_file.is_file():
-                continue
-            fpath = str(py_file.resolve())
+        for src_file in self._iter_repo_files(_SUPPORTED_SUFFIXES):
+            fpath = str(src_file)
             cache[fpath] = self.resolve_imports(fpath)
 
         self._import_cache = cache
         return self._import_cache
+
+    def _resolve_js_ts_imports(
+        self, source_path: Path, source_text: str
+    ) -> List[str]:
+        """Resolve TypeScript/JavaScript relative and ``@/`` imports to repo files."""
+        cleaned = _strip_c_comments(source_text)
+        resolved: List[str] = []
+        seen: Set[str] = set()
+        for match in _JS_IMPORT_RE.finditer(cleaned):
+            spec = match.group(1) or match.group(2) or match.group(3)
+            if not spec:
+                continue
+            target = self._resolve_js_ts_specifier(source_path.parent, spec)
+            if target is not None and target not in seen:
+                seen.add(target)
+                resolved.append(target)
+        return resolved
+
+    def _resolve_js_ts_specifier(
+        self, base_dir: Path, spec: str
+    ) -> Optional[str]:
+        """Resolve a single JS/TS import specifier to a file inside ``repo_path``."""
+        candidates_roots: List[Path] = []
+        if spec.startswith("."):
+            candidates_roots.append((base_dir / spec).resolve())
+        elif spec.startswith("@/"):
+            rel = spec[2:]
+            candidates_roots.append((self.repo_path / "src" / rel).resolve())
+            candidates_roots.append((self.repo_path / rel).resolve())
+        else:
+            return None
+
+        for candidate in candidates_roots:
+            # 1. Exact file match (or TS ESM `.js` -> `.ts`/`.tsx`)
+            if candidate.is_file() and self._is_inside_repo(candidate):
+                return str(candidate)
+            if candidate.suffix in (".js", ".jsx", ".mjs"):
+                stem_base = candidate.with_suffix("")
+                for ts_ext in (".ts", ".tsx"):
+                    ts_cand = stem_base.with_suffix(ts_ext)
+                    if ts_cand.is_file() and self._is_inside_repo(ts_cand):
+                        return str(ts_cand.resolve())
+            # 2. Extensionless file (`./foo` -> `./foo.ts`, `./foo.tsx`, etc.)
+            for ext in _JS_TS_SUFFIXES:
+                with_ext = Path(f"{candidate}{ext}")
+                if with_ext.is_file() and self._is_inside_repo(with_ext):
+                    return str(with_ext.resolve())
+            # 3. Directory index (`./foo` -> `./foo/index.ts`, etc.)
+            if candidate.is_dir():
+                for ext in _JS_TS_SUFFIXES:
+                    idx = candidate / f"index{ext}"
+                    if idx.is_file() and self._is_inside_repo(idx):
+                        return str(idx.resolve())
+        return None
+
+    def _build_swift_type_map(self) -> Dict[str, Set[str]]:
+        """Map top-level Swift type names to the repo `.swift` files declaring them."""
+        if self._swift_type_map is not None:
+            return self._swift_type_map
+        type_map: Dict[str, Set[str]] = {}
+        for swift_file in self._iter_repo_files((".swift",)):
+            try:
+                text = _strip_c_comments(swift_file.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError):
+                continue
+            fpath = str(swift_file)
+            for m in _SWIFT_DECL_RE.finditer(text):
+                type_map.setdefault(m.group(1), set()).add(fpath)
+        self._swift_type_map = type_map
+        return type_map
+
+    def _resolve_swift_references(
+        self, source_path: Path, source_text: str
+    ) -> List[str]:
+        """Resolve intra-repo Swift nominal type references to defining `.swift` files."""
+        type_map = self._build_swift_type_map()
+        if not type_map:
+            return []
+        self_str = str(source_path)
+        cleaned = _strip_c_comments(source_text)
+        seen: Set[str] = set()
+        resolved: List[str] = []
+        for m in _SWIFT_IDENT_RE.finditer(cleaned):
+            ident = m.group(1)
+            for target in sorted(type_map.get(ident, ())):
+                if target != self_str and target not in seen:
+                    seen.add(target)
+                    resolved.append(target)
+        return resolved
 
     def _resolve_module_to_path(
         self,

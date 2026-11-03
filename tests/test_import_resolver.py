@@ -285,3 +285,54 @@ class TestEnclosingSymbol:
         """)
         # AST walk must descend through non-def parents to reach helper.
         assert enclosing_symbol(source, 3) == "helper"
+
+
+class TestMultiLanguageImportResolver:
+    """TypeScript/JavaScript and Swift structural import/reference resolution."""
+
+    def test_resolves_ts_relative_and_alias_imports(self, tmp_path: Path) -> None:
+        src = tmp_path / "src"
+        lib = src / "lib"
+        comp = src / "components"
+        lib.mkdir(parents=True)
+        comp.mkdir(parents=True)
+
+        api_ts = lib / "api.ts"
+        api_ts.write_text("export function fetchUser() {}\n")
+        idx_tsx = comp / "index.tsx"
+        idx_tsx.write_text("export const Button = () => null;\n")
+        app_tsx = src / "App.tsx"
+        app_tsx.write_text(
+            "// import './ignored.ts'\n"
+            "import { fetchUser } from '@/lib/api.js';\n"
+            "import { Button } from './components';\n"
+            "import React from 'react';\n"
+        )
+
+        resolver = ImportResolver(str(tmp_path))
+        imports = resolver.resolve_imports(str(app_tsx))
+        assert str(api_ts.resolve()) in imports
+        assert str(idx_tsx.resolve()) in imports
+        assert len(imports) == 2
+
+        dependents = resolver.resolve_dependents(str(api_ts))
+        assert str(app_tsx.resolve()) in dependents
+
+    def test_resolves_swift_nominal_type_references(self, tmp_path: Path) -> None:
+        sources = tmp_path / "Sources"
+        sources.mkdir()
+        model_swift = sources / "EraModel.swift"
+        model_swift.write_text("struct EraModel {\n    let title: String\n}\n")
+        view_swift = sources / "ErasZoneView.swift"
+        view_swift.write_text(
+            "// EraModel in comment only\n"
+            "struct ErasZoneView {\n"
+            "    var item: EraModel\n"
+            "}\n"
+        )
+
+        resolver = ImportResolver(str(tmp_path))
+        imports = resolver.resolve_imports(str(view_swift))
+        assert imports == [str(model_swift.resolve())]
+        dependents = resolver.resolve_dependents(str(model_swift))
+        assert dependents == [str(view_swift.resolve())]

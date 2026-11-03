@@ -177,6 +177,47 @@ class TestTopViolations:
         finally:
             db.close()
 
+    async def test_dashboard_fix_preview_and_apply(self, tmp_path, monkeypatch):
+        from ollama_sentinel.dashboard import (
+            apply_dashboard_fix,
+            generate_dashboard_fix_preview,
+        )
+        import ollama_sentinel.processor as proc
+
+        async def _fake_generate_review(self, role, prompt, **kw):
+            return "x = 1"
+
+        monkeypatch.setattr(proc.OllamaClient, "generate_review", _fake_generate_review)
+
+        target = tmp_path / "app.py"
+        target.write_text("x = 1 / 0\ny = 2\n")
+        db = ViolationDB(str(tmp_path / "m.db"))
+        try:
+            f = Finding(
+                file_path="app.py", line_start=1, line_end=1,
+                category="bug", severity="high",
+                description="division by zero",
+                verbatim_excerpt="x = 1 / 0",
+            )
+            db.persist_findings("app.py", [f])
+            db.persist_findings("app.py", [f])
+            row = top_violations(db, min_count=2, limit=10)[0]
+
+            preview, msg = await generate_dashboard_fix_preview(
+                db, tmp_path, "", row,
+            )
+            assert preview is not None
+            assert "-x = 1 / 0" in preview["diff"]
+            assert "+x = 1" in preview["diff"]
+            assert "Fix preview ready" in msg
+
+            apply_msg = apply_dashboard_fix(db, tmp_path, preview)
+            assert "Applied fix" in apply_msg
+            assert target.read_text() == "x = 1\ny = 2\n"
+            assert top_violations(db, min_count=2, limit=10) == []
+        finally:
+            db.close()
+
 
 def _mock_live() -> MagicMock:
     live = MagicMock()
